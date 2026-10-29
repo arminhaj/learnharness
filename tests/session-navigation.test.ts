@@ -67,13 +67,25 @@ describe("native message anchors survive assistant grouping", () => {
 		assert.deepEqual([...firstSourceTextParts(view)], [["msg_a", "msg_a-t1"]]);
 	});
 
-	it("learner text and teacher messages without prose acquire no source anchor", () => {
+	it("the teacher prose helper leaves learner rows to their own native-message anchors", () => {
 		const view = projectView([
 			{ id: "user_a", role: "user", content: "Learner text", timestamp: 1 } as LhMessage,
 			teacher("msg_a", [{ type: "thinking", thinking: "Private reasoning" }]),
 			teacher("msg_b", [{ type: "text", text: "\n\t" }]),
 		]);
 		assert.equal(firstSourceTextParts(view).size, 0);
+	});
+
+	it("retains native learner answer IDs even when answers attach to an earlier assistant group", () => {
+		const view = projectView([
+			teacher("teacher_1", [{ type: "toolCall", id: "call_quiz", name: "quiz", arguments: {} }]),
+			{ id: "user_between", role: "user", content: "Let me explain.", timestamp: 1 } as LhMessage,
+			{ id: "answer_1", role: "toolResult", toolCallId: "call_quiz", toolName: "quiz", content: [{ type: "text", text: "Learner answer" }], details: { text: "Differentiation gives the slope." }, isError: false, timestamp: 2 } as LhMessage,
+		]);
+		assert.equal(view[1]?.id, "user_between");
+		const part = view[0]?.parts.find((value) => value.toolCallId === "call_quiz");
+		assert.equal(part?.sourceMessageId, "answer_1", "the evidence anchor is the answer's native ID, never the call or teacher ID");
+		assert.equal(propositionSessionHref({ provenance: [{ chatId: "chat_1", messageId: part!.sourceMessageId! }] }, "chat_1"), "/chat/chat_1#message-answer_1");
 	});
 
 	it("reads the suffix only, preserving IDs containing hyphens or -t themselves", () => {

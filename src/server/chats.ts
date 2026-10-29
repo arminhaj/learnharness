@@ -4,6 +4,8 @@ import { coverageOf } from "../core/coverage.ts";
 import { deleteChatTraces, type ChatDeleteMode, type ChatDeletionStats } from "../core/graph-deletion.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { graphRevision } from "./graph.ts";
+import { deleteLearningSessionMetadata, readLearningGraphState } from "./learning-graph.ts";
+import { getGraph } from "../core/graph.ts";
 import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
@@ -124,7 +126,14 @@ export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): P
 
 	// THE SYNC BLOCK — no awaits below (see the doc comment). Order:
 	// ledgers → jobs → the chat record.
+	const beforeNodes = mode === "delete-nodes" ? getGraph(stores.graphStore).nodes : null;
+	const learningState = beforeNodes ? readLearningGraphState() : null;
 	const stats = deleteChatTraces(stores.graphStore, chatId, mode);
+	if (beforeNodes && learningState) {
+		const surviving = new Set(stores.graphStore.readNodes().map((node) => node.id));
+		const retained = deleteLearningSessionMetadata(chatId, beforeNodes.map((node) => node.id).filter((id) => !surviving.has(id)), beforeNodes, learningState);
+		stats.nodesRemoved = Math.max(0, stats.nodesRemoved - retained);
+	}
 	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
 	if (stores.chatStore.deleteChat(chatId)) {
 		discardChatDeliveries(chatId);

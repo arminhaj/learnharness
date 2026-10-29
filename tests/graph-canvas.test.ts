@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import { describe, it, it as test } from "node:test";
 import {
 	applyClusterLabels,
+	applyNodePresentation,
+	canvasTopologyKey,
 	arrowGeometry,
 	isImpNodeId,
 	boxBlurRound,
@@ -31,6 +33,27 @@ import {
 	REGION_BITMAP_OPTIONS,
 	REGION_BLUR_LADDER,
 } from "../src/core/render-settings.ts";
+
+describe("learning-map presentation stability", () => {
+	it("updates names and progress in place without touching positions", () => {
+		const node = { id: "n_a", x: 132, y: -54, label: "Old" };
+		const nodes = [node];
+		applyNodePresentation(nodes, new Map([["n_a", { label: "Renamed", progress: "comfortable", ready: true }]]));
+		assert.equal(nodes[0], node);
+		assert.deepEqual({ x: node.x, y: node.y }, { x: 132, y: -54 });
+		assert.equal(node.label, "Renamed");
+	});
+	it("only topology changes rebuild the simulation", () => {
+		const data = { nodes: [{ id: "n_a", x: 0, y: 0, label: "A" }, { id: "n_b", x: 10, y: 10, label: "B" }], edges: [{ from: "n_a", to: "n_b" }], clusters: [{ id: "group", label: "Old", members: ["n_a", "n_b"] }] };
+		const before = canvasTopologyKey(data);
+		data.nodes[0]!.x = 987;
+		data.nodes[0]!.label = "Renamed";
+		data.clusters[0]!.label = "New";
+		assert.equal(canvasTopologyKey(data), before);
+		data.edges = [];
+		assert.notEqual(canvasTopologyKey(data), before);
+	});
+});
 
 describe("zoomRatioOf (the sigma-compatible camera ratio)", () => {
 	test("1 at fit zoom, smaller when zoomed in, larger when zoomed out", () => {

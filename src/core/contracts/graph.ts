@@ -19,6 +19,7 @@
 // ─── Knowledge graph (vision §1 — global, cross-session) ────────────────────
 
 import type { CallUsage, ExtractionRunUsage } from "./chat.ts";
+import type { LearningGraphSnapshot } from "./learning-graph.ts";
 
 /** One relation of the DERIVED view — chains are the stored truth (owner,
  *  2026-09-30: "the graph is a lossy image of what is truly stored"), and
@@ -301,6 +302,11 @@ export interface Cluster {
 }
 
 export interface GraphSnapshot {
+	/** Snapshot freshness for concurrent HTTP/SSE refreshes. */
+	graphRevision?: number;
+	/** Curriculum prerequisites and personal metadata, separate from chains.
+	 * Optional for legacy callers and snapshots created before enrichment. */
+	learning?: LearningGraphSnapshot;
 	/** Proposition nodes + the DERIVED implication nodes (one per chain,
 	 *  id = chain id) — what the canvas renders. */
 	nodes: GraphNode[];

@@ -53,6 +53,7 @@ import { ArrowRightIcon, DumbbellIcon, WaypointsIcon } from "lucide-react";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { SessionFind } from "@/components/session-find";
+import { SourcePassage } from "@/components/source-passage";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { PracticeDock } from "@/components/practice-dock";
 import { ThinkingCard, type PracticeThinkingData } from "@/components/practice-cards";
@@ -1435,7 +1436,7 @@ export function Chat({
 											case "data-compaction-cut":
 												return <CompactionCutDivider key={pi} data={part.data as CompactionDividerData} />;
 											case "data-practice-thinking":
-												return <ThinkingCard key={pi} data={part.data as PracticeThinkingData} />;
+												return <SourcePassage key={pi} messageId={m.id || undefined}><ThinkingCard data={part.data as PracticeThinkingData} /></SourcePassage>;
 											case "data-practice-next":
 												// The learner's move-on signal (owner round 16): a compact
 												// centered mono-caps line — chrome, the dismissal register.
@@ -1491,7 +1492,8 @@ export function Chat({
 										    User text renders plain — the model's LaTeX pipeline is not
 										    applied to learner-authored text ($ stays $, no surprises).
 										    Rendered WITHOUT the Message wrapper — that is the bubble. */
-											<div
+											<SourcePassage
+										messageId={m.id || undefined}
 										data-testid="user-message"
 										/* THE DOCUMENT, ALL-IN (owner rounds two+three, 2026-10-07):
 										    no chat side — the user message is a full-width card-color
@@ -1509,7 +1511,7 @@ export function Chat({
 												<div className="lh-prose whitespace-pre-wrap text-foreground">
 													{m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")}
 												</div>
-											</div>
+											</SourcePassage>
 									) : (
 									<Message from="assistant" className="max-w-full">
 									<MessageContent className="w-full">
@@ -1582,7 +1584,9 @@ export function Chat({
 														// transcript; answered ones render as graded records.
 														if (part.state === "output-available") {
 															return (
-																<AnsweredCard key={pi} answer={part.output as QuestionAnswerData} input={part.input} />
+																<SourcePassage key={pi} messageId={part.sourceMessageId}>
+																	<AnsweredCard answer={part.output as QuestionAnswerData} input={part.input} />
+																</SourcePassage>
 															);
 														}
 														return null;

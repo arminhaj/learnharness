@@ -18,6 +18,7 @@
 export * from "./contracts.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
+export * from "./learning-graph.ts";
 export * from "./render-settings.ts";
 
 export * from "./question-core.ts";

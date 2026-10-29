@@ -22,6 +22,9 @@ import type {
 	ExtractionRunUsage,
 	ExtractionStageUsage,
 	SessionFindings,
+	LearningContribution,
+	LearningGraphState,
+	LearningGraphSnapshot,
 } from "../../core/contracts.ts";
 import { getGraph, mergeFindings, type DerivedGraph, type EmissionStats, type GraphDeps } from "../../core/graph.ts";
 import type { GraphStore } from "../../core/ports.ts";
@@ -31,6 +34,7 @@ import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts"
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
 import { auditorGraphTools } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
+import { learningBatches, learningFingerprint, learningPassages, runLearningMap } from "./learning-map.ts";
 
 /**
  * The extraction pipeline (vision §1 construction, 2026-09-02 redesign;
@@ -74,9 +78,9 @@ import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
  *                    ancestry-cover / prefer-fewest-premises pass that
  *                    strips redundant derivations — core/graph.ts)
  *
- * The events ledger is GONE (2026-09-27): quiz outcomes and understanding
- * observations are no longer formalized in the graph — the graph is purely
- * extracted reasoning chains (nodes + edges).
+ * The reasoning ledger remains source-grounded. The independent learning
+ * overlay added below reads learner evidence separately; it never converts
+ * reasoning chains into prerequisite facts or writes assessments to nodes.jsonl.
  *
  * The extractor is a single-tool-call worker (one TypeBox-validated submit
  * call — a pi agent purely so the model can retry a schema-invalid call).
@@ -650,6 +654,7 @@ export interface RunningExtraction {
 }
 
 interface LhExtractionGlobal {
+	__lhLearningPending?: Map<string, boolean>;
 	__lhExtractionRuns?: {
 		/** In-flight pipeline runs, keyed chatId (chat) / src id (notes). */
 		running: Map<string, RunningExtraction>;
@@ -694,6 +699,7 @@ export function extractionStatuses(): RunningExtraction[] {
  *  nothing merged, nothing checkpointed, partial usage still persisted.
  *  Returns false when no run is in flight (idempotent no-op). */
 export function abortExtraction(chatId: string): boolean {
+	(globalThis as typeof globalThis & LhExtractionGlobal).__lhLearningPending?.delete(chatId);
 	// PER-CHUNK JOBS (owner, 2026-09-28): a source may own several registry
 	// entries (one per chunk/batch) — aborting the source aborts EVERY
 	// job of its fan-out.
@@ -736,6 +742,12 @@ export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
 	 *  callers wire the live effective settings (extraction-UX redesign,
 	 *  2026-09-24). */
 	getChunkTokens?: () => number;
+	/** The independent learning overlay. Absent in legacy/test compositions. */
+	learning?: {
+		readState(): LearningGraphState;
+		snapshot(): LearningGraphSnapshot;
+		saveContribution(contribution: LearningContribution): unknown;
+	};
 }
 
 export interface NotesImportInput {
@@ -769,6 +781,9 @@ export interface ExtractionPipeline {
 	 *  path, so re-importing the same file re-runs extraction against the
 	 *  same source identity (mappings dedupe by it). */
 	importNotes(input: NotesImportInput): Promise<EmissionStats>;
+	/** Reassess only new/changed learner evidence; force reprocesses the
+	 * transcript for a requested backfill. Uses the extraction activity dock. */
+	updateLearning?(chatId: string, options?: { force?: boolean }): Promise<void>;
 }
 
 /** pi's per-step usage, flattened to the persisted CallUsage fields
@@ -828,6 +843,13 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// single-flight guard. No module-level state left in this factory.
 	const runningExtractions = runs().running;
 	const inFlight = runs().inFlight;
+	const pendingLearning = ((globalThis as typeof globalThis & LhExtractionGlobal).__lhLearningPending ??= new Map<string, boolean>());
+	function drainLearning(chatId: string): void {
+		if (!pendingLearning.has(chatId)) return;
+		const force = pendingLearning.get(chatId);
+		pendingLearning.delete(chatId);
+		void updateLearning(chatId, { force }).catch((error) => console.error(`[learning ${chatId}] queued update failed:`, error));
+	}
 
 	function setPhase(
 		jobKey: string,
@@ -1097,8 +1119,81 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		return stats;
 	}
 
+	/** The learner overlay has separate coverage: a teacher-only extraction
+	 * fingerprint does not change when an answer arrives. Keep its jobs in
+	 * the same activity, abort, semaphore and cost channels as extraction. */
+	async function runLearningUpdate(record: ChatRecord, force = false, kind: "chat" | "notes" = "chat"): Promise<void> {
+		if (!deps.learning) return;
+		const fingerprint = learningFingerprint(record);
+		const previous = deps.learning.readState().contributions[record.id];
+		if (!force && previous?.fingerprint === fingerprint) return;
+		const engine = stageEngine("extractor", deps.extractor);
+		if (!engine) throw new ModelsNotConfiguredError([ROLE_SLOT.extractor]);
+		const refusal = deps.providerKeyMissing?.(engine.model.provider, ROLE_SLOT.extractor);
+		if (refusal) throw new ProviderKeyMissingError(refusal.provider, refusal.slots);
+		const passages = learningPassages(record);
+		const batches = learningBatches(passages, force ? {} : previous?.messageFingerprints,
+			deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens);
+		// A changed plan/title can introduce new curriculum structure without
+		// new prose. A small evidence window is enough to explain its context.
+		if (batches.length === 0 && passages.length) batches.push(passages.slice(-3));
+		for (const [index, batch] of batches.entries()) {
+			const part = batches.length > 1 ? { i: index + 1, n: batches.length } : undefined;
+			await runJob({ id: record.id, kind, label: `Learning map · ${record.title}`, part }, async (jobKey) => {
+				setPhase(jobKey, "queued", kind, `Learning map · ${record.title}`, part);
+				const signal = runningExtractions.get(jobKey)?.controller.signal;
+				const contribution = await withExtractSlot(jobKey, async () => {
+					setPhase(jobKey, "extracting", kind);
+					const snapshot = deps.learning!.snapshot();
+					return runLearningMap({
+						record, passages: batch, nodes: snapshot.nodes, groups: snapshot.groups,
+						engine, signal,
+						onStep: (usage, model) => recordStep(jobKey, "extractor", callUsage(usage), model),
+					});
+				});
+				signal?.throwIfAborted();
+				if (kind === "chat" && !chatStore.getChat(record.id)) {
+					const gone = new Error(`Chat deleted during learning update: ${record.id}`);
+					gone.name = "AbortError";
+					throw gone;
+				}
+				setPhase(jobKey, "merging", kind);
+				deps.learning!.saveContribution({
+					...contribution,
+					messageFingerprints: Object.fromEntries(batch.map((passage) => [passage.id, passage.fingerprint])),
+					...(index === batches.length - 1 ? { fingerprint } : {}),
+				});
+				return { nodes: contribution.futureNodes?.length ?? 0, chains: 0 };
+			});
+		}
+	}
+
+	async function updateLearning(chatId: string, options: { force?: boolean } = {}): Promise<void> {
+		if (!deps.learning) return;
+		if (inFlight.has(chatId)) {
+			pendingLearning.set(chatId, options.force === true || pendingLearning.get(chatId) === true);
+			return;
+		}
+		inFlight.add(chatId);
+		try {
+			const record = chatStore.getChat(chatId);
+			if (!record) throw new Error(`Chat not found: ${chatId}`);
+			await runLearningUpdate(record, options.force);
+		} catch (error) {
+			if (error instanceof Error && error.name === "AbortError") pendingLearning.delete(chatId);
+			throw error;
+		} finally {
+			inFlight.delete(chatId);
+			finishExtraction(chatId);
+			drainLearning(chatId);
+		}
+	}
+
 	async function runExtraction(chatId: string): Promise<EmissionStats> {
-		if (inFlight.has(chatId)) return { nodes: 0, chains: 0 };
+		if (inFlight.has(chatId)) {
+			if (deps.learning) pendingLearning.set(chatId, pendingLearning.get(chatId) === true);
+			return { nodes: 0, chains: 0 };
+		}
 		inFlight.add(chatId);
 		const t0 = performance.now();
 		// COVERAGE (vision-extraction-coverage.md, 2026-09-15): extract ONLY
@@ -1120,6 +1215,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			const failedOutputCalls = failedOutputCallIds(record.messages);
 			if (covered.uncovered.length === 0) {
 				console.info(`[extraction ${chatId}] nothing uncovered — no-op`);
+				await runLearningUpdate(record);
 				return { nodes: 0, chains: 0 };
 			}
 			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
@@ -1216,6 +1312,16 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				}
 			}
 			const stats = aggregateJobs(chatId, settled);
+			if (settled.some((result) => result.status === "rejected" && result.reason instanceof Error && result.reason.name === "AbortError")) pendingLearning.delete(chatId);
+			if (!settled.some((result) => result.status === "rejected" && result.reason instanceof Error && result.reason.name === "AbortError")) {
+				try {
+					await runLearningUpdate(chatStore.getChat(chatId) ?? record);
+				} catch (error) {
+					// A learning-map failure never invalidates already committed
+					// reasoning extraction. Its own coverage stays retryable.
+					console.error(`[extraction ${chatId}] learning-map update failed:`, error);
+				}
+			}
 			console.info(
 				`[extraction ${chatId}] merged: ${stats.nodes} nodes, ${stats.chains ?? 0} chains ` +
 					`(${Math.round(performance.now() - t0)}ms total, ${batches.length} batch job(s))`,
@@ -1231,6 +1337,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		} finally {
 			inFlight.delete(chatId);
 			finishExtraction(chatId); // done or failed — no longer running
+			drainLearning(chatId);
 		}
 	}
 
@@ -1400,6 +1507,21 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				const details = rejected.map((r) => r.reason instanceof Error ? r.reason.message : String(r.reason)).join("; ");
 				throw new NotesImportError(outcome, mergedStats, details || "Notes import did not complete");
 			}
+			if (deps.learning && chunks.length) {
+				// Imported prose supplies concepts and curriculum structure, never
+				// evidence that this learner can independently explain or solve it.
+				const record: ChatRecord = {
+					id, title: input.filePath, createdAt: input.importedAt, updatedAt: input.importedAt,
+					messages: chunks.map((text, index) => ({
+						id: `notes_${index}`, role: "assistant", content: [{ type: "text", text }],
+						api: "openai-completions", provider: "imported-notes", model: "imported-notes", stopReason: "stop",
+						timestamp: Date.parse(input.importedAt),
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					})),
+				};
+				try { await runLearningUpdate(record, false, "notes"); }
+				catch (error) { console.error(`[extraction ${id}] notes learning-map update failed:`, error); }
+			}
 			console.info(
 				`[extraction ${id}] merged: ${stats.nodes} nodes, ${stats.chains ?? 0} chains ` +
 					`(${Math.round(performance.now() - t0)}ms total, ${chunks.length} chunk job(s))`,
@@ -1434,6 +1556,6 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		}
 	}
 
-	return { runExtraction, importNotes };
+	return { runExtraction, importNotes, updateLearning };
 }
 

@@ -35,6 +35,14 @@ describe("isNodeVisible (search predicate)", () => {
 		assert.equal(isNodeVisible(node, "   "), true);
 	});
 
+	it("finds symbol introductions by glyph, LaTeX, alias, meaning, and tags", () => {
+		const annotated = { ...node, tags: ["dynamics"], symbols: [{ notation: "\\gamma", meaning: "Exponential growth factor", aliases: ["growth constant"], provenance: [] }] };
+		for (const query of ["γ", "\\gamma", "gamma", "Growth Factor", "growth constant", "dynamics"]) {
+			assert.equal(isNodeVisible(annotated, query), true, query);
+		}
+		assert.equal(isNodeVisible(annotated, "beta"), false);
+	});
+
 
 });
 

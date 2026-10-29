@@ -25,8 +25,15 @@ import type {
 	SessionCheckpoint,
 	TurnUsage,
 	NotesSource,
+	LearningGraphState,
 } from "./contracts.ts";
 import type { UserSettings } from "./settings.ts";
+
+/** Editable curriculum metadata is separate from extracted evidence ledgers. */
+export interface LearningGraphStore {
+	read(): LearningGraphState;
+	write(state: LearningGraphState): void;
+}
 
 // ─── ChatStore — the session record's home (data/chats) ─────────────────────
 

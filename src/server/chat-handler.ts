@@ -14,6 +14,7 @@ import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "..
 import { reconstructRequestCause } from "../core/native-messages.ts";
 import { createJobRunner } from "../agent/subagents/runner.ts";
 import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
+import { learningGraphView, readLearningGraphState, saveLearningContribution } from "./learning-graph.ts";
 import type { ModelRole } from "../../config.ts";
 import {
 	deliverJobResult,
@@ -111,6 +112,7 @@ const jobRunner = createJobRunner({
  *  (/api/graph/import) hit the same single-flight registry. */
 export const extraction = createExtractionPipeline({
 	...stores,
+	learning: { readState: readLearningGraphState, snapshot: learningGraphView, saveContribution: saveLearningContribution },
 	// BYOK (owner, 2026-09-22): the extraction stages resolve the chain —
 	// role override → slot → NOTHING — read FRESH per stage call; an empty
 	// chain flows through as undefined and the pipeline refuses the run
@@ -577,10 +579,9 @@ export async function handleChatInput(
 				}
 				// GRAPH GATE (settings-storage wave, 2026-09-19): the write channel —
 				// extraction, its auditor — dies with the master switch.
-				// PRACTICE (owner, 2026-10-04): practice sessions write nothing —
-				// no extraction, no graph, no coverage (v1: the session itself
-				// is the deliverable).
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && extractionEnabled(effective.graph)) {
+				// Practice now contributes learner evidence to the personal
+				// understanding overlay; reasoning extraction remains teach-only.
+				if ((!requestCycle || requestCycle.dispatched) && extractionEnabled(effective.graph)) {
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
