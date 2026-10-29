@@ -4,6 +4,7 @@ interface SessionCreation {
 	title: string;
 	kind?: "practice";
 	graphContext?: { propositions: readonly { id: string; name: string; statement: string }[] };
+	learningContext?: { nodeId: string };
 }
 
 /** Per source-composer instance. Retain a successful creation if storage

@@ -16,6 +16,7 @@ import type { PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
 import { healToolRecord } from "../tools/heal.ts";
 import { healEncodedArguments } from "../../core/argument-heal.ts";
+import type { ModelStreamProgress } from "../../core/extraction-progress.ts";
 
 // ── the weak-model string-heal (owner, 2026-09-28; moved here from
 // extraction.ts with the digest-aware redesign, 2026-09-30 — the heal
@@ -58,6 +59,7 @@ export async function runSubmitAgent<T>(opts: {
 	engine: PiEngine | undefined;
 	signal: AbortSignal | undefined;
 	onStep: (usage: Usage, model: string, step: number, finishReason: string, tools: string) => void;
+	onProgress?: (progress: ModelStreamProgress) => void;
 	neverSubmitted: string;
 	/** Extra tools beside the submit call (the auditor's graph-exploration
 	 *  set, 2026-09-27): a small agentic loop instead of a bare retry. */
@@ -114,6 +116,7 @@ export async function runSubmitAgent<T>(opts: {
 			maxTurns: opts.maxTurns ?? 4,
 			abortSignal: opts.signal,
 			chatId: opts.chatId,
+			onProgress: opts.onProgress,
 			onAssistantMessage: (message, step) =>
 				opts.onStep(
 					message.usage,

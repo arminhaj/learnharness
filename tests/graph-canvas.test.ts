@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import { describe, it, it as test } from "node:test";
 import {
 	applyClusterLabels,
+	applyNodePresentation,
+	canvasTopologyKey,
 	arrowGeometry,
 	isImpNodeId,
 	boxBlurRound,
@@ -40,11 +42,12 @@ test("theme repaint preserves graph data, camera, active drag and pending commit
 	const world = { x: 100, y: 200, k: 2 };
 	const commitTimer = Symbol("pending position commit");
 	const sim = {};
+	const pendingData = { ...data, nodes: [...nodes], colors: data.colors };
 	let paints = 0;
 	// Exercise the real method against a live-state fixture without starting
 	// the DOM-bound renderer. Theme updates must touch only data.colors.
 	const state = {
-		data, world, commitTimer, sim, simActive: true, dragId: "n1", geoVersion: 7,
+		data, pendingData, world, commitTimer, sim, simActive: true, dragId: "n1", geoVersion: 7,
 		markDirty: () => { paints++; },
 	};
 	GraphCanvasRenderer.prototype.setColors.call(state as unknown as GraphCanvasRenderer, colors);
@@ -53,6 +56,8 @@ test("theme repaint preserves graph data, camera, active drag and pending commit
 	assert.deepEqual(nodes, [{ id: "n1", x: 12, y: 34, label: "Node" }]);
 	assert.equal(state.data.colors, colors);
 	assert.equal(state.data.colors.clusterLabelLightness, 35);
+	assert.equal(state.pendingData, pendingData);
+	assert.equal(state.pendingData.colors, colors, "a topology update queued during the drag cannot restore an old palette");
 	assert.equal(state.world, world);
 	assert.equal(state.commitTimer, commitTimer);
 	assert.equal(state.sim, sim);
@@ -60,6 +65,27 @@ test("theme repaint preserves graph data, camera, active drag and pending commit
 	assert.equal(state.dragId, "n1");
 	assert.equal(state.geoVersion, 7);
 	assert.equal(paints, 1);
+});
+
+describe("learning-map presentation stability", () => {
+	it("updates names and progress in place without touching positions", () => {
+		const node = { id: "n_a", x: 132, y: -54, label: "Old" };
+		const nodes = [node];
+		applyNodePresentation(nodes, new Map([["n_a", { label: "Renamed", progress: "comfortable", ready: true }]]));
+		assert.equal(nodes[0], node);
+		assert.deepEqual({ x: node.x, y: node.y }, { x: 132, y: -54 });
+		assert.equal(node.label, "Renamed");
+	});
+	it("only topology changes rebuild the simulation", () => {
+		const data = { nodes: [{ id: "n_a", x: 0, y: 0, label: "A" }, { id: "n_b", x: 10, y: 10, label: "B" }], edges: [{ from: "n_a", to: "n_b" }], clusters: [{ id: "group", label: "Old", members: ["n_a", "n_b"] }] };
+		const before = canvasTopologyKey(data);
+		data.nodes[0]!.x = 987;
+		data.nodes[0]!.label = "Renamed";
+		data.clusters[0]!.label = "New";
+		assert.equal(canvasTopologyKey(data), before);
+		data.edges = [];
+		assert.notEqual(canvasTopologyKey(data), before);
+	});
 });
 
 describe("zoomRatioOf (the sigma-compatible camera ratio)", () => {

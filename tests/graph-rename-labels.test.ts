@@ -17,7 +17,16 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { renameSessionsPatch, seedMissingNodePositions } from "../components/graph-view.tsx";
+import { isCurrentGraphRevision, renameSessionsPatch, seedMissingNodePositions } from "../components/graph-view.tsx";
+
+describe("graph response ordering", () => {
+	it("does not let a late PATCH or GET replace a newer pushed snapshot", () => {
+		assert.equal(isCurrentGraphRevision(200, 150), false);
+		assert.equal(isCurrentGraphRevision(200, 201), true);
+		assert.equal(isCurrentGraphRevision(200, 200), true);
+		assert.equal(isCurrentGraphRevision(undefined, 200), true);
+	});
+});
 
 const snapshot = (): {
 	sessions: Record<string, string>;

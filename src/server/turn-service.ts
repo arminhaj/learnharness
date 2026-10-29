@@ -117,8 +117,12 @@ export function triggerExtraction(
 		const record = deps.chatStore.getChat(chatId);
 		if (!record) return;
 		const covered = coverageOf(record.messages, deps.graphStore.readCoverage(), chatId);
-		if (covered.uncoveredTokens < chunkTokens) return;
-		void extraction.runExtraction(chatId).catch((err) => {
+		// Learning evidence includes learner answers and practice work, so it
+		// updates even when teacher prose has not filled an extraction chunk.
+		const operation = record.kind === "practice" || covered.uncoveredTokens < chunkTokens
+			? extraction.updateLearning?.(chatId)
+			: extraction.runExtraction(chatId);
+		void operation?.catch((err) => {
 			// BYOK (owner, 2026-09-22) + key presence (provider-key interlude,
 			// 2026-09-25): an unconfigured OR keyless write channel SKIPS (the
 			// coverage ledger keeps the messages uncovered — the next trigger

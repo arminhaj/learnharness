@@ -13,6 +13,7 @@ const { deleteChatSession } = await import("../src/server/chats.ts");
 const { beginTurn, endTurn } = await import("../src/server/turn-liveness.ts");
 const { ensureCompacted } = await import("../src/server/compaction.ts");
 const { newUserMessage } = await import("../src/core/native-messages.ts");
+const { learningGraphView, readLearningGraphState, saveLearningContribution } = await import("../src/server/learning-graph.ts");
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
 function lesson() {
@@ -22,7 +23,7 @@ function lesson() {
 	});
 	for (const chat of [parent, child]) {
 		stores.graphStore.appendNode({
-			id: `node_${chat.id}`, name: chat.title, statement: chat.title, aliases: [], createdAt: chat.createdAt,
+			id: `node_${chat.id}`, name: chat.title, statement: `${chat.title}: ${chat.id}`, aliases: [], createdAt: chat.createdAt,
 			provenance: [{ chatId: chat.id, messageId: "passage", ...(chat.exploration ? { subjectId: parent.id } : {}) }],
 		});
 		stores.graphStore.appendCoverage({ chatId: chat.id, fp: chat.id, tokens: 1, foldedAt: chat.createdAt });
@@ -74,6 +75,46 @@ test("direct exploration deletion leaves its parent record and graph contributio
 	assert.deepEqual(stores.chatStore.getChat(parent.id), before);
 	assert.ok(stores.graphStore.readNodes().some((node) => node.id === `node_${parent.id}`));
 	assert.equal(stores.chatStore.getChat(child.id), null);
+});
+
+test("deleting a lesson family removes each source's learning metadata while retaining unrelated evidence", async () => {
+	const { parent, child } = lesson();
+	const independent = stores.chatStore.createChat("Independent practice");
+	const parentNodeId = `node_${parent.id}`;
+	const childNodeId = `node_${child.id}`;
+	const futureNodeId = `n_future_${child.id}`;
+	const contribution = (sourceId: string) => ({ sourceId, updatedAt: parent.createdAt, nodes: [], prerequisites: [], groups: [] });
+	saveLearningContribution({ ...contribution(parent.id), nodes: [{ nodeId: parentNodeId, subjects: ["Advanced mechanics"] }] });
+	saveLearningContribution({
+		...contribution(child.id),
+		nodes: [parentNodeId, childNodeId].map((nodeId) => ({ nodeId, progressEvidence: [{ state: "comfortable" as const, explanation: "The learner explains the relation independently.", observedAt: child.createdAt, provenance: [{ chatId: child.id, messageId: "answer", subjectId: parent.id }] }] })),
+		futureNodes: [{ id: futureNodeId, name: "Further analysis", statement: "A further method follows from these concepts.", aliases: [], createdAt: child.createdAt, provenance: [] }],
+		prerequisites: [{ from: parentNodeId, to: futureNodeId, explanation: "Uses the foundation", provenance: [{ chatId: child.id, messageId: "teacher", subjectId: parent.id }] }],
+	});
+	saveLearningContribution({ ...contribution(independent.id), nodes: [{ nodeId: childNodeId, progressEvidence: [{ state: "learning", explanation: "A later exercise needed a hint.", observedAt: child.createdAt, provenance: [{ chatId: independent.id, messageId: "practice_answer" }] }] }] });
+	const result = await deleteChatSession(parent.id, "delete-nodes");
+	assert.ok(result.ok);
+	assert.equal(result.stats.nodesRemoved, 1, "the shared concept survives; the parent concept is removed after its child source is removed");
+	const state = readLearningGraphState();
+	assert.equal(state.contributions[parent.id], undefined);
+	assert.equal(state.contributions[child.id], undefined);
+	assert.ok(state.contributions[independent.id]);
+	const graph = learningGraphView();
+	assert.ok(!graph.nodes.some((node) => node.id === parentNodeId || node.id === futureNodeId));
+	const retained = graph.nodes.find((node) => node.id === childNodeId)!;
+	assert.ok(retained);
+	assert.equal(retained.progress, "learning");
+	assert.deepEqual(retained.progressEvidence.flatMap((evidence) => evidence.provenance), [{ chatId: independent.id, messageId: "practice_answer" }]);
+	assert.ok(retained.provenance.every((point) => point.chatId !== parent.id && point.chatId !== child.id));
+});
+
+test("preserving a lesson graph also preserves exploration learning provenance without rewriting it", async () => {
+	const { parent, child } = lesson();
+	saveLearningContribution({ sourceId: child.id, updatedAt: child.createdAt, nodes: [{ nodeId: `node_${child.id}`, progressEvidence: [{ state: "comfortable", explanation: "Independent answer", observedAt: child.createdAt, provenance: [{ chatId: child.id, messageId: "answer", subjectId: parent.id }] }] }], prerequisites: [], groups: [] });
+	const before = readLearningGraphState();
+	const result = await deleteChatSession(parent.id, "preserve-graph");
+	assert.ok(result.ok);
+	assert.deepEqual(readLearningGraphState(), before);
 });
 
 test("a pending exploration summary blocks deletion of its parent lesson", async () => {

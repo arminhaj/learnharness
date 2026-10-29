@@ -4,6 +4,8 @@ import { coverageOf } from "../core/coverage.ts";
 import { deleteChatTraces, type ChatDeleteMode, type ChatDeletionStats } from "../core/graph-deletion.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { graphRevision } from "./graph.ts";
+import { deleteLearningSessionMetadata, learningGraphView, readLearningGraphState } from "./learning-graph.ts";
+import { getGraph } from "../core/graph.ts";
 import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
@@ -145,14 +147,27 @@ export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): P
 	// No await between the final group/gate scan and this synchronous purge.
 	// Keep all records until all graph and job cleanup has succeeded.
 	const stats: ChatDeletionStats = { nodesRemoved: 0, chainsRemoved: 0, coverageRemoved: 0, checkpointsRemoved: 0 };
+	const originalNodeIds = mode === "delete-nodes" ? getGraph(stores.graphStore).nodes.map((node) => node.id) : [];
 	let jobsRemoved = 0;
 	for (const id of targets) {
+		const beforeNodes = mode === "delete-nodes" ? getGraph(stores.graphStore).nodes : null;
+		const learningState = beforeNodes ? readLearningGraphState() : null;
 		const removed = deleteChatTraces(stores.graphStore, id, mode);
-		stats.nodesRemoved += removed.nodesRemoved;
+		if (beforeNodes && learningState) {
+			const surviving = new Set(stores.graphStore.readNodes().map((node) => node.id));
+			deleteLearningSessionMetadata(id, beforeNodes.map((node) => node.id).filter((nodeId) => !surviving.has(nodeId)), beforeNodes, learningState);
+		}
 		stats.chainsRemoved += removed.chainsRemoved;
 		stats.coverageRemoved += removed.coverageRemoved;
 		stats.checkpointsRemoved += removed.checkpointsRemoved;
 		jobsRemoved += stores.jobStore.deleteJobsForChat(id);
+	}
+	if (mode === "delete-nodes") {
+		// A parent concept may be retained by a child's evidence until that
+		// child is purged later in this same operation. Count the final state.
+		const learning = learningGraphView();
+		const surviving = new Set(learning.nodes.map((node) => node.id));
+		stats.nodesRemoved = originalNodeIds.filter((id) => !surviving.has(learning.idAliases?.[id] ?? id)).length;
 	}
 	// Children first: an interrupted deletion leaves the lesson available
 	// for a repeat rather than an unreachable embedded exploration.

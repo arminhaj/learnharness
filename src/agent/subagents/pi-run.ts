@@ -5,6 +5,7 @@ import { APP_IDENTITY, piEngineFor, type PiEngine } from "../models.ts";
 import { usageWasAdmitted } from "../subscription-request-cycle.ts";
 import { providerEventObserver } from "../provider-events.ts";
 import type { ModelRole } from "../../../config.ts";
+import { advanceModelProgress, initialModelProgress, safeProgressToolName, type ModelProgressEvent, type ModelStreamProgress } from "../../core/extraction-progress.ts";
 
 /**
  * The shared sub-agent runner (docs/pi-engine-swap.md §6): one helper every
@@ -38,6 +39,8 @@ export interface SubagentRunOptions {
 	onToolStart?: (toolName: string, args: unknown) => void;
 	/** Per completed assistant message (extraction's step log). */
 	onAssistantMessage?: (message: AssistantMessage, step: number) => void;
+	/** Redacted live activity. No generated text, reasoning or tool inputs. */
+	onProgress?: (progress: ModelStreamProgress) => void;
 	/** Extra stop rule (extractor: stop after a clean submit). */
 	shouldStop?: (message: AssistantMessage, toolResults: ToolResultMessage[]) => boolean;
 	/** Debug: when set AND LH_PROVIDER_EVENTS=1, raw provider stream
@@ -58,6 +61,26 @@ export function subagentEngine(role: ModelRole, override?: PiEngine): PiEngine {
 	// real path (the runner injects settings-resolved engines); a missed
 	// injection hits the honest thrower in models.ts instead of a guess.
 	return override ?? piEngineFor(role);
+}
+
+/** Only normalized event kinds, lengths and allowlisted tool ids cross the
+ * public progress seam. Never spread an SDK event or its partial message. */
+export function modelProgressEvent(event: AgentEvent): ModelProgressEvent | null {
+	if (event.type === "turn_start") return { kind: "turn-start" };
+	if (event.type === "message_start" && event.message.role === "assistant") return { kind: "stream-start" };
+	if (event.type === "message_end" && event.message.role === "assistant") return { kind: "stream-end" };
+	if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+		return { kind: "tool", toolName: safeProgressToolName(event.toolName) };
+	}
+	if (event.type !== "message_update") return null;
+	const update = event.assistantMessageEvent;
+	if (update.type.startsWith("thinking_")) return { kind: "thinking", characters: update.type === "thinking_delta" ? update.delta.length : 0 };
+	if (update.type.startsWith("text_")) return { kind: "responding", characters: update.type === "text_delta" ? update.delta.length : 0 };
+	if (update.type.startsWith("toolcall_")) {
+		const tool = "contentIndex" in update ? update.partial.content[update.contentIndex] : undefined;
+		return { kind: "responding", characters: update.type === "toolcall_delta" ? update.delta.length : 0, toolName: safeProgressToolName(tool?.type === "toolCall" ? tool.name : undefined) };
+	}
+	return null;
 }
 
 export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRunOptions): Promise<SubagentRunResult> {
@@ -95,9 +118,17 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 	let step = 0;
 	let errorMessage: string | undefined;
 	let aborted = false;
+	let progress = initialModelProgress(opts.maxTurns);
 
 	try {
 		agent.subscribe((event: AgentEvent) => {
+			if (opts.onProgress) {
+				const metadata = modelProgressEvent(event);
+				if (metadata) {
+					progress = advanceModelProgress(progress, metadata, Date.now());
+					opts.onProgress({ ...progress });
+				}
+			}
 			switch (event.type) {
 				case "message_end":
 					if ((event.message as { role?: string }).role === "assistant") {

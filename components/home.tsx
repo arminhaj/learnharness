@@ -14,7 +14,8 @@ import { SidebarToggle } from "@/components/sidebar";
 import { StatsBar } from "@/components/stats-bar";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { SessionStarter } from "@/components/start-session";
-import type { TurnUsage } from "@/src/core";
+import { takeHomeDraft, withHomeDraftHandoff } from "@/components/home-draft";
+import { createConceptSessionRequest, type LearningConcept, type TurnUsage } from "@/src/core";
 
 /**
  * Home — the knowledge graph is the main view, full-bleed edge to edge
@@ -57,9 +58,13 @@ export function Home({
 			setTopic(v);
 		},
 	});
+	const dictationRef = useRef(dictation);
+	dictationRef.current = dictation;
 	const [busy, setBusy] = useState(false);
 	const startingRef = useRef(false);
 	const starterRef = useRef(new SessionStarter());
+	const conceptStarterRef = useRef(new SessionStarter());
+	const [conceptStarting, setConceptStarting] = useState<"teach" | "practice" | null>(null);
 	const [startError, setStartError] = useState(false);
 	/* Run end focuses the topic input (owner, 2026-10-01): the hands are on
 	 * the keyboard from the stop. Falling edge only; this surface's only
@@ -93,8 +98,55 @@ export function Home({
 	const [mode, setMode] = useState<"teach" | "practice">("teach");
 	const [practiceProps, setPracticeProps] = useState<{ id: string; name: string; statement: string }[]>([]);
 	const [chainSelectOpen, setChainSelectOpen] = useState(false);
+	const homeDraftRef = useRef({ mode, picks: practiceProps });
+	homeDraftRef.current = { mode, picks: practiceProps };
+	useEffect(() => {
+		const saved = takeHomeDraft();
+		if (!saved || topicRef.current) return;
+		topicRef.current = saved.topic;
+		setTopic(saved.topic);
+		setMode(saved.mode);
+		setPracticeProps([...saved.picks]);
+	}, []);
 	// The chain table is CONTROLLED off this id set (the lifted pick).
 	const pickedIds = useMemo(() => new Set(practiceProps.map((p) => p.id)), [practiceProps]);
+
+	const startConceptSession = async (node: LearningConcept, sessionMode: "teach" | "practice") => {
+		if (startingRef.current) throw new Error("A session is already starting. Please wait.");
+		// Share the synchronous lock with the composer, but keep its draft
+		// and opening-message retry separate from this concept launch.
+		startingRef.current = true;
+		setBusy(true);
+		setConceptStarting(sessionMode);
+		try {
+			if (dictation.active) await dictation.finish();
+			if (!configured || zeroKeys) {
+				setSetupOpen(true);
+				throw new Error("Set up your models and connection, then choose this action again.");
+			}
+			const strong = catalog?.slots.strong?.model;
+			if (selectedModelUnavailable(catalog, strong ? `${strong.provider}:${strong.id}` : undefined)) {
+				openModelPicker();
+				throw new Error("Choose an available session model, then try again.");
+			}
+			const target = await withHomeDraftHandoff(
+				() => ({ topic: topicRef.current, ...homeDraftRef.current }),
+				async () => {
+					const destination = await conceptStarterRef.current.start(createConceptSessionRequest(node, sessionMode), fetch, JSON.stringify(catalog?.slots.strong));
+					// The learner may have restarted dictation while creation waited.
+					if (dictationRef.current.active) await dictationRef.current.finish();
+					return destination;
+				},
+			);
+			router.push(target);
+		} catch (error) {
+			startingRef.current = false;
+			setBusy(false);
+			setConceptStarting(null);
+			throw error instanceof Error && error.message !== OPENING_PROMPT_FAILURE
+				? error : new Error("Couldn’t start this concept session. Your draft is safe; try the action again.");
+		}
+	};
 
 	/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while a
 	 * run is live with the topic still deferred in the run's buffer — stop
@@ -182,6 +234,8 @@ export function Home({
 						practiceSelection={pickedIds}
 						onPracticeSelectionChange={setPracticeProps}
 						onChainSelectClose={() => setChainSelectOpen(false)}
+						onStartConcept={startConceptSession}
+						conceptStarting={conceptStarting}
 					/>
 				) : (
 					<MinimalHome
