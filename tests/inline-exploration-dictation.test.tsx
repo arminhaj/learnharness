@@ -8,6 +8,7 @@ import { DictationBar, finishDictation, METER_TICK_MS, useDictation, type Dictat
 import { notifySettingsSaved } from "../components/settings-signal.ts";
 import { InlineExploration, type ExplorationRecord } from "../components/inline-exploration.tsx";
 import { QuestionDock } from "../components/question-dock.tsx";
+import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 
 class Socket extends EventTarget {
@@ -124,8 +125,8 @@ async function fixture(tool: "explain" | "quiz" = "explain") {
 	await act(async () => { root.render(<Harness />); });
 	await act(async () => { notifySettingsSaved("dictation"); });
 	const branch = () => host.querySelector<HTMLElement>(`[data-exploration-id="${child.id}"]`)!;
-	const answer = () => branch().querySelector<HTMLTextAreaElement>('[data-testid="answer-field"] textarea')!;
-	const parent = () => host.querySelector<HTMLTextAreaElement>('[data-parent-dock] textarea')!;
+	const answer = () => branch().querySelector<HTMLElement>('[data-testid="answer-field"] [data-file-path-input]')!;
+	const parent = () => host.querySelector<HTMLElement>('[data-parent-dock] [data-file-path-input]')!;
 	return {
 		host, branch, answer, parent, requests, parentAnswers, fallback,
 		get dictation() { return dictation; },
@@ -184,13 +185,13 @@ test("the exploration's Dictate button drives capture, a responsive meter, and t
 		worklet.emit({ type: "audio", buffer: pcm });
 		assert.equal(socket.sent.at(-1), pcm, "captured PCM reaches the transcription socket unchanged");
 		await act(async () => { socket.final("The coordinate and velocity are held fixed."); });
-		assert.equal(f.answer().value, "", "the transcript remains deferred until Stop");
+		assert.equal(readPathInput(f.answer()), "", "the transcript remains deferred until Stop");
 		await act(async () => { f.branch().querySelector<HTMLButtonElement>('[aria-label="Stop dictation"]')!.click(); });
 		assert.equal(f.dictation.phase, "stopping");
 		assert.equal(socket.sent.at(-1), JSON.stringify({ type: "CloseStream" }));
 		await act(async () => { socket.end(); });
-		assert.equal(f.answer().value, "The coordinate and velocity are held fixed.");
-		assert.equal(f.parent().value, "Lesson draft");
+		assert.equal(readPathInput(f.answer()), "The coordinate and velocity are held fixed.");
+		assert.equal(readPathInput(f.parent()), "Lesson draft");
 		assert.ok(f.branch().querySelector('[aria-label="Start dictation"]'));
 		assert.deepEqual(f.fallback, []);
 	} finally { await f.dispose(); }
@@ -199,39 +200,39 @@ test("the exploration's Dictate button drives capture, a responsive meter, and t
 test("dictation follows reading, child answer, returned lesson, and reopened child without crossing drafts", async () => {
 	const f = await fixture();
 	try {
-		const reading = f.branch().querySelector<HTMLTextAreaElement>('[data-testid="reading-thinking-field"] textarea')!;
+		const reading = f.branch().querySelector<HTMLElement>('[data-testid="reading-thinking-field"] [data-file-path-input]')!;
 		const first = await f.start("Reading thought.");
-		assert.equal(reading.value, "", "dictation intentionally stays deferred during recording");
+		assert.equal(readPathInput(reading), "", "dictation intentionally stays deferred during recording");
 		await f.stop(first);
-		assert.equal(reading.value, "Reading thought.");
-		assert.equal(f.answer().value, "");
-		assert.equal(f.parent().value, "Lesson draft");
+		assert.equal(readPathInput(reading), "Reading thought.");
+		assert.equal(readPathInput(f.answer()), "");
+		assert.equal(readPathInput(f.parent()), "Lesson draft");
 		const duringReveal = await f.start("Another reading thought.");
 		await f.reveal();
 		assert.equal(f.dictation.phase, "stopping", "opening the check finishes reading dictation first");
 		assert.ok(f.branch().querySelector('[data-testid="teach-check-reveal"]'));
 		await act(async () => { duringReveal.end(); });
-		assert.equal(reading.value, "Reading thought. Another reading thought.");
+		assert.equal(readPathInput(reading), "Reading thought. Another reading thought.");
 		const answer = f.answer();
 		await f.stop(await f.start("Child answer."));
-		assert.equal(answer.value, "Child answer.");
-		assert.equal(reading.value, "Reading thought. Another reading thought.");
-		assert.equal(f.parent().value, "Lesson draft");
+		assert.equal(readPathInput(answer), "Child answer.");
+		assert.equal(readPathInput(reading), "Reading thought. Another reading thought.");
+		assert.equal(readPathInput(f.parent()), "Lesson draft");
 		const duringReturn = await f.start("Return tail.");
 		await act(async () => {
 			[...f.branch().querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Return to lesson"))!.click();
 		});
 		assert.equal(f.dictation.phase, "stopping", "Return finishes the child's recording before releasing its target");
 		await act(async () => { duringReturn.end(); });
-		assert.equal(answer.value, "Child answer. Return tail.");
+		assert.equal(readPathInput(answer), "Child answer. Return tail.");
 		await f.stop(await f.start("Parent answer."));
-		assert.equal(f.parent().value, "Lesson draft Parent answer.");
-		assert.equal(answer.value, "Child answer. Return tail.");
+		assert.equal(readPathInput(f.parent()), "Lesson draft Parent answer.");
+		assert.equal(readPathInput(answer), "Child answer. Return tail.");
 		await f.setActive(true);
 		assert.equal(f.answer(), answer, "return/reopen preserves the existing answer field");
 		await f.stop(await f.start("More child reasoning."));
-		assert.equal(answer.value, "Child answer. Return tail. More child reasoning.");
-		assert.equal(f.parent().value, "Lesson draft Parent answer.");
+		assert.equal(readPathInput(answer), "Child answer. Return tail. More child reasoning.");
+		assert.equal(readPathInput(f.parent()), "Lesson draft Parent answer.");
 		assert.deepEqual(f.fallback, []);
 		assert.deepEqual(f.parentAnswers, []);
 		assert.deepEqual(f.requests, []);
@@ -244,7 +245,7 @@ for (const trigger of ["Enter", "button"] as const) {
 		try {
 			await f.reveal();
 			const socket = await f.start("The coordinate and velocity are held fixed.");
-			assert.equal(f.answer().value, "");
+			assert.equal(readPathInput(f.answer()), "");
 			if (trigger === "Enter") await f.enter();
 			else {
 				assert.equal(f.submitButton.disabled, false, "recording speech makes a blank free-response answer submittable");
@@ -261,7 +262,7 @@ for (const trigger of ["Enter", "button"] as const) {
 			assert.equal(f.requests[0]?.input.type, "answer");
 			assert.equal(f.requests[0]?.input.toolCallId, "child_check");
 			assert.match(JSON.stringify(f.requests[0]?.input), /The coordinate and velocity are held fixed\. Time is the explicit argument\./);
-			assert.equal(f.parent().value, "Lesson draft");
+			assert.equal(readPathInput(f.parent()), "Lesson draft");
 			assert.deepEqual(f.parentAnswers, []);
 			assert.deepEqual(f.fallback, []);
 		} finally { await f.dispose(); }
@@ -276,7 +277,7 @@ test("finishing a silent exploration recording never submits an empty answer", a
 		await f.enter();
 		assert.equal(f.dictation.phase, "stopping");
 		await act(async () => { socket.end(); });
-		assert.equal(f.answer().value, "");
+		assert.equal(readPathInput(f.answer()), "");
 		assert.equal(f.requests.length, 0);
 		assert.equal(f.parentAnswers.length, 0);
 		assert.equal(f.submitButton.disabled, true);
@@ -293,8 +294,8 @@ test("dictating exploration quiz reasoning still requires an answer selection", 
 		assert.equal(f.dictation.phase, "recording", "reasoning alone is not a quiz choice");
 		assert.equal(f.requests.length, 0);
 		await f.stop(socket);
-		const thinking = f.branch().querySelector<HTMLTextAreaElement>('[data-testid="thinking-field"] textarea')!;
-		assert.equal(thinking.value, "Time is the explicit argument.");
+		const thinking = f.branch().querySelector<HTMLElement>('[data-testid="thinking-field"] [data-file-path-input]')!;
+		assert.equal(readPathInput(thinking), "Time is the explicit argument.");
 		await act(async () => {
 			[...f.branch().querySelectorAll<HTMLElement>('[role="radio"]')].find(option => option.textContent?.includes("Coordinate and velocity"))!.click();
 		});

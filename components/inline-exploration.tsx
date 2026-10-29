@@ -20,7 +20,7 @@ import { useChatSession } from "@/components/session";
 import { SourcePassage } from "@/components/source-passage";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
-import { endsInFailedTurn, firstSourceTextParts, messageAnchorId, textPartMessageId, findPendingToolCall, phaseAt3, questionNeedsReveal, dismissedAnswer, toolQuestionKind, type ArtifactPartProps, type ChatRecord, type JobRecord, type LhViewMessage, type PlanBlockData, type QuestionAnswerData } from "@/src/core";
+import { endsInFailedTurn, firstSourceTextParts, messageAnchorId, textPartMessageId, findPendingToolCall, pendingQuestionOf, phaseAt3, questionNeedsReveal, dismissedAnswer, toolQuestionKind, type ArtifactPartProps, type ChatRecord, type JobRecord, type LhViewMessage, type PlanBlockData, type QuestionAnswerData } from "@/src/core";
 
 export type ExplorationRecord = ChatRecord & {
 	exploration: {
@@ -234,8 +234,8 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 }) {
 	const { messages, nativeMessages, send, status, error, setMessages, resumeStream, setReattachSettled, submitAnswer, dismissQuestion, questionDraft, saveQuestionDraft } = useChatSession({ chatId: chat.id, initialMessages: chat.messages });
 	const parentActions = useContext(ChatActionsContext);
-	const pending = findPendingToolCall(messages);
-	const pendingId = pending?.toolCallId ?? null;
+	const pending = findPendingToolCall(messages, pendingQuestionOf(nativeMessages));
+	const pendingId = pending?.key ?? null;
 	const phase = phaseAt3(messages, undefined, "plan");
 	const requiresReveal = !!pending && questionNeedsReveal(pending.tool, pending.input, phase);
 	const [revealedId, setRevealedId] = useState<string | null>(null);
@@ -264,7 +264,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 	const initialRef = useRef(false);
 	const deliveredRef = useRef(onInitialDelivered);
 	deliveredRef.current = onInitialDelivered;
-	const inputRef = useRef<HTMLTextAreaElement>(null);
+	const inputRef = useRef<HTMLDivElement>(null);
 	const syncGeneration = useRef(0);
 	const sync = useCallback(async () => {
 		const generation = ++syncGeneration.current;
@@ -355,7 +355,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 	const reveal = () => { void finishDictation().then(() => setRevealedId(pendingId)); };
 	const answer = (output: QuestionAnswerData) => {
 		if (!pending || inputPaused) return;
-		saveQuestionDraft(pending.toolCallId, { readingThinking: readingRef.current });
+		saveQuestionDraft(pending.key, { readingThinking: readingRef.current });
 		const reading = readingRef.current.trim();
 		submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output);
 	};
@@ -421,10 +421,10 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 			<div hidden={!active} inert={!active}>
 				{pending ? <>
 					{requiresReveal && <ReadingThinkingField value={readingThinking} onChange={applyReading} onEscape={() => { void finishDictation(); }} onOpen={revealPending ? reveal : undefined} claim={active && revealPending} />}
-					<div className="rounded-xl border bg-background"><QuestionDock key={pending.toolCallId}
+					<div className="rounded-xl border bg-background"><QuestionDock key={pending.key}
 						toolName={pending.tool as "quiz" | "explain" | "ask_user_question" | "probe" | "recall"} toolCallId={pending.toolCallId} input={pending.input as never}
 						expanded={!revealPending} reveal={revealPending} phase={phase} onExpand={reveal} onSubmit={answer}
-						initialDraft={questionDraft(pending.toolCallId)?.form} onSaveDraft={form => saveQuestionDraft(pending.toolCallId, { form })}
+						initialDraft={questionDraft(pending.key)?.form} onSaveDraft={form => saveQuestionDraft(pending.key, { form })}
 						paused={inputPaused || revealPending} compactionRunning={compacting} dictationClaim={active && !revealPending} onEscape={() => { void finishDictation(); }} /></div>
 					{busy && <button type="button" onClick={() => setAbortAsk("turn")} className="mr-3 mt-2 text-xs text-muted-foreground underline">Stop response</button>}
 					<button type="button" disabled={inputPaused} onClick={() => setAbortAsk("question")} className="mt-2 text-xs text-muted-foreground underline disabled:opacity-40">Dismiss question</button>

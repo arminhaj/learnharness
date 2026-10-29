@@ -1,10 +1,11 @@
 # All-features preview
 
-`codex/all-features-preview` starts from main with Light/Dark/System appearance modes and inline explorations, and merges the subject-aware learning-map work.
+`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, and the subject-aware learning-map work.
 
 ## What to try
 
 - Open **Settings → Appearance** and switch among Light, Dark, and System. The graph and lesson diagrams follow the selected mode without losing their layout or your draft.
+- Open **Settings → Providers → External CLI** to configure the optional Claude Code integration. Upstream custom endpoints and file-path attachments are included too.
 - On Home, open a concept from the prerequisite dots or the iceberg. Try its metadata, subject correction, **Learn this concept**, and **Test my understanding** actions.
 - In Iceberg, change **Subject**. Concepts, study groups, progress counts, unlocks, and search results stay within that subject.
 - In a **teaching session**, choose **Explore this** beneath a completed tutor explanation. Follow the tangent, then choose **Return to lesson** to resume the original question and draft. Inline explorations are not available in practice sessions.

@@ -11,6 +11,7 @@ import { planBlocksFor } from "../src/core/plan-blocks.ts";
 import { latestTree } from "../components/plan-block.tsx";
 import type { LhViewMessage } from "../src/core/view.ts";
 import { QuestionDock } from "../components/question-dock.tsx";
+import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
 
@@ -103,15 +104,15 @@ describe("lesson question stays paused in place", () => {
 		};
 		try {
 			await render(false);
-			const field = host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]')!;
-			assert.equal(field.defaultValue, "My unfinished explanation");
+			const field = host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]')!;
+			assert.equal(readPathInput(field), "My unfinished explanation");
 			await render(true);
-			assert.equal(host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]'), field, "pausing did not remount the learner's field");
+			assert.equal(host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]'), field, "pausing did not remount the learner's field");
 			await act(async () => enter());
 			assert.equal(submitted.length, 0, "exploration keys cannot answer the lesson question");
-			assert.equal(field.defaultValue, "My unfinished explanation");
+			assert.equal(readPathInput(field), "My unfinished explanation");
 			await render(false);
-			assert.equal(host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]'), field, "returning preserved the exact field");
+			assert.equal(host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]'), field, "returning preserved the exact field");
 			await act(async () => enter());
 			assert.equal(submitted.length, 1, "the original question is answerable again after returning");
 		} finally {
@@ -247,14 +248,15 @@ describe("exploration teaching controls", () => {
 			assert.ok(choice);
 			await act(async () => choice.click());
 			assert.equal(choice.getAttribute("aria-checked"), "true");
-			const field = host.querySelector('[data-testid="thinking-field"] textarea');
+			const field = host.querySelector('[data-testid="thinking-field"] [data-file-path-input]');
+			assert.ok(field);
 			await renderBranch(root, { ...record, exploration: { ...record.exploration, status: "closed" } }, false);
 			const enter = new window.Event("keydown", { bubbles: true, cancelable: true });
 			Object.defineProperty(enter, "key", { value: "Enter" });
 			await act(async () => window.dispatchEvent(enter));
 			assert.equal(inputs.length, 0, "a returned child cannot consume the main lesson's keyboard input");
 			await renderBranch(root, record);
-			assert.equal(host.querySelector('[data-testid="thinking-field"] textarea'), field, "return did not remount the child answer field");
+			assert.equal(host.querySelector('[data-testid="thinking-field"] [data-file-path-input]'), field, "return did not remount the child answer field");
 			assert.equal(choice.getAttribute("aria-checked"), "true");
 			assert.equal(host.querySelector('[data-testid="teach-check-reveal"]'), null, "the opened check stays open");
 			await act(async () => host.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
