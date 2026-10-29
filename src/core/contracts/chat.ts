@@ -27,6 +27,22 @@ import type { EmissionStats } from "./graph.ts";
  *  practice agent, its two tools, no extraction, no graph writes. */
 export type ChatKind = "teach" | "practice";
 
+/** An inline conversation belongs to its lesson without sharing its mutable
+ * transcript, plan, or pending question. */
+export interface ExplorationContext {
+	parentChatId: string;
+	sourceMessageId: string;
+	parentTitle: string;
+	topic: string;
+	status: "active" | "closed";
+}
+
+export interface ChatCreateInit {
+	exploration?: ExplorationContext;
+	messages?: LhMessage[];
+	settings?: ChatSettings;
+}
+
 export interface ChatRecord {
 	id: string;
 	title: string;
@@ -35,6 +51,7 @@ export interface ChatRecord {
 	messages: LhMessage[];
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
+	exploration?: ExplorationContext;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
 	tree?: PlanTree;
 	/** Append-only usage log (observability, 2026-09): one entry per model
@@ -263,6 +280,7 @@ export interface ChatSummary {
 	updatedAt: string;
 	/** Normalized kind (absent record field reads as teach). */
 	kind: ChatKind;
+	exploration?: ExplorationContext;
 	messageCount: number;
 	/** The session's current phase, derived from the stored plan tree. */
 	phase: Phase3;

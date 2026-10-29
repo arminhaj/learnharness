@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
+	createExplorationAgent,
 	createPracticeAgent,
 	createProberAgent,
 	createTeacherAgent,
@@ -13,7 +14,7 @@ import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import { reconstructRequestCause } from "../core/native-messages.ts";
 import { createJobRunner } from "../agent/subagents/runner.ts";
-import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
+import { afterExtractionIdle, createExtractionPipeline } from "../agent/subagents/extraction.ts";
 import type { ModelRole } from "../../config.ts";
 import {
 	deliverJobResult,
@@ -60,6 +61,8 @@ import {
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
+import { explorationPauseReason } from "./explorations.ts";
+import { EXPLORATION_INSTRUCTIONS } from "../agent/exploration-instructions.ts";
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -124,6 +127,17 @@ export const extraction = createExtractionPipeline({
 		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
 });
 
+/** Closing a short exploration is a natural extraction boundary. Honor the
+ * existing graph settings and background-provider gates; failed extraction
+ * leaves coverage untouched and can be retried through the normal pipeline. */
+export function requestExplorationExtraction(chatId: string): void {
+	void afterExtractionIdle(chatId, () => {
+		const record = stores.chatStore.getChat(chatId);
+		if (!record?.exploration || record.exploration.status !== "closed") return;
+		if (extractionEnabled(effectiveSettings().graph)) triggerExtraction(stores, extraction, chatId, 1);
+	}).catch((error) => console.error(`[exploration ${chatId}] extraction follow-up failed:`, error));
+}
+
 
 // Wake-pipeline wiring (contracts.ts "THE ASYNC PROTOCOL" §4): the pipeline
 // delivers its steers through THIS composition root (one event: the steer
@@ -186,6 +200,8 @@ export async function handleChatInput(
 	if (!record) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
+	const paused = explorationPauseReason(chatId);
+	if (paused) return Response.json({ error: paused }, { status: 409 });
 
 	// Refuse an ineligible Retry before catalog refresh, compaction, or any
 	// turn/write effects. Revalidate after the awaited gates below too.
@@ -259,20 +275,24 @@ export async function handleChatInput(
 		{
 			chatStore: stores.chatStore,
 			engine: piEngineForSpec(conversation, true),
-			canStart: () => connectionBackgroundAllowed(conversation.provider),
+			canStart: () => connectionBackgroundAllowed(conversation.provider) && !explorationPauseReason(chatId),
 			modelId: modelIdForCompaction,
-			kind: record.kind === "practice" ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
+			kind: record.kind === "practice" ? "practice" : record.exploration || hasProbeDone(record.messages) ? "teach" : "probe",
 			thresholdTokens: effectiveThresholdTokens(
 				effective.compaction?.thresholdTokens,
 				catalogContextLimits().get(modelIdForCompaction),
 			),
-			systemPromptTokens: Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : "teacher").length / 4),
+			systemPromptTokens: Math.ceil((record.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(record.kind === "practice" ? "practice" : "teacher")).length / 4),
 		},
 		chatId,
 	);
 	const compactedRecord = stores.chatStore.getChat(chatId);
 	if (!compactedRecord) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	record = compactedRecord;
+	// Catalog refresh and compaction can yield while another tab opens/closes
+	// an exploration. Recheck before any input is appended.
+	const nowPaused = explorationPauseReason(chatId);
+	if (nowPaused) return Response.json({ error: nowPaused }, { status: 409 });
 	// Recompute Retry eligibility on current truth, still before beginTurn.
 	// A compaction marker or another writer may have landed during awaits.
 	// These omissions affect ONLY the agent context, never the saved record.
@@ -440,6 +460,8 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
+		: record.exploration
+			? createExplorationAgent(agentOpts)
 		: record.kind === "practice"
 			? createPracticeAgent(
 					{
@@ -630,18 +652,18 @@ export async function handleChatInput(
 						try { kickEngine = piEngineForSpec(spec, true); } catch { return null; }
 						const kickModelId = `${kickEngine.model.provider}:${kickEngine.model.id}`;
 						const freshRecord = stores.chatStore.getChat(chatId);
-						if (!freshRecord) return null;
+						if (!freshRecord || explorationPauseReason(chatId)) return null;
 						return {
 							chatStore: stores.chatStore,
 							engine: kickEngine,
-							canStart: () => connectionBackgroundAllowed(spec.provider),
+							canStart: () => connectionBackgroundAllowed(spec.provider) && !explorationPauseReason(chatId),
 							modelId: kickModelId,
-							kind: freshRecord.kind === "practice" ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
+							kind: freshRecord.kind === "practice" ? "practice" : freshRecord.exploration || hasProbeDone(freshRecord.messages) ? "teach" : "probe",
 							thresholdTokens: effectiveThresholdTokens(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
+							systemPromptTokens: Math.ceil((freshRecord.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher")).length / 4),
 						};
 					}, chatId);
 			},

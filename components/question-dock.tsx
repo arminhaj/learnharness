@@ -95,6 +95,8 @@ export interface QuestionDockProps {
 	 *  and say so in the hint row. The server registry is the real gate;
 	 *  this is the affordance. */
 	compactionRunning?: boolean;
+	/** An inline exploration temporarily owns input; keep every draft mounted. */
+	paused?: boolean;
 }
 
 export function QuestionDock({
@@ -111,6 +113,7 @@ export function QuestionDock({
 	phase = "probe",
 	dictationClaim = true,
 	compactionRunning = false,
+	paused = false,
 }: QuestionDockProps) {
 	// The probe-phase names (owner, 2026-10-09) canonicalize onto their
 	// teach twins for every dock concern — parse dispatch, labels, kinds:
@@ -160,13 +163,14 @@ export function QuestionDock({
 					toolCallId={toolCallId}
 					input={parsed}
 					phase={phase}
-					active={expanded}
+					active={expanded && !paused}
 					onSubmit={onSubmit}
 					initialDraft={initialDraft}
 					onSaveDraft={onSaveDraft}
 					onEscape={onEscape}
 					dictationClaim={dictationClaim}
 					compactionRunning={compactionRunning}
+					paused={paused}
 				/>
 			</div>
 		</>
@@ -264,6 +268,7 @@ function QuestionDockForm({
 	onEscape,
 	dictationClaim = true,
 	compactionRunning = false,
+	paused = false,
 }: Omit<QuestionDockProps, "expanded" | "onExpand" | "reveal">) {
 	const kind = toolQuestionKind(toolName);
 
@@ -376,7 +381,7 @@ function QuestionDockForm({
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 
 	const submit = () => {
-		if (!canSubmit || compactionRunning) return;
+		if (!canSubmit || compactionRunning || paused) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
@@ -390,7 +395,7 @@ function QuestionDockForm({
 		void finishDictation().then(doSubmit);
 	};
 	const doSubmit = () => {
-		if (!canSubmit) return;
+		if (!canSubmit || paused) return;
 		const req: AnswerRequest = {
 			dontKnow: sel.dontKnow,
 			values: [...sel.selected].map((i) => qd.options[i]!.value),
@@ -416,7 +421,7 @@ function QuestionDockForm({
 	/* ENTER SUBMITS FROM ANYWHERE (owner round 6, 2026-10-05): the same
 	 * law as the practice dock — dictated answers rarely focus the field.
 	 * Rides submit() so the dictation-flush law is shared, not forked. */
-	useEnterSubmits(submit);
+	useEnterSubmits(submit, !paused);
 
 	// Selecting Other never clears the thinking field — two channels, the
 	// answer and the reasoning behind it, side by side.

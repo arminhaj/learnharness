@@ -20,7 +20,7 @@
  * fires both).
  */
 import { ChatInputError, dismissAppends, emit, parseDismissInput } from "@/src/core";
-import { getChat, isTurnRunning, parkDismissal, stores } from "@/src/server";
+import { explorationPauseReason, getChat, isTurnRunning, parkDismissal, stores } from "@/src/server";
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
@@ -44,6 +44,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 	// record if the dismissed question/problem really is pending there.
 	// The dismissing client has also aborted the turn — this 202 is the
 	// "noted, will land" contract.
+	const paused = explorationPauseReason(id);
+	if (paused) return Response.json({ error: paused }, { status: 409 });
 	if (isTurnRunning(id)) {
 		parkDismissal(id, input);
 		return Response.json({ ok: true, parked: true }, { status: 202 });

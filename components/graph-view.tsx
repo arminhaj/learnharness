@@ -146,8 +146,9 @@ export function isNodeVisible(node: Pick<GraphNode, "name" | "statement">, query
  *  label itself goes through the renderer's label-only channel
  *  (setClusterLabels). Exported for tests; pure display state only —
  *  the server derives the same join on its next read. */
-export function renameSessionsPatch(snapshot: Pick<GraphSnapshot, "sessions">, id: string, title: string): void {
+export function renameSessionsPatch(snapshot: Pick<GraphSnapshot, "sessions" | "subjectLabels">, id: string, title: string): void {
 	snapshot.sessions[id] = title;
+	if (snapshot.subjectLabels?.[id] !== undefined) snapshot.subjectLabels[id] = title;
 }
 
 /** Seed positions for nodes the ledger doesn't know yet (hygiene,
@@ -1703,6 +1704,7 @@ export function GraphView({
 				nodes={snapshot?.propositions ?? []}
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
+				subjectLabels={snapshot?.subjectLabels}
 				fileSources={snapshot?.fileSources ?? {}}
 				onClose={() => {
 					setChainsOpen(false);

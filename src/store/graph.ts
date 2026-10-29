@@ -91,7 +91,8 @@ function readValid<T>(file: string, isValid: (v: unknown) => v is T): T[] {
 
 /** Provenance points are (chatId, messageId) pairs — message-granular. */
 const isProvenancePoint = (v: unknown): v is ProvenancePoint =>
-	isRecord(v) && isString(v.chatId) && isString(v.messageId);
+	isRecord(v) && isString(v.chatId) && isString(v.messageId) &&
+	(v.subjectId === undefined || (isString(v.subjectId) && v.subjectId.length > 0));
 
 
 const isGraphNode = (v: unknown): v is GraphNode =>

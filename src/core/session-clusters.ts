@@ -27,10 +27,13 @@
  * ledger itself died with per-job in-memory resolution — provenance is
  * the one birth record.
  *
- * Browser-safe pure logic (no node builtins, no fs): same contract style
- * as the rest of the core graph derivation. Not re-exported through the
- * core barrel — the shell reads clusters from the snapshot; only the
- * server-side derivations (snapshot, settle) and tests import this.
+ * Inline explorations retain the parent lesson: their provenance
+ * points carry a stable subjectId alongside the actual chatId/messageId
+ * source anchor. The subjectId survives preserve-graph chat deletion;
+ * older points and imported notes keep the chatId birth rule above.
+ *
+ * Browser-safe pure logic (no node builtins, no fs). The core barrel
+ * exports birthSessionOf so the chain table and snapshot share one rule.
  */
 import type { GraphChain, GraphNode } from "./contracts.ts";
 
@@ -39,16 +42,18 @@ import type { GraphChain, GraphNode } from "./contracts.ts";
  *  the layout consumer takes; `id` rides along for consumers that need
  *  the session identity (the snapshot's cluster id + label join). */
 export interface BirthSessionCluster {
-	/** The birth session's id — a chatId or a notes source id ("src_…"). */
+	/** A shared subject id, chatId, or notes source id ("src_…"). */
 	id: string;
 	/** Node ids born in this session, sorted. */
 	members: string[];
 }
 
-/** A node's birth session: its first surviving provenance point's chatId.
- *  null when the node carries no provenance at all (legacy data). */
+/** A node's grouping identity: the first surviving provenance point's
+ * shared subjectId, falling back to its actual chatId. null when the
+ * node carries no provenance at all (legacy data). */
 export function birthSessionOf(node: Pick<GraphNode, "provenance">): string | null {
-	return node.provenance[0]?.chatId ?? null;
+	const point = node.provenance[0];
+	return point?.subjectId ?? point?.chatId ?? null;
 }
 
 /**
@@ -91,7 +96,7 @@ export function impClusterKey(
 		const birth = birthOf(premise);
 		if (birth !== null) counts.set(birth, (counts.get(birth) ?? 0) + 1);
 	}
-	const own = chain.provenance[0]?.chatId ?? null;
+	const own = birthSessionOf(chain);
 	if (counts.size === 0) return own;
 	let max = 0;
 	for (const n of counts.values()) if (n > max) max = n;
