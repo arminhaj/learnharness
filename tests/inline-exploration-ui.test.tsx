@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import { createInlineExploration, changeInlineExploration, explorationErrorMessage, InlineExploration, useInlineExplorations, type ExplorationRecord } from "../components/inline-exploration.tsx";
 import { QuestionDock } from "../components/question-dock.tsx";
+import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 
 const chat: ExplorationRecord = {
@@ -81,15 +82,15 @@ describe("lesson question stays paused in place", () => {
 		};
 		try {
 			await render(false);
-			const field = host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]')!;
-			assert.equal(field.defaultValue, "My unfinished explanation");
+			const field = host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]')!;
+			assert.equal(readPathInput(field), "My unfinished explanation");
 			await render(true);
-			assert.equal(host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]'), field, "pausing did not remount the learner's field");
+			assert.equal(host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]'), field, "pausing did not remount the learner's field");
 			await act(async () => enter());
 			assert.equal(submitted.length, 0, "exploration keys cannot answer the lesson question");
-			assert.equal(field.defaultValue, "My unfinished explanation");
+			assert.equal(readPathInput(field), "My unfinished explanation");
 			await render(false);
-			assert.equal(host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Type your answer…"]'), field, "returning preserved the exact field");
+			assert.equal(host.querySelector<HTMLElement>('[data-file-path-input][aria-label="Type your answer…"]'), field, "returning preserved the exact field");
 			await act(async () => enter());
 			assert.equal(submitted.length, 1, "the original question is answerable again after returning");
 		} finally {

@@ -231,7 +231,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 	const initialRef = useRef(false);
 	const deliveredRef = useRef(onInitialDelivered);
 	deliveredRef.current = onInitialDelivered;
-	const inputRef = useRef<HTMLTextAreaElement>(null);
+	const inputRef = useRef<HTMLDivElement>(null);
 	const sync = useCallback(async () => {
 		try {
 			const record = await responseBody<ChatRecord & { turnInFlight?: boolean; turnError?: string }>(await fetch(`/api/chats/${chat.id}`));
