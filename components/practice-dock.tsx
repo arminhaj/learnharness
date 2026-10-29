@@ -165,7 +165,7 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 				    field 10 − p-1 (4) = button 6. */}
 				<div className="flex items-center justify-between gap-2 p-1">
 					<span aria-hidden className="pl-1.5 text-xs text-muted-foreground">
-						{compactionRunning ? "compacting session…" : codeThinking ? "⌘/Ctrl+Enter submits · Enter adds a line" : "↵ submits · ⇧↵ newline"}
+						{compactionRunning ? "compacting session…" : codeThinking ? "Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter submits" : "↵ submits · ⇧↵ newline"}
 					</span>
 					<Button
 						type="button"

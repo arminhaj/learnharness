@@ -43,9 +43,6 @@ export const CodeAwareInput = forwardRef<HTMLDivElement, PathInputProps & {
 			</div>
 			{codeMode ? <div ref={editorRoot} tabIndex={-1} onFocus={(event) => {
 				if (event.target === event.currentTarget) editorRoot.current?.querySelector<HTMLElement>(".cm-content")?.focus();
-			}} onKeyDown={(event) => {
-				// CodeMirror owns Enter/Tab; the app still owns Escape.
-				if (event.key === "Escape") props.onKeyDown?.(event);
 			}}><CodeEditor value={parsed?.source ?? value} language={parsed?.language ?? language} onChange={(source) => onValueChange(fenceCode(source, parsed?.language ?? language))} onSubmit={onCodeSubmit} ariaLabel={props["aria-label"] ?? "Code answer"} autoFocus className="m-1 max-h-72 overflow-auto" /></div>
 				: <PathInput {...props} ref={textRef} value={value} onValueChange={onValueChange} className={className} />}
 		</div>

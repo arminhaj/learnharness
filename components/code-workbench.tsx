@@ -224,7 +224,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 					{onSubmit && <Button type="button" size="sm" disabled={locked || !workspace || !!incoming} onClick={() => void perform("check", true)}>{busy === "submit" && <LoaderCircleIcon className="animate-spin" />}Check &amp; submit</Button>}
 				</div>
 			</div>
-			<p className="text-[11px] leading-relaxed text-muted-foreground">Enter adds a line · Tab indents · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
+			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
 			{workspace?.path && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Workspace file</summary><code className="mt-1 block select-all break-all rounded bg-muted/50 px-2 py-1.5">{workspace.path}</code></details>}
 			{workspace?.lastRun && <CodeCheckResults result={workspace.lastRun} stale={workspace.lastRun.source !== source} />}
 			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see compiler and test results.</p>}

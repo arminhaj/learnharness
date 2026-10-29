@@ -1,6 +1,6 @@
 # Code answers and runnable exercises
 
-Use **Write code** in a conversation, free-text answer, or practice thinking field for a code editor with C++ syntax highlighting, line numbers, indentation, bracket matching, undo, and word completion. Enter inserts a newline; Cmd/Ctrl+Enter sends. Code answers are saved as Markdown fences and typeset in the transcript. Text mode retains the existing prose and file-path editing behavior.
+Use **Write code** in a conversation, free-text answer, or practice thinking field for a code editor with C++ syntax highlighting, line numbers, indentation, bracket matching, undo, word completion, and Vim keybindings. Editors start in Normal mode: use `h/j/k/l` to move, `i` to insert, `Esc` or `Ctrl+[` to return to Normal, `v` for Visual mode, `u` to undo, and `/` to search. The status bar shows the current mode. In Insert mode, Enter inserts a newline and Tab indents; Cmd/Ctrl+Enter sends or checks in either mode. Escape stays in the editor without dismissing the answer or stopping the session. Code answers are saved as Markdown fences and typeset in the transcript. Text mode retains the existing prose and file-path editing behavior.
 
 ## Try the C++ demo
 

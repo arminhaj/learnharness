@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { cpp } from "@codemirror/lang-cpp";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completeAnyWord, completionKeymap } from "@codemirror/autocomplete";
 import { tags } from "@lezer/highlight";
+import { vim } from "@replit/codemirror-vim";
 import { cn } from "@/lib/utils";
 
 export interface CodeEditorProps {
@@ -50,6 +51,9 @@ const editorTheme = EditorView.theme({
 	".cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--primary) 20%, transparent)", outline: "1px solid var(--border)" },
 	".cm-tooltip": { backgroundColor: "var(--popover)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: "6px" },
 	".cm-tooltip-autocomplete ul li[aria-selected]": { backgroundColor: "var(--accent)", color: "var(--foreground)" },
+	".cm-panels": { backgroundColor: "var(--muted)", color: "var(--foreground)" },
+	".cm-panels-bottom": { borderTop: "1px solid var(--border)" },
+	".cm-vim-panel": { padding: "4px 10px", fontSize: "11px" },
 });
 
 export function CodeEditor({ value, onChange, language = "cpp", disabled = false, onSubmit, ariaLabel = "Code", autoFocus = false, className }: CodeEditorProps) {
@@ -69,6 +73,14 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 			state: EditorState.create({
 				doc: config.value,
 				extensions: [
+					// Submission must run before Vim's normal-mode Enter handling.
+					Prec.highest(EditorView.domEventHandlers({ keydown: (event) => {
+						if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return false;
+						event.stopPropagation();
+						if (!callbacks.current.disabled) callbacks.current.onSubmit?.();
+						return true;
+					} })),
+					vim({ status: true }),
 					lineNumbers(), highlightActiveLine(), highlightActiveLineGutter(), drawSelection(),
 					history(), indentOnInput(), indentUnit.of("    "), bracketMatching(), closeBrackets(),
 					autocompletion({ override: [completeAnyWord] }), syntaxHighlighting(colors), editorTheme,
@@ -76,7 +88,6 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 					c.editable.of([EditorState.readOnly.of(config.disabled), EditorView.editable.of(!config.disabled)]),
 					c.label.of(EditorView.contentAttributes.of({ "aria-label": config.ariaLabel, "aria-multiline": "true", spellcheck: "false", autocapitalize: "off", autocorrect: "off" })),
 					keymap.of([
-						{ key: "Mod-Enter", stopPropagation: true, run: () => { if (!callbacks.current.disabled) callbacks.current.onSubmit?.(); return true; } },
 						...closeBracketsKeymap, ...completionKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab,
 					]),
 					EditorView.updateListener.of(update => {
@@ -85,9 +96,13 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 				],
 			}),
 		});
+		// Handle keys in CodeMirror first, then stop them before any React or
+		// document-level abort, dictation, or navigation shortcut sees them.
+		const stopAppShortcuts = (event: KeyboardEvent) => event.stopPropagation();
+		editor.dom.addEventListener("keydown", stopAppShortcuts);
 		view.current = editor;
 		if (config.autoFocus) editor.focus();
-		return () => { editor.destroy(); view.current = null; };
+		return () => { editor.dom.removeEventListener("keydown", stopAppShortcuts); editor.destroy(); view.current = null; };
 	}, []);
 
 	useEffect(() => {
