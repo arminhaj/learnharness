@@ -6,7 +6,9 @@ import { ToolContentResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
 import { joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
-import { PathInput } from "@/components/path-input";
+import { CodeAwareInput } from "@/components/code-aware-input";
+import { CodeWorkbench } from "@/components/code-workbench";
+import type { CodeExercise } from "@/src/core";
 import { cn } from "@/lib/utils";
 
 /**
@@ -20,8 +22,8 @@ import { cn } from "@/lib/utils";
  * many submissions; each starts a turn.
  *
  * Collapse (scroll-up → slim bar) is owned by the DockOverlay; this
- * component is content only, and the expanded form stays MOUNTED while
- * collapsed (hidden) so a half-written trace survives scrolling.
+ * component is content only. Thinking state stays in this parent, and
+ * the code workspace stays mounted while hidden so drafts survive scrolling.
  *
  * The commitment (modelSolution, decisionPoints, …) rides the tool call's
  * arguments and is NOT rendered here — only the statement is the
@@ -34,12 +36,13 @@ export interface PracticeDockProps {
 	problemCallId: string;
 	/** The pose's arguments — only the statement is the learner's (the
 	 *  mode badge would edge toward announcing the target; dropped). */
-	input: { statement: string };
+	input: { statement: string; codeExercise?: CodeExercise };
+	chatId?: string;
 	/** Collapse state, owned by the DockOverlay. */
 	expanded: boolean;
 	onExpand: () => void;
 	/** text — POST {type:"thinking"} (one lane; the register is read from the text). */
-	onSubmit: (text: string) => void;
+	onSubmit: (text: string, codeRunId?: string) => void | Promise<void>;
 	/** Escape in the thinking field stops dictation (threaded from the page). */
 	onEscape?: () => void;
 	/** Compaction is running for this chat (owner round 14): the thinking
@@ -51,8 +54,9 @@ export interface PracticeDockProps {
 	paused?: boolean;
 }
 
-export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
+export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
+	const [codeThinking, setCodeThinking] = useState(false);
 	// Ref MIRRORS the field ("nothing gets lost", the question-dock
 	// discipline): a submit resuming after `await finishDictation()` reads
 	// the tail, never a stale closure.
@@ -86,8 +90,7 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 	useEnterSubmits(submit, !paused);
 
 	/* ── the collapsed bar ── */
-	if (!expanded) {
-		return (
+	const collapsedBar = (
 			<button
 				type="button"
 				data-testid="practice-dock-bar"
@@ -98,33 +101,38 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 				<span className="font-medium">Problem</span>
 				<span className="min-w-0 flex-1 truncate">{input.statement}</span>
 			</button>
-		);
-	}
+	);
 
 	/* ── the expanded form ── */
 	return (
 		<div data-testid="practice-dock" data-problem={problemCallId}>
+			{!expanded && collapsedBar}
+			<div hidden={!expanded}>
 			{/* The agent's half: the 'Problem' eyebrow (mirroring the quiz
 			    cards' label row — owner round, 2026-10-05) + the statement,
 			    markdown + LaTeX rendered, capped by the measured column
 			    (--dock-max-h; the old fixed 40vh cut long problems short). */}
-			<div data-dock-scroll-area="" className="max-h-[var(--dock-max-h,40vh)] overflow-y-auto px-4 pt-3 pb-2">
+			{expanded && <div data-dock-scroll-area="" className="max-h-[var(--dock-max-h,40vh)] overflow-y-auto px-4 pt-3 pb-2">
 				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Problem</div>
 				<div className="lh-prose text-[15px]">
 					<ToolContentResponse>{input.statement}</ToolContentResponse>
 				</div>
-			</div>
+			</div>}
+
+			{input.codeExercise && chatId && <div className="max-h-[55vh] overflow-y-auto px-2 pb-2"><CodeWorkbench key={`${problemCallId}:${JSON.stringify(input.codeExercise)}`} chatId={chatId} problemCallId={problemCallId} disabled={paused || compactionRunning} onSubmit={(runId) => onSubmit("Code answer submitted for review.", runId)} /></div>}
 
 			{/* The learner's half: Enter SENDS (owner round 2, 2026-10-05);
 			    Shift+Enter makes a newline — less to decide about. */}
-			<div
+			{expanded && <div
 				data-testid="practice-thinking-field"
 				className="m-1.5 rounded-[10px] border border-border/70 bg-background/60 transition-colors focus-within:border-primary/50"
 			>
 				<div className="px-2.5 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 					YOUR THINKING
 				</div>
-				<PathInput
+				<CodeAwareInput
+					onCodeSubmit={submit}
+					onCodeModeChange={setCodeThinking}
 					value={thinking}
 					onValueChange={(value) => {
 						thinkingRef.current = value;
@@ -157,7 +165,7 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 				    field 10 − p-1 (4) = button 6. */}
 				<div className="flex items-center justify-between gap-2 p-1">
 					<span aria-hidden className="pl-1.5 text-xs text-muted-foreground">
-						{compactionRunning ? "compacting session…" : "↵ submits · ⇧↵ newline"}
+						{compactionRunning ? "compacting session…" : codeThinking ? "⌘/Ctrl+Enter submits · Enter adds a line" : "↵ submits · ⇧↵ newline"}
 					</span>
 					<Button
 						type="button"
@@ -169,6 +177,7 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 						Submit thinking
 					</Button>
 				</div>
+			</div>}
 			</div>
 		</div>
 	);

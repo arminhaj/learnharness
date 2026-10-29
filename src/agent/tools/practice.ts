@@ -17,6 +17,7 @@
 import { Type, type Static } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { resolveTargetId } from "../../core/chains.ts";
+import { CODE_SOURCE_LIMIT, CODE_TEST_LIMIT, CODE_TEST_TEXT_LIMIT, parseCodeExercise } from "../../core/code-workspace.ts";
 import { readTool } from "./read.ts";
 import { lsTool } from "./ls.ts";
 import { findTool } from "./find.ts";
@@ -69,6 +70,31 @@ export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 
 // ─── problem: the pose ───────────────────────────────────────────────────────
 
+const codeExerciseInput = Type.Object({
+	language: Type.String({
+		minLength: 1,
+		maxLength: 32,
+		description: "Language adapter id. Currently only cpp (C++20) is supported; omit codeExercise for other languages.",
+	}),
+	starterCode: Type.String({
+		minLength: 1,
+		maxLength: CODE_SOURCE_LIMIT,
+		description:
+			"Complete standalone C++20 source, at most 64 KiB UTF-8: includes, an unfinished function with a " +
+			"compiling placeholder body, and main with stdin/stdout wiring. Compiles before the learner edits it, " +
+			"but must fail at least one test until solved. Never include the worked solution or external dependencies.",
+	}),
+	tests: Type.Array(Type.Object({
+		name: Type.String({ minLength: 1, maxLength: 120, description: "Short description of the behavior this case checks." }),
+		stdin: Type.String({ maxLength: CODE_TEST_TEXT_LIMIT, description: "Complete standard input for one run, at most 8 KiB UTF-8; use an empty string when no input is needed." }),
+		expectedStdout: Type.String({ maxLength: CODE_TEST_TEXT_LIMIT, description: "Expected standard output for this input, at most 8 KiB UTF-8." }),
+	}, { additionalProperties: false }), {
+		minItems: 1,
+		maxItems: CODE_TEST_LIMIT,
+		description: "One to twelve deterministic correctness checks, including relevant edge cases. Compilation alone does not establish correctness.",
+	}),
+}, { additionalProperties: false });
+
 export const problemInputObject = Type.Object({
 	statement: Type.String({
 		description:
@@ -90,6 +116,7 @@ export const problemInputObject = Type.Object({
 	modelSolution: Type.String({
 		description: "REQUIRED — the full solution, moves in order, committed BEFORE the learner sees the problem. This IS the reveal — conclude shows it verbatim; never re-author it.",
 	}),
+	codeExercise: Type.Optional(codeExerciseInput),
 });
 
 export type ProblemInput = Static<typeof problemInputObject>;
@@ -105,7 +132,10 @@ export function problemTool(
 			"Pose one practice problem. Ends the turn — the learner works in the thinking field; their thinking " +
 			"traces and answer commits arrive back as labeled messages. The modelSolution rides this call's " +
 			"arguments and stays hidden from the learner until you conclude (conclude shows it verbatim — the " +
-			"reveal needs no new field). Only one problem may be active — conclude it before posing the next.",
+			"reveal needs no new field). For a C++ implementation problem, include codeExercise with compile-ready " +
+			"starter source and stdin/stdout tests; the learner can edit it here or in an external editor, then compile " +
+			"and test their submission. The app owns compiler commands; never supply shell or build commands. " +
+			"Only one problem may be active — conclude it before posing the next.",
 		parameters: problemInputObject,
 		executionMode: "sequential",
 		prepareArguments: (args: unknown) => {
@@ -138,6 +168,17 @@ export function problemTool(
 				return invalidInputResult("problem", [
 					"a problem is already active — call conclude on it before posing the next one",
 				]);
+			}
+			// Validate runtime support and byte limits before opening the problem
+			// slot. A malformed exercise must remain retryable in this turn.
+			if (input.codeExercise !== undefined) {
+				try {
+					parseCodeExercise(input.codeExercise);
+				} catch (error) {
+					return invalidInputResult("problem", [
+						`codeExercise: ${error instanceof Error ? error.message : "invalid coding exercise"}`,
+					]);
+				}
 			}
 			// TARGET VALIDATION (owner round 9, round 12): against the WHOLE
 			// graph, and ONLY when targets are present — absent means an

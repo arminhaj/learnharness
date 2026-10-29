@@ -1,4 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai";
+import { resolveCheckedCodeInput } from "./code-submission.ts";
 import {
 	createExplorationAgent,
 	createPracticeAgent,
@@ -322,13 +323,29 @@ export async function handleChatInput(
 	// follow-up queue and never builds an input event at all.
 	let appends;
 	try {
+		if (input.type === "thinking" && input.codeRunId) {
+			input = await resolveCheckedCodeInput(chatId, input);
+			const current = stores.chatStore.getChat(chatId);
+			if (!current) return Response.json({ error: "Unknown chat" }, { status: 404 });
+			record = current;
+			const pauseReason = explorationPauseReason(chatId);
+			if (pauseReason) return Response.json({ error: pauseReason }, { status: 409 });
+			const runId = input.type === "thinking" ? input.codeRunId : undefined;
+			if (record.messages.some((message) => message.role === "custom" && message.customType === "practice-thinking" && (message.details as { codeResult?: { id?: string } })?.codeResult?.id === runId)) {
+					return Response.json({ error: "This check was already submitted. Run another check to submit a new attempt." }, { status: 422 });
+			}
+		}
+		const currentMessages = record.messages;
 		appends =
 			input.type === "steers"
-				? input.steers.filter((s) => !steerDelivered(record.messages, s.id))
+				? input.steers.filter((s) => !steerDelivered(currentMessages, s.id))
 				: inputAppends(record, input);
 	} catch (err) {
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
+		}
+		if (input.type === "thinking" && input.codeRunId) {
+			return Response.json({ error: err instanceof Error ? err.message : "The saved code check is unavailable. Check again before submitting." }, { status: 422 });
 		}
 		throw err;
 	}
