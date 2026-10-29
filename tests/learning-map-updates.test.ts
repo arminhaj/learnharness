@@ -7,7 +7,7 @@ import type { LhMessage } from "../src/core/native-messages.ts";
 import { newThinkingMessage } from "../src/core/native-messages.ts";
 import { parseLearningContribution } from "../src/core/learning-graph-validation.ts";
 import { buildLearningGraphSnapshot, emptyLearningGraphState, mergeLearningContribution, patchLearningNode } from "../src/core/learning-graph.ts";
-import { createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
+import { abortExtraction, createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
 import {
 	learningBatches, learningContribution, learningFingerprint, learningPassages,
 	runLearningMap, validateLearningSubmit, type LearningSubmit,
@@ -213,6 +213,57 @@ describe("incremental learning updates", () => {
 		assert.equal(calls, 2);
 		assert.equal(state.contributions[chat.id]!.fingerprint, learningFingerprint(chat));
 		assert.equal(buildLearningGraphSnapshot([node], state).nodes[0]!.automaticProgress, "learning");
+	});
+
+	it("resumes an interrupted initial backfill from its saved message checkpoint", async () => {
+		const chat = {
+			...record([1, 2, 3].map((index) => ({
+				...learner(`u${index}`, `Independent explanation of proportional growth ${index}. `.repeat(10)),
+				timestamp: timestamp + index,
+			}))),
+			id: "learning_resume_test",
+		};
+		let state = emptyLearningGraphState();
+		let saves = 0;
+		const makePipeline = (faux: ReturnType<typeof createFauxCore>) => createExtractionPipeline({
+			chatStore: { getChat: () => chat, appendExtractionUsage: () => undefined } as unknown as ChatStore,
+			graphStore: {} as GraphStore, getChunkTokens: () => 10,
+			extractor: { model: faux.getModel(), streamFn: faux.streamSimple },
+			learning: {
+				readState: () => state, snapshot: () => buildLearningGraphSnapshot([node], state),
+				saveContribution: (contribution) => { state = mergeLearningContribution(state, contribution); saves++; },
+			},
+		});
+		const response = (id: string) => fauxAssistantMessage([
+			fauxToolCall("submit_learning_map", assessment([id]) as unknown as ToolCall["arguments"]),
+		], { stopReason: "toolUse" });
+		const interrupted = createFauxCore({});
+		interrupted.setResponses([
+			() => response("u1"),
+			() => { assert.equal(abortExtraction(chat.id), true); return response("u2"); },
+		]);
+		await assert.rejects(makePipeline(interrupted).updateLearning!(chat.id, { force: true }), { name: "AbortError" });
+		assert.equal(saves, 1, "the interrupted batch must not save a partial result");
+		const checkpoint = structuredClone(state.contributions[chat.id]!);
+		assert.deepEqual(Object.keys(checkpoint.messageFingerprints!), ["u1"]);
+		assert.equal(checkpoint.fingerprint, undefined, "incomplete backfill has no full-source fingerprint");
+
+		// Recreate the pipeline as a restarted server would, retaining only the saved state.
+		const resumed = createFauxCore({});
+		let resumedCalls = 0;
+		resumed.setResponses(["u2", "u3"].map((id) => () => { resumedCalls++; return response(id); }));
+		const pipeline = makePipeline(resumed);
+		await pipeline.updateLearning!(chat.id, { force: false });
+		assert.equal(resumedCalls, 2, "only the two unfinished batches need model requests");
+		assert.equal(saves, 3);
+		const completed = state.contributions[chat.id]!;
+		assert.deepEqual(completed.messageFingerprints, Object.fromEntries(learningPassages(chat).map((passage) => [passage.id, passage.fingerprint])));
+		assert.equal(completed.messageFingerprints!.u1, checkpoint.messageFingerprints!.u1);
+		assert.equal(completed.fingerprint, learningFingerprint(chat));
+		const evidence = completed.nodes.find((item) => item.nodeId === node.id)!.progressEvidence!;
+		assert.deepEqual(evidence.flatMap((item) => item.provenance.map((anchor) => anchor.messageId)), ["u1", "u2", "u3"], "earlier learner evidence survives the restart");
+		await pipeline.updateLearning!(chat.id, { force: false });
+		assert.equal(resumedCalls, 2, "the final fingerprint prevents another unchanged update");
 	});
 
 	it("a deleted session cannot save a model result that was already in flight", async () => {

@@ -34,7 +34,8 @@ import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts"
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
 import { auditorGraphTools } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
-import { learningBatches, learningFingerprint, learningPassages, runLearningMap } from "./learning-map.ts";
+import { LEARNING_MAP_MAX_TURNS, learningBatches, learningFingerprint, learningPassages, runLearningMap } from "./learning-map.ts";
+import { initialModelProgress, type ExtractionProgress } from "../../core/extraction-progress.ts";
 
 /**
  * The extraction pipeline (vision §1 construction, 2026-09-02 redesign;
@@ -642,6 +643,8 @@ export interface RunningExtraction {
 	label?: string;
 	phase: ExtractionPhase;
 	startedAt: number;
+	/** Optional for legacy runs; live learning-map activity contains no prose. */
+	progress?: ExtractionProgress;
 	/** Live per-stage usage, accumulated as steps bill (the dock's cost /
 	 *  context-window blobs read this through /api/graph/status). */
 	usage: {
@@ -654,6 +657,7 @@ export interface RunningExtraction {
 }
 
 interface LhExtractionGlobal {
+	__lhExtractionProgressNotifier?: ReturnType<typeof createExtractionProgressNotifier>;
 	__lhLearningPending?: Map<string, boolean>;
 	__lhExtractionRuns?: {
 		/** In-flight pipeline runs, keyed chatId (chat) / src id (notes). */
@@ -673,6 +677,43 @@ interface LhExtractionGlobal {
 	 *  calls process-wide — the provider-facing rate stance (the import
 	 *  route's old 3-wide pool doctrine, now global). Per-chunk jobs fan
 	 *  out in parallel but queue here. */
+}
+
+/** Progress invalidations are rate-limited across all pipeline instances.
+ * Timers notify observers only; they never manufacture model activity. */
+export function createExtractionProgressNotifier(notify: () => void, options: {
+	now?: () => number;
+	schedule?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+	cancel?: (timer: ReturnType<typeof setTimeout>) => void;
+} = {}) {
+	const now = options.now ?? Date.now;
+	const schedule = options.schedule ?? setTimeout;
+	const cancel = options.cancel ?? clearTimeout;
+	let lastEmittedAt = -Infinity;
+	let pending = false;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const publish = () => {
+		timer = undefined;
+		if (!pending) return;
+		pending = false;
+		lastEmittedAt = now();
+		notify();
+	};
+	return {
+		changed() {
+			pending = true;
+			if (timer !== undefined) return;
+			const delay = Math.max(0, 1000 - (now() - lastEmittedAt));
+			if (delay === 0) publish();
+			else timer = schedule(publish, delay);
+		},
+		cancel() { if (timer !== undefined) cancel(timer); timer = undefined; pending = false; },
+	};
+}
+
+function progressNotifier(): ReturnType<typeof createExtractionProgressNotifier> {
+	const global = globalThis as typeof globalThis & LhExtractionGlobal;
+	return global.__lhExtractionProgressNotifier ??= createExtractionProgressNotifier(() => emit("activity-changed", {}));
 }
 
 /** THE RUN REGISTRIES live on globalThis, not module level — the
@@ -868,6 +909,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			label: prev?.label ?? label, // phase changes never lose the label
 			phase,
 			startedAt: prev?.startedAt ?? R.lastStartedAt,
+			progress: prev?.progress,
 			usage: prev?.usage ?? {}, // phase changes never lose usage
 			controller: prev?.controller ?? new AbortController(),
 		});
@@ -881,7 +923,15 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	 *  miss the announce (push S5, 2026-10-02). */
 	function finishExtraction(jobKey: string): void {
 		runningExtractions.delete(jobKey);
+		if (![...runningExtractions.values()].some((run) => run.progress)) progressNotifier().cancel();
 		emit("activity-changed", {});
+	}
+
+	function recordProgress(jobKey: string, progress: ExtractionProgress): void {
+		const run = runningExtractions.get(jobKey);
+		if (!run) return;
+		run.progress = progress;
+		progressNotifier().changed();
 	}
 
 	/** Accumulate one billed step into the run's registry entry (live). */
@@ -1137,10 +1187,20 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// A changed plan/title can introduce new curriculum structure without
 		// new prose. A small evidence window is enough to explain its context.
 		if (batches.length === 0 && passages.length) batches.push(passages.slice(-3));
+		const sourceStartedAt = Date.now();
+		const savedIds = { nodes: new Set<string>(), prerequisites: new Set<string>(), groups: new Set<string>() };
+		let lastSavedAt: number | undefined;
+		let saved: ExtractionProgress["saved"];
 		for (const [index, batch] of batches.entries()) {
 			const part = batches.length > 1 ? { i: index + 1, n: batches.length } : undefined;
 			await runJob({ id: record.id, kind, label: `Learning map · ${record.title}`, part }, async (jobKey) => {
 				setPhase(jobKey, "queued", kind, `Learning map · ${record.title}`, part);
+				let progress: ExtractionProgress = {
+					...initialModelProgress(LEARNING_MAP_MAX_TURNS), sourceStartedAt,
+					batch: { current: index + 1, total: batches.length, completed: index },
+					...(lastSavedAt !== undefined ? { lastSavedAt, saved } : {}),
+				};
+				recordProgress(jobKey, progress);
 				const signal = runningExtractions.get(jobKey)?.controller.signal;
 				const contribution = await withExtractSlot(jobKey, async () => {
 					setPhase(jobKey, "extracting", kind);
@@ -1149,6 +1209,10 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 						record, passages: batch, nodes: snapshot.nodes, groups: snapshot.groups,
 						engine, signal,
 						onStep: (usage, model) => recordStep(jobKey, "extractor", callUsage(usage), model),
+						onProgress: (modelProgress) => {
+							progress = { ...progress, ...modelProgress };
+							recordProgress(jobKey, progress);
+						},
 					});
 				});
 				signal?.throwIfAborted();
@@ -1157,12 +1221,22 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 					gone.name = "AbortError";
 					throw gone;
 				}
+				progress = { ...progress, activity: "saving", toolName: undefined };
+				recordProgress(jobKey, progress);
 				setPhase(jobKey, "merging", kind);
 				deps.learning!.saveContribution({
 					...contribution,
 					messageFingerprints: Object.fromEntries(batch.map((passage) => [passage.id, passage.fingerprint])),
 					...(index === batches.length - 1 ? { fingerprint } : {}),
 				});
+				for (const node of contribution.nodes) savedIds.nodes.add(node.nodeId);
+				for (const node of contribution.futureNodes ?? []) savedIds.nodes.add(node.id);
+				for (const edge of contribution.prerequisites) savedIds.prerequisites.add(JSON.stringify([edge.from, edge.to]));
+				for (const group of contribution.groups) savedIds.groups.add(group.id);
+				lastSavedAt = Date.now();
+				saved = { nodes: savedIds.nodes.size, prerequisites: savedIds.prerequisites.size, groups: savedIds.groups.size };
+				progress = { ...progress, batch: { ...progress.batch, completed: index + 1 }, lastSavedAt, saved };
+				recordProgress(jobKey, progress);
 				return { nodes: contribution.futureNodes?.length ?? 0, chains: 0 };
 			});
 		}

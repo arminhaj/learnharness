@@ -64,13 +64,15 @@
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
-import { ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
-import { buildLearningGraphSnapshot, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol } from "@/src/core";
+import { ListTreeIcon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
+import { buildLearningGraphSnapshot, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { useActivity } from "@/components/activity-dock";
-import { useServerEvent, useServerResync } from "@/components/server-events";
+import { useServerConnectionStatus, useServerEvent, useServerResync } from "@/components/server-events";
+import { GraphExtractionProgress, useActivityNow } from "@/components/extraction-progress";
+import { createCoalescedRead } from "@/lib/coalesced-read";
 import { MenuShell } from "@/components/menu-shell.tsx";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
@@ -1136,19 +1138,13 @@ export function GraphView({
 	// chunk jobs), NOT chatId: chatId-scoping re-batched per-chunk jobs
 	// into one end-of-import reveal (the exact bug this rule exists to
 	// prevent — a chunk's row leaving IS its merge landing).
-	const [pipelineRuns, setPipelineRuns] = useState<{ id: string; chatId: string; title: string; phase: string; startedAt: number }[]>([]);
+	const [pipelineRuns, setPipelineRuns] = useState<{ id: string; chatId: string; title: string; phase: string; startedAt: number; part?: { i: number; n: number }; progress?: ExtractionProgress }[]>([]);
+	const progressNow = useActivityNow(pipelineRuns.length > 0);
+	const progressConnection = useServerConnectionStatus();
 	const rowIdsRef = useRef<Set<string>>(new Set());
-	const readPipelineStatus = useCallback(() => {
-		fetch("/api/graph/status")
-			.then((res) => res.json() as Promise<{ runs: typeof pipelineRuns }>)
-			.then(({ runs }) => {
-				setPipelineRuns(runs);
-				const ids = new Set(runs.map((r) => r.id));
-				if ([...rowIdsRef.current].some((id) => !ids.has(id))) setRefreshTick((t) => t + 1);
-				rowIdsRef.current = ids;
-			})
-			.catch(() => {}); // status is cosmetic — never surface read errors
-	}, []);
+	const statusReaderRef = useRef<ReturnType<typeof createCoalescedRead<{ runs: typeof pipelineRuns }>> | null>(null);
+	const [pipelineStatusUnavailable, setPipelineStatusUnavailable] = useState(false);
+	const readPipelineStatus = useCallback(() => statusReaderRef.current?.refresh(), []);
 	// PUSH (S7, 2026-10-02): the standing 2s poll is RETIRED — the
 	// extraction registry announces every phase transition and every
 	// finish (activity-changed), so each read lands exactly when truth
@@ -1166,11 +1162,29 @@ export function GraphView({
 	});
 	useServerResync(() => readPipelineStatus());
 	useEffect(() => {
-		readPipelineStatus();
+		const reader = createCoalescedRead<{ runs: typeof pipelineRuns }>({
+			read: async () => {
+				const res = await fetch("/api/graph/status");
+				if (!res.ok) throw new Error("Progress unavailable");
+				return res.json() as Promise<{ runs: typeof pipelineRuns }>;
+			},
+			onValue: ({ runs }) => {
+				setPipelineStatusUnavailable(false);
+				setPipelineRuns(runs);
+				const ids = new Set(runs.map((run) => run.id));
+				if ([...rowIdsRef.current].some((id) => !ids.has(id))) setRefreshTick((tick) => tick + 1);
+				rowIdsRef.current = ids;
+			},
+			onError: () => setPipelineStatusUnavailable(true),
+		});
+		statusReaderRef.current = reader;
+		reader.refresh();
 		return () => {
+			reader.dispose();
+			statusReaderRef.current = null;
 			if (statusDebounceRef.current) clearTimeout(statusDebounceRef.current);
 		};
-	}, [readPipelineStatus]);
+	}, []);
 
 	// Graph pipeline costs (2026-09 cost metrics wave): the cumulative fold
 	// of the usage channels (chat + notes extraction runs; the dead namer's
@@ -1662,16 +1676,9 @@ export function GraphView({
 			    the way the old bottom-left stack did; the whole top-right
 			    cluster is one column, right-aligned. */}
 			{costs && costs.runs.length > 0 && <GraphCostControl costs={costs} />}
+			{pipelineStatusUnavailable && <p className="max-w-80 rounded-lg border bg-card/95 px-3 py-2 text-xs text-muted-foreground">Progress unavailable <button type="button" onClick={readPipelineStatus} className="ml-2 underline underline-offset-2">Retry</button></p>}
 			{pipelineRuns.map((run) => (
-				<div
-					key={run.id}
-					className="flex items-center gap-2 rounded-full border bg-card/85 px-3 py-1.5 text-xs text-muted-foreground shadow-lg backdrop-blur"
-				>
-					<Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-					<span className="capitalize">{run.phase}</span>
-					<span className="max-w-48 truncate text-foreground">{run.title}</span>
-					<span className="tabular-nums">{Math.max(0, Math.round((Date.now() - run.startedAt) / 1000))}s</span>
-				</div>
+				<GraphExtractionProgress key={run.id} run={{ ...run, progressUnavailable: pipelineStatusUnavailable }} now={progressNow} connection={progressConnection} />
 			))}
 			</div>
 

@@ -8,6 +8,9 @@ import { parseLearningContribution } from "../../core/learning-graph-validation.
 import type { PiEngine } from "../models.ts";
 import { runSubmitAgent } from "./submit-agent.ts";
 import { toToolResult } from "../tool-execute.ts";
+import type { ModelStreamProgress } from "../../core/extraction-progress.ts";
+
+export const LEARNING_MAP_MAX_TURNS = 8;
 
 /** Learning evidence has its own projection. Reasoning extraction deliberately
  * sees teacher prose only; that view cannot establish a learner's understanding. */
@@ -243,6 +246,7 @@ export async function runLearningMap(options: {
 	engine: PiEngine;
 	signal?: AbortSignal;
 	onStep: (usage: Usage, model: string, step: number, finishReason: string, tools: string) => void;
+	onProgress?: (progress: ModelStreamProgress) => void;
 }): Promise<LearningContribution> {
 	const { record, passages, nodes, groups } = options;
 	const visible = contextNodes(record, passages, nodes);
@@ -253,7 +257,7 @@ export async function runLearningMap(options: {
 		systemPrompt: LEARNING_MAP_INSTRUCTIONS,
 		prompt: `SESSION: ${record.title}\n\nEXISTING CONCEPTS (ids are stable; ${visible.length} of ${nodes.length} shown). Search find_learning_concepts before creating a concept that may exist elsewhere.\n${JSON.stringify(visible.map(({ id, name, statement }) => ({ id, name, statement })))}\n\nEXISTING RELATED GROUPS:\n${JSON.stringify(groups.filter((group) => group.members.some((id) => visibleIds.has(id))).slice(0, 40))}\n\nSUBJECT PLAN (structure only; no understanding evidence):\n${JSON.stringify(record.tree ?? null)}\n\nTRANSCRIPT EVIDENCE:\n${passages.map((p) => p.text).join("\n\n")}`,
 		engine: options.engine, signal: options.signal, onStep: options.onStep, chatId: record.id,
-		maxTurns: 8,
+		maxTurns: LEARNING_MAP_MAX_TURNS, onProgress: options.onProgress,
 		extraTools: {
 			find_learning_concepts: {
 				name: "find_learning_concepts", label: "Find concepts",

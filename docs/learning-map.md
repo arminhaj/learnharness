@@ -12,13 +12,17 @@ The configured extraction model maintains the learning layer after teaching and 
 
 Human corrections take precedence over subsequent automatic contributions. Use automatic clears an understanding or prerequisite override. Reset metadata returns the name, tags, and symbols to automatic values. Editing only a name does not pin the automatically maintained tags or symbols.
 
+Map updates show the current batch, completed batches, model activity, elapsed time, and time since the last model event. Expand the background activity row for response counters and the latest saved concept, prerequisite, and group counts. The graph shows the same details. Counters describe received events and output characters, not estimated tokens or a percentage of model reasoning.
+
+After two minutes without an event, the display calls out the quiet period. Long reasoning can be silent, so this does not establish that a request has stalled. A disconnected notification channel has a separate reconnecting notice: displayed progress may be out of date. These indicators never automatically cancel or retry model work. Only timestamps and counts are exposed; streamed reasoning, text, and tool arguments are not included in progress payloads.
+
 ## Storage and integration
 
 - `graph/learning.json` stores versioned automatic contributions, human overrides, and deleted identities, separately from the original reasoning ledgers.
 - `graph/learning-positions.json` stores curriculum coordinates, independent of background reasoning layout. Presentation updates preserve live coordinates, camera state, and pending drag commits.
 - `GraphSnapshot.learning` contains effective concepts, direct prerequisites, groups, group edges, readiness, and cycle information. Legacy graphs work without a sidecar; no inference edges are automatically copied into it.
 - `PATCH /api/graph/nodes/:id` updates metadata or understanding; `PATCH /api/graph/prerequisites` adds, removes, or resets a prerequisite correction. Both return the effective learning snapshot and graph revision.
-- `POST /api/graph/learning/refresh` accepts `{}` for existing conversations or `{ "chatId": "…" }` for one. It requires the configured extraction model and provider connection.
+- `POST /api/graph/learning/refresh` accepts `{}` for existing conversations or `{ "chatId": "…" }` for one. Optional `"incremental": true` processes only new or changed evidence using automatic-update checkpoints; completed chunks of an initial backfill survive a server restart. It requires the configured extraction model and provider connection.
 - `graph-changed` events refresh open views after writes. Source deletion removes that source's automatic evidence while retaining concepts supported elsewhere. Node deletion also cleans metadata and connections.
 
 Prerequisite cycles from automatic output remain visible at a shared depth; the sidebar rejects a new manual connection that would introduce a cycle. Group unlocks include only concepts whose remaining prerequisites can all be satisfied by that group. There are no helper vertices in the prerequisite canvas.

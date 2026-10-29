@@ -10,8 +10,9 @@ export async function POST(request: Request) {
 	try { body = await request.json(); }
 	catch { return Response.json({ error: "Invalid JSON body" }, { status: 400 }); }
 	if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "Expected an object" }, { status: 400 });
-	const { chatId } = body as { chatId?: unknown };
+	const { chatId, incremental } = body as { chatId?: unknown; incremental?: unknown };
 	if (chatId !== undefined && (typeof chatId !== "string" || !chatId)) return Response.json({ error: "chatId must be a non-empty string" }, { status: 400 });
+	if (incremental !== undefined && typeof incremental !== "boolean") return Response.json({ error: "incremental must be a boolean" }, { status: 400 });
 	if (typeof chatId === "string" && !stores.chatStore.getChat(chatId)) return Response.json({ error: "No such session" }, { status: 404 });
 	if (!effectiveSettings().graph.enabled) return Response.json({ error: "Enable the knowledge graph before updating the learning map" }, { status: 409 });
 	const spec = resolveRoleSpec("extractor", stores.settingsStore.readSettings());
@@ -26,7 +27,9 @@ export async function POST(request: Request) {
 	// source's worker batches independently and can be aborted from the dock.
 	void (async () => {
 		for (const id of queued) {
-			try { await extraction.updateLearning?.(id, { force: true }); }
+			// Incremental updates use the same persisted message coverage as
+			// automatic updates, including completed chunks of an initial backfill.
+			try { await extraction.updateLearning?.(id, { force: incremental !== true }); }
 			catch (error) { console.error(`[learning ${id}] requested refresh failed:`, error); }
 		}
 	})();

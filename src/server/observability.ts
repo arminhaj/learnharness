@@ -26,6 +26,7 @@ import { catalogContextLimits } from "./model-catalog.ts";
 import { listJobs } from "./jobs.ts";
 import { jobCost } from "./pricing.ts";
 import type { JobRecord } from "../core/contracts.ts";
+import type { ExtractionProgress } from "../core/extraction-progress.ts";
 
 export { abortExtraction, extractionStatuses, type ExtractionPhase, type RunningExtraction } from "../agent/subagents/extraction.ts";
 export { chatStore } from "../store/chats.ts";
@@ -54,6 +55,7 @@ export interface ActivityExtraction {
 	title: string;
 	phase: ExtractionPhase;
 	startedAt: number;
+	progress?: ExtractionProgress;
 }
 
 /** The dock's whole world in one payload: every running process, every view.
@@ -98,6 +100,7 @@ export function activityFeed(): {
 			(run.part ? ` · ${run.part.i}/${run.part.n}` : ""),
 		phase: run.phase,
 		startedAt: run.startedAt,
+		progress: run.progress,
 	}));
 	// oldest-first on last activity: the stable blob order (ISO strings sort chronologically)
 	jobs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
