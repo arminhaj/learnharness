@@ -8,10 +8,11 @@ import { newGraphContextMessage, newThinkingMessage } from "../src/core/native-m
 import { createConceptSessionRequest } from "../src/core/learning-session.ts";
 import { parseLearningContribution } from "../src/core/learning-graph-validation.ts";
 import { buildLearningGraphSnapshot, emptyLearningGraphState, mergeLearningContribution, patchLearningNode } from "../src/core/learning-graph.ts";
+import { learningSubjectId, scopeLearningGraphToSubject } from "../src/core/learning-subjects.ts";
 import { abortExtraction, createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
 import {
 	learningBatches, learningContribution, learningFingerprint, learningPassages,
-	runLearningMap, validateLearningSubmit, type LearningSubmit,
+	runLearningMap, validateLearningSubmit, LEARNING_MAP_INSTRUCTIONS, type LearningSubmit,
 } from "../src/agent/subagents/learning-map.ts";
 
 const date = "2026-10-20T12:00:00.000Z";
@@ -159,6 +160,106 @@ describe("learning-map evidence boundary", () => {
 		assert.deepEqual(saved.nodes[0]!.tags, ["dynamics"]);
 		assert.deepEqual(saved.nodes[0]!.symbols![0]!.aliases, ["gamma", "\\gamma"]);
 		assert.equal(saved.nodes[0]!.symbols![0]!.meaning, "Growth factor");
+	});
+});
+
+describe("automatic learning subjects", () => {
+	it("persists source-specific subjects for existing, shared and planned concepts without understanding evidence", async () => {
+		const cpp = { ...node, id: "n_cpp", name: "Dynamic allocation", statement: "Dynamic allocation reserves storage at runtime." };
+		const mechanics = { ...node, id: "n_mechanics", name: "Stationary action", statement: "Physical motion makes action stationary." };
+		const shared = { ...node, id: "n_vectors", name: "Vectors", statement: "Vectors have magnitude and direction." };
+		const haircutting = { ...node, id: "n_haircutting", name: "Cutting elevation", statement: "Elevation changes the weight distribution of a haircut." };
+		const original = mergeLearningContribution(emptyLearningGraphState(), { sourceId: "prior", updatedAt: date, prerequisites: [], groups: [], nodes: [
+			{ nodeId: cpp.id, subjects: ["C++ & systems programming"] },
+			{ nodeId: mechanics.id, subjects: ["Advanced mechanics"] },
+			{ nodeId: haircutting.id, subjects: ["Haircutting"] },
+		] });
+		const existing = buildLearningGraphSnapshot([cpp, mechanics, shared, haircutting, node], original).nodes;
+		const chat = record([teacher("t1", "In this C++ course, allocation leads to resource ownership and RAII. We use mathematical vectors to implement a simulation. In Advanced mechanics, those vectors describe motion and stationary action.")]);
+		const metadata = (nodeId: string, subjects?: string[]) => ({ nodeId, ...(subjects ? { subjects } : {}), tags: ["vectors"], symbols: [], progressEvidence: [] });
+		const value: LearningSubmit = {
+			concepts: [{ id: "c1", name: "RAII", statement: "Resource lifetime is bound to object lifetime.", messageIds: [] }],
+			nodes: [metadata(cpp.id, [" c++ & systems programming ", "C++ & systems programming"]), metadata(mechanics.id, ["Advanced mechanics"]), metadata(shared.id, ["C++ & systems programming", "Advanced mechanics"]), metadata("c1", ["C++ & systems programming"]), metadata(node.id)],
+			prerequisites: [{ from: node.id, to: cpp.id, explanation: "Inferred curriculum relationship for the example; connectivity alone is not subject membership.", messageIds: [] }],
+			groups: [{ id: "cpp-resource-lifetime", name: "Resource lifetime", description: "Allocation and ownership in C++", members: [cpp.id, "c1"] }],
+		};
+		let prompt = "";
+		let searchResult = "";
+		const faux = createFauxCore({});
+		faux.setResponses([
+			(context) => { prompt = JSON.stringify(context.messages); return fauxAssistantMessage([fauxToolCall("find_learning_concepts", { query: "Dynamic allocation" })], { stopReason: "toolUse" }); },
+			(context) => { searchResult = JSON.stringify(context.messages.filter((message) => message.role === "toolResult")); return fauxAssistantMessage([fauxToolCall("submit_learning_map", value as unknown as ToolCall["arguments"])], { stopReason: "toolUse" }); },
+		]);
+		const saved = await runLearningMap({ record: chat, passages: learningPassages(chat), nodes: existing, groups: [], engine: { model: faux.getModel(), streamFn: faux.streamSimple }, onStep: () => undefined });
+		assert.match(prompt, /EXISTING SUBJECT NAMES/);
+		assert.match(prompt, /subjects.*C\+\+ & systems programming/);
+		assert.match(searchResult, /subjects.*C\+\+ & systems programming/);
+		assert.match(LEARNING_MAP_INSTRUCTIONS, /generic prerequisite, graph connection, shared tag/);
+		assert.match(LEARNING_MAP_INSTRUCTIONS, /within the SAME subject/);
+		assert.match(LEARNING_MAP_INSTRUCTIONS, /open vocabulary, not a fixed taxonomy/);
+		assert.deepEqual(saved.nodes.find((item) => item.nodeId === cpp.id)!.subjects, ["C++ & systems programming"]);
+		assert.equal(saved.nodes.find((item) => item.nodeId === node.id)!.subjects, undefined, "legacy omission does not copy subjects from tags or connected nodes");
+		assert.ok(saved.nodes.every((item) => !item.subjects?.includes("Haircutting")), "global vocabulary is never spread to unrelated nodes");
+		const snapshot = buildLearningGraphSnapshot([cpp, mechanics, shared, haircutting, node], mergeLearningContribution(original, saved));
+		const future = snapshot.nodes.find((item) => item.name === "RAII")!;
+		assert.deepEqual(future.subjects, ["C++ & systems programming"]);
+		assert.equal(future.future, true);
+		assert.deepEqual(future.provenance, []);
+		assert.deepEqual(snapshot.nodes.find((item) => item.id === shared.id)!.subjects, ["C++ & systems programming", "Advanced mechanics"]);
+		assert.ok(snapshot.nodes.every((item) => item.progress === "unassessed" && item.progressEvidence.length === 0));
+	});
+
+	it("retries a reused group id that would merge separately classified subjects", async () => {
+		const cpp = { ...node, id: "n_cpp_group", subjects: ["C++ & systems programming"] };
+		const mechanics = { ...node, id: "n_mechanics_group", subjects: ["Advanced mechanics"] };
+		const oldGroup = { id: "foundations", name: "Mechanics foundations", description: "Mechanics study group", members: [mechanics.id] };
+		let calls = 0;
+		const faux = createFauxCore({});
+		faux.setResponses(["foundations", "cpp-foundations"].map((id) => () => {
+			calls++;
+			return fauxAssistantMessage([fauxToolCall("submit_learning_map", { ...empty(), groups: [{ id, name: "C++ foundations", description: "C++ study group", members: [cpp.id] }] } as unknown as ToolCall["arguments"])], { stopReason: "toolUse" });
+		}));
+		const result = await runLearningMap({ record: record([]), passages: [], nodes: [cpp, mechanics], groups: [oldGroup], engine: { model: faux.getModel(), streamFn: faux.streamSimple }, onStep: () => undefined });
+		assert.equal(calls, 2);
+		assert.equal(result.groups[0]!.id, "cpp-foundations");
+	});
+
+	it("cannot use proposed automatic labels to bypass a manual subject or Unassigned correction", () => {
+		const cpp = { ...node, id: "n_cpp_override" };
+		const mechanics = { ...node, id: "n_mechanics_override" };
+		const automatic = mergeLearningContribution(emptyLearningGraphState(), { sourceId: "subject_corrections", updatedAt: date, nodes: [{ nodeId: cpp.id, subjects: ["C++"] }, { nodeId: mechanics.id, subjects: ["Mechanics"] }], prerequisites: [], groups: [] });
+		const proposed: LearningSubmit = { ...empty(), nodes: [{ nodeId: cpp.id, subjects: ["Mechanics"], tags: [], symbols: [], progressEvidence: [] }], groups: [{ id: "mechanics-subject", name: "Mechanics", description: "Mechanics study group", members: [cpp.id, mechanics.id] }] };
+		for (const subjects of [["C++"], []]) {
+			const corrected = patchLearningNode(automatic, cpp.id, { subjects });
+			const effective = buildLearningGraphSnapshot([cpp, mechanics], corrected).nodes;
+			assert.match(validateLearningSubmit(proposed, effective, [])!, /mixes subjects/);
+		}
+		assert.equal(validateLearningSubmit(proposed, buildLearningGraphSnapshot([cpp, mechanics], automatic).nodes, []), null, "a source may explicitly add a shared subject when no correction blocks it");
+		assert.equal(validateLearningSubmit(proposed, [cpp, mechanics], []), null, "legacy contexts without subject fields remain supported");
+	});
+
+	it("keeps explicitly classified study groups separate even when all their concepts are shared", async () => {
+		const shared = { ...node, id: "n_shared_groups" };
+		const original = mergeLearningContribution(emptyLearningGraphState(), { sourceId: "cpp_source", updatedAt: date, nodes: [{ nodeId: shared.id, subjects: ["C++", "Mechanics"] }], prerequisites: [], groups: [{ id: "cpp-vectors", name: "C++ vectors", subjects: ["C++"], description: "Programming study group", members: [shared.id] }] });
+		const snapshot = buildLearningGraphSnapshot([shared], original);
+		const group = (id: string): LearningSubmit => ({ ...empty(), groups: [{ id, name: "Mechanics vectors", subjects: [" mechanics ", "Mechanics"], description: "Mechanics study group", members: [shared.id] }] });
+		let calls = 0;
+		const faux = createFauxCore({});
+		faux.setResponses(["cpp-vectors", "mechanics-vectors"].map((id) => () => {
+			calls++;
+			return fauxAssistantMessage([fauxToolCall("submit_learning_map", group(id) as unknown as ToolCall["arguments"])], { stopReason: "toolUse" });
+		}));
+		const result = await runLearningMap({ record: record([]), passages: [], nodes: snapshot.nodes, groups: snapshot.groups, engine: { model: faux.getModel(), streamFn: faux.streamSimple }, onStep: () => undefined });
+		assert.equal(calls, 2, "an existing group id cannot silently acquire another subject");
+		assert.deepEqual(result.groups[0]!.subjects, ["Mechanics"]);
+		const saved = buildLearningGraphSnapshot([shared], mergeLearningContribution(original, result));
+		assert.deepEqual(scopeLearningGraphToSubject(saved, learningSubjectId("C++")).groups.map((item) => item.id), ["cpp-vectors"]);
+		assert.deepEqual(scopeLearningGraphToSubject(saved, learningSubjectId("Mechanics")).groups.map((item) => item.id), ["mechanics-vectors"]);
+		assert.equal(saved.nodes[0]!.progress, "unassessed");
+		const corrected = buildLearningGraphSnapshot([shared], patchLearningNode(original, shared.id, { subjects: ["C++"] }));
+		assert.match(validateLearningSubmit(group("new-mechanics"), corrected.nodes, [])!, /not shared by every member/);
+		const planned: LearningSubmit = { ...empty(), concepts: [{ id: "c1", name: "New concept", statement: "A new concept needs classification.", messageIds: [] }], groups: [{ id: "new-mechanics", name: "Mechanics", subjects: ["Mechanics"], description: "", members: ["c1"] }] };
+		assert.match(validateLearningSubmit(planned, [], [])!, /classify new members explicitly/);
 	});
 });
 

@@ -23,6 +23,26 @@ before(async () => {
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
 describe("learning graph server mutations", () => {
+	it("persists automatic subjects for planned nodes and honors explicit subject corrections without altering understanding", () => {
+		const file = path.join(directory, "graph", "nodes.jsonl");
+		const ledger = fs.readFileSync(file, "utf8");
+		const planned = node("n_future_subject", "An object can manage a resource's lifetime.");
+		service.saveLearningContribution(contribution({ sourceId: "subjects_source", futureNodes: [planned], nodes: [{ nodeId: planned.id, subjects: ["C++ & systems programming"] }] }));
+		assert.equal(service.updateLearningNode(planned.id, { subjects: ["My systems course"] }).ok, true);
+		service.saveLearningContribution(contribution({ sourceId: "subjects_source", nodes: [{ nodeId: planned.id, subjects: [" C++ & systems programming ", "Advanced mechanics"] }] }));
+		const current = service.learningGraphView().nodes.find((item) => item.id === planned.id)!;
+		assert.deepEqual(current.subjects, ["My systems course"]);
+		assert.deepEqual(current.automaticSubjects, ["C++ & systems programming", "Advanced mechanics"]);
+		assert.equal(current.progress, "unassessed");
+		assert.equal(current.future, true);
+		assert.deepEqual(current.provenance, []);
+		assert.deepEqual(current.progressEvidence, []);
+		assert.equal(fs.readFileSync(file, "utf8"), ledger);
+		assert.equal(service.updateLearningNode(planned.id, { subjects: null }).ok, true);
+		assert.deepEqual(service.learningGraphView().nodes.find((item) => item.id === planned.id)!.subjects, current.automaticSubjects);
+		assert.deepEqual(stores.learningGraphStore.read().contributions.subjects_source!.nodes[0]!.subjects, current.automaticSubjects);
+	});
+
 	it("saves metadata in its sidecar, preserves evidence bytes, and keeps manual progress above later automatic evidence", () => {
 		const file = path.join(directory, "graph", "nodes.jsonl");
 		const before = fs.readFileSync(file, "utf8");

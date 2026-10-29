@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { ArrowUpRightIcon, BookOpenIcon, DumbbellIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { propositionSessionHref } from "@/src/core";
+import { normalizeLearningSubjects, propositionSessionHref } from "@/src/core";
 import type { ProvenancePoint } from "@/src/core";
 import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch, LearningPrerequisitePatch, LearningProgress, LearningSymbol } from "@/src/core";
 import { LEARNING_PROGRESS_LABELS, LearningProgressDot } from "./learning-iceberg.tsx";
@@ -87,7 +87,10 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 	const [tags, setTags] = useState(node.tags.join(", "));
 	const [symbols, setSymbols] = useState<LearningSymbol[]>(node.symbols);
 	const [dirtyFields, setDirtyFields] = useState<LearningMetadataDirtyFields>({});
-	const dirty = Object.keys(dirtyFields).length > 0;
+	const metadataDirty = Object.keys(dirtyFields).length > 0;
+	const [subjects, setSubjects] = useState((node.subjects ?? []).join(", "));
+	const [subjectsDirty, setSubjectsDirty] = useState(false);
+	const dirty = metadataDirty || subjectsDirty;
 	const [busy, setBusy] = useState(false);
 	const [localSessionStarting, setLocalSessionStarting] = useState<"teach" | "practice" | null>(null);
 	const startSessionRef = useRef(false);
@@ -110,6 +113,9 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 		if (!dirtyFields.tags) setTags(node.tags.join(", "));
 		if (!dirtyFields.symbols) setSymbols(node.symbols);
 	}, [node.name, node.tags, node.symbols, dirtyFields]);
+	useEffect(() => {
+		if (!subjectsDirty) setSubjects((node.subjects ?? []).join(", "));
+	}, [node.subjects, subjectsDirty]);
 	useEffect(() => { closeRef.current?.focus({ preventScroll: true }); }, []);
 	useEffect(() => {
 		const handleKey = (event: KeyboardEvent) => {
@@ -142,6 +148,8 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 		setTags(node.tags.join(", "));
 		setSymbols(node.symbols);
 		setDirtyFields({});
+		setSubjects((node.subjects ?? []).join(", "));
+		setSubjectsDirty(false);
 		setAdding(false);
 		setPrerequisiteId("");
 		setReason("");
@@ -199,7 +207,17 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 					</form> : <button type="button" disabled={locked || candidates.length === 0} onClick={() => setAdding(true)} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add prerequisite</button>}
 					{following.length > 0 && <div className="mt-3"><p className="text-xs text-muted-foreground">Helps unlock</p>{following.map((next) => <button type="button" key={next.id} onClick={() => onSelect(next.id)} className="mt-1 flex min-h-8 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />{next.name}<span className="text-xs text-muted-foreground">{next.ready && next.progress !== "comfortable" ? "Ready" : ""}</span></button>)}</div>}
 				</Section>
-				<form onSubmit={(event) => { event.preventDefault(); if (name.trim()) void run(async () => { await onSave(learningMetadataPatch({ name, tags, symbols }, dirtyFields)); setDirtyFields({}); }, "Node details saved."); }}>
+				<Section title="Subjects">
+					<form onSubmit={(event) => { event.preventDefault(); if (subjectsDirty) void run(async () => { await onSave({ subjects: normalizeLearningSubjects(subjects.split(",")) }); setSubjectsDirty(false); }, "Subjects saved. Your correction is active."); }}>
+						<label htmlFor={`${titleId}-subjects`} className="mb-1 block text-xs text-muted-foreground">Subjects · separated by commas</label>
+						<input id={`${titleId}-subjects`} value={subjects} onChange={(event) => { setSubjects(event.target.value); setSubjectsDirty(true); }} placeholder="Mechanics, Mathematics" className={fieldClass} disabled={locked} />
+						<p className="mt-2 text-xs leading-relaxed text-muted-foreground">Shared concepts appear only in the subjects listed here. Leave this empty to keep the concept in Unassigned.</p>
+						<p className="mt-2 text-xs leading-relaxed text-muted-foreground">{node.subjectsOverride != null ? "Your subject correction is active. Automatic updates will not replace it." : "Subject assignments update automatically from your sessions. You can correct them here."}</p>
+						<div className="mt-2 flex flex-wrap items-center justify-between gap-1"><button type="button" disabled={locked || (node.subjectsOverride == null && !subjectsDirty)} onClick={() => void run(async () => { await onSave({ subjects: null }); setSubjectsDirty(false); }, "Following automatic subjects.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Use automatic subjects</button><button type="submit" disabled={locked || !subjectsDirty} className={cn(actionClass, "border border-border bg-accent/50")}>Save subjects</button></div>
+						{node.subjectsOverride != null && <p className="mt-1 text-xs text-muted-foreground">Automatic: {node.automaticSubjects?.join(", ") || "Unassigned"}</p>}
+					</form>
+				</Section>
+				<form onSubmit={(event) => { event.preventDefault(); if (metadataDirty && name.trim()) void run(async () => { await onSave(learningMetadataPatch({ name, tags, symbols }, dirtyFields)); setDirtyFields({}); }, "Node details saved."); }}>
 					<Section title="Name & tags">
 						<label htmlFor={`${titleId}-name`} className="mb-1 block text-xs text-muted-foreground">Name</label>
 						<input id={`${titleId}-name`} required maxLength={200} value={name} onChange={(event) => { setName(event.target.value); setDirtyFields((fields) => ({ ...fields, name: true })); }} className={fieldClass} disabled={locked} />
@@ -218,7 +236,7 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 						</div>)}</div>
 						<button type="button" disabled={locked} onClick={() => { setSymbols((current) => [...current, { notation: "", meaning: "", aliases: [], provenance: [] }]); setDirtyFields((fields) => ({ ...fields, symbols: true })); }} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add symbol</button>
 					</Section>
-					<div className="flex items-center justify-between gap-2 pb-4"><button type="button" disabled={locked} onClick={() => void run(async () => { await onSave({ name: null, tags: null, symbols: null }); setDirtyFields({}); }, "Following automatic metadata.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Reset metadata</button><button type="submit" disabled={locked || !dirty || !name.trim()} className={cn(actionClass, "border border-border bg-accent/50")}>{busy ? "Saving…" : "Save details"}</button></div>
+					<div className="flex items-center justify-between gap-2 pb-4"><button type="button" disabled={locked} onClick={() => void run(async () => { await onSave({ name: null, tags: null, symbols: null }); setDirtyFields({}); }, "Following automatic metadata.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Reset name, tags & symbols</button><button type="submit" disabled={locked || !metadataDirty || !name.trim()} className={cn(actionClass, "border border-border bg-accent/50")}>{busy ? "Saving…" : "Save details"}</button></div>
 				</form>
 				<Section title="History & sources">
 					<dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">Added to map</dt><dd>{displayDate(node.createdAt)}</dd><dt className="text-muted-foreground">First encountered</dt><dd>{displayDate(node.firstEncounteredAt)}</dd></dl>

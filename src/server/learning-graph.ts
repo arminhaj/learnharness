@@ -88,7 +88,7 @@ export function saveLearningContribution(contribution: LearningContribution): Le
 export function updateLearningNode(nodeId: string, input: unknown): MutationOutcome {
 	let patch;
 	try { patch = parseLearningNodePatch(input); }
-	catch { return { ok: false, status: 400, code: "invalid_metadata", error: "Enter a nonempty name, valid tags and symbols, or an understanding state." }; }
+	catch { return { ok: false, status: 400, code: "invalid_metadata", error: "Enter a nonempty name, valid subjects, tags and symbols, or an understanding state." }; }
 	if (!Object.keys(patch).length) return { ok: false, status: 400, code: "empty_patch", error: "No node changes supplied." };
 	const state = readLearningGraphState();
 	nodeId = resolveLearningNodeId(state, nodeId);

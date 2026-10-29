@@ -1,6 +1,6 @@
 import type {
 	GraphNode, ProvenancePoint, LearningConcept, LearningContribution,
-	LearningGraphSnapshot, LearningGraphState, LearningGroup, LearningGroupEdge,
+	LearningGraphSnapshot, LearningGraphState, LearningGroup, LearningGroupEdge, LearningGroupInput,
 	LearningNodeContribution, LearningNodePatch, LearningPrerequisite,
 	LearningPrerequisitePatch, LearningProgress, LearningProgressEvidence, LearningSymbol,
 } from "./contracts.ts";
@@ -61,6 +61,16 @@ export function reconcileLearningGraphState(storedNodes: readonly GraphNode[], i
 }
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)];
+
+/** Subject identity ignores case/spacing, but never strips meaningful punctuation. */
+export function normalizeLearningSubjects(values: readonly string[]): string[] {
+	const labels = new Map<string, string>();
+	for (const value of values) {
+		const label = value.trim().replace(/\s+/g, " ");
+		if (label && !labels.has(label.toLowerCase())) labels.set(label.toLowerCase(), label);
+	}
+	return [...labels.values()];
+}
 function points(values: readonly ProvenancePoint[]): ProvenancePoint[] {
 	const seen = new Set<string>();
 	return values.filter((point) => {
@@ -99,6 +109,7 @@ export function mergeLearningContribution(state: LearningGraphState, incoming: L
 		const before = nodes.get(node.nodeId);
 		nodes.set(node.nodeId, {
 			nodeId: node.nodeId,
+			subjects: normalizeLearningSubjects([...(before?.subjects ?? []), ...(node.subjects ?? [])]),
 			tags: unique([...(before?.tags ?? []), ...(node.tags ?? [])]),
 			symbols: mergeSymbols([...(before?.symbols ?? []), ...(node.symbols ?? [])]),
 			progressEvidence: mergeEvidence([...(before?.progressEvidence ?? []), ...(node.progressEvidence ?? [])]),
@@ -112,7 +123,9 @@ export function mergeLearningContribution(state: LearningGraphState, incoming: L
 	}
 	const groups = new Map<string, LearningContribution["groups"][number]>();
 	for (const group of [...(previous?.groups ?? []), ...incoming.groups]) {
-		groups.set(group.id, { ...group, members: unique([...(groups.get(group.id)?.members ?? []), ...group.members]) });
+		const before = groups.get(group.id);
+		groups.set(group.id, { ...group, members: unique([...(before?.members ?? []), ...group.members]),
+			...(before?.subjects !== undefined || group.subjects !== undefined ? { subjects: normalizeLearningSubjects([...(before?.subjects ?? []), ...(group.subjects ?? [])]) } : {}) });
 	}
 	const futureNodes = new Map<string, GraphNode>();
 	const knownFuture = new Map<string, GraphNode>();
@@ -141,6 +154,8 @@ export function mergeLearningContribution(state: LearningGraphState, incoming: L
 }
 
 export function patchLearningNode(state: LearningGraphState, nodeId: string, patch: LearningNodePatch): LearningGraphState {
+	nodeId = resolveLearningNodeId(state, nodeId);
+	if (patch.subjects) patch = { ...patch, subjects: normalizeLearningSubjects(patch.subjects) };
 	const next = { ...state.nodeOverrides[nodeId] };
 	for (const key of Object.keys(patch) as (keyof LearningNodePatch)[]) {
 		if (patch[key] === null) delete next[key];
@@ -163,10 +178,11 @@ export function patchLearningPrerequisite(state: LearningGraphState, patch: Lear
 /** SCC condensation gives cycles one honest layer, then computes longest
  * prerequisite depth on the resulting DAG. Neither readiness nor knowledge
  * is inferred from depth. Iterative traversal avoids a deep-graph stack. */
-function prerequisiteDepth(ids: readonly string[], edges: readonly { from: string; to: string }[]): { depths: Map<string, number>; cycles: string[][] } {
+export function learningPrerequisiteDepth(ids: readonly string[], edges: readonly { from: string; to: string }[]): { depths: Map<string, number>; cycles: string[][] } {
 	const forward = new Map(ids.map((id) => [id, [] as string[]]));
 	const reverse = new Map(ids.map((id) => [id, [] as string[]]));
 	for (const { from, to } of edges) {
+		if (!forward.has(from) || !forward.has(to)) continue;
 		forward.get(from)?.push(to);
 		reverse.get(to)?.push(from);
 	}
@@ -266,15 +282,18 @@ export function buildLearningGraphSnapshot(
 		}
 	}
 	const prerequisites = [...edgeMap.values()].filter((edge) => edge.from !== edge.to && base.has(edge.from) && base.has(edge.to));
-	const { depths, cycles } = prerequisiteDepth([...base.keys()], prerequisites);
+	const { depths, cycles } = learningPrerequisiteDepth([...base.keys()], prerequisites);
 	const nodes: LearningConcept[] = [...base.values()].map((node) => {
 		const rows = metadata.get(node.id) ?? [];
 		const override = state.nodeOverrides[node.id];
 		const progressEvidence = mergeEvidence(rows.flatMap((row) => row.progressEvidence ?? []));
 		const automaticProgress = progressEvidence.at(-1)?.state ?? "unassessed";
+		const automaticSubjects = normalizeLearningSubjects(rows.flatMap((row) => row.subjects ?? []));
+		const subjectsOverride = override?.subjects == null ? null : normalizeLearningSubjects(override.subjects);
 		const future = !encountered.has(node.id);
 		return {
 			...node, name: override?.name ?? node.name,
+			subjects: subjectsOverride ?? automaticSubjects, automaticSubjects, subjectsOverride,
 			tags: override?.tags ?? unique(rows.flatMap((row) => row.tags ?? [])),
 			symbols: override?.symbols ?? mergeSymbols(rows.flatMap((row) => row.symbols ?? [])),
 			progress: override?.progress ?? automaticProgress, automaticProgress,
@@ -290,9 +309,20 @@ export function buildLearningGraphSnapshot(
 		node.unmetPrerequisiteIds = (prerequisitesOf.get(node.id) ?? []).filter((id) => nodeMap.get(id)?.progress !== "comfortable");
 		node.ready = node.unmetPrerequisiteIds.length === 0;
 	}
-	const groupMap = new Map<string, LearningContribution["groups"][number]>();
-	for (const contribution of contributions) for (const group of contribution.groups) {
-		groupMap.set(group.id, { ...group, members: unique([...(groupMap.get(group.id)?.members ?? []), ...group.members]).filter((id) => base.has(id)) });
+	const { groups, groupEdges } = deriveLearningGroups(nodes, prerequisites, contributions.flatMap((contribution) => contribution.groups));
+	return { nodes, prerequisites, prerequisiteCorrections: Object.values(state.prerequisiteOverrides).filter((edge) => base.has(edge.from) && base.has(edge.to)), groups, groupEdges, cycles,
+		...(state.nodeAliases ? { idAliases: Object.fromEntries(Object.keys(state.nodeAliases).map((id) => [id, resolveLearningNodeId(state, id)])) } : {}) };
+}
+
+/** Derive group summaries only from included members. Node readiness and
+ * unmet prerequisites may retain global blockers outside this projection. */
+export function deriveLearningGroups(nodes: readonly LearningConcept[], prerequisites: readonly LearningPrerequisite[], inputs: readonly LearningGroupInput[]): { groups: LearningGroup[]; groupEdges: LearningGroupEdge[] } {
+	const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+	const groupMap = new Map<string, LearningGroupInput>();
+	for (const group of inputs) {
+		const before = groupMap.get(group.id);
+		groupMap.set(group.id, { ...group, members: unique([...(before?.members ?? []), ...group.members]).filter((id) => nodeMap.has(id)),
+			...(before?.subjects !== undefined || group.subjects !== undefined ? { subjects: normalizeLearningSubjects([...(before?.subjects ?? []), ...(group.subjects ?? [])]) } : {}) });
 	}
 	const groups: LearningGroup[] = [...groupMap.values()].filter((group) => group.members.length).map((group) => {
 		const members = new Set(group.members);
@@ -315,10 +345,9 @@ export function buildLearningGraphSnapshot(
 		groupEdgeMap.set(id, { from, to, prerequisiteIds: unique([...(before?.prerequisiteIds ?? []), edge.id]) });
 	}
 	const groupEdges = [...groupEdgeMap.values()];
-	const groupDepths = prerequisiteDepth(groups.map((group) => group.id), groupEdges).depths;
+	const groupDepths = learningPrerequisiteDepth(groups.map((group) => group.id), groupEdges).depths;
 	for (const group of groups) group.depth = groupDepths.get(group.id) ?? 0;
-	return { nodes, prerequisites, prerequisiteCorrections: Object.values(state.prerequisiteOverrides).filter((edge) => base.has(edge.from) && base.has(edge.to)), groups, groupEdges, cycles,
-		...(state.nodeAliases ? { idAliases: Object.fromEntries(Object.keys(state.nodeAliases).map((id) => [id, resolveLearningNodeId(state, id)])) } : {}) };
+	return { groups, groupEdges };
 }
 
 /** Delete identity-bound metadata too; stale automatic batches cannot revive it. */

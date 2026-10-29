@@ -65,7 +65,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import { ListTreeIcon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
-import { buildLearningGraphSnapshot, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningConcept, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
+import { buildLearningGraphSnapshot, learningSubjects, scopeLearningGraphToSubject, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningConcept, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
@@ -78,7 +78,7 @@ import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { Hint } from "@/components/ui/hint";
 import { LearningNodeSidebar } from "./learning-node-sidebar";
-import { LearningIceberg, LearningProgressLegend } from "./learning-iceberg";
+import { LearningIceberg, LearningProgressLegend, useLearningSubjectSelection } from "./learning-iceberg";
 import {
 	ARROW_LENGTH_LADDER,
 	CHARGE_RANGE,
@@ -981,6 +981,14 @@ export function GraphView({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [mapView, setMapView] = useState<"prerequisites" | "iceberg">("prerequisites");
 	const learning = useMemo(() => snapshot?.learning ?? buildLearningGraphSnapshot(snapshot?.propositions ?? []), [snapshot]);
+	const subjects = useMemo(() => learningSubjects(learning), [learning]);
+	const [activeSubjectId, setSubjectId] = useLearningSubjectSelection(subjects);
+	const icebergLearning = useMemo(() => scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId]);
+	const previousSubjectRef = useRef<string | null>(activeSubjectId);
+	useEffect(() => {
+		if (mapView === "iceberg" && previousSubjectRef.current !== activeSubjectId) setSelectedId(null);
+		previousSubjectRef.current = activeSubjectId;
+	}, [activeSubjectId, mapView]);
 	const canonicalSelectedId = selectedId ? learning.idAliases?.[selectedId] ?? selectedId : null;
 	const selected = learning.nodes.find((n) => n.id === canonicalSelectedId) ?? null;
 	const learningRef = useRef(learning);
@@ -1078,6 +1086,8 @@ export function GraphView({
 			}
 		return set;
 	}, [snapshot, learning, query]);
+	const icebergVisibleIds = useMemo(() => new Set(icebergLearning.nodes.filter((node) => isNodeVisible(node, query)).map((node) => node.id)), [icebergLearning, query]);
+	const viewVisibleIds = mapView === "iceberg" ? icebergVisibleIds : visibleIds;
 
 	// Fetch the derived graph. Re-runs when a background pipeline run
 	// finishes (refreshTick) — its merges just landed in the ledger.
@@ -1466,8 +1476,9 @@ export function GraphView({
 	useEffect(() => {
 		rendererRef.current?.setVisible(query.trim() ? visibleIds : null);
 		// The open detail card cannot outlive its node's visibility.
-		setSelectedId((id) => (id && visibleIds.has(learning.idAliases?.[id] ?? id) ? id : null));
-	}, [visibleIds, query, learning.idAliases]);
+		const selectableIds = query.trim() && mapView === "iceberg" ? icebergVisibleIds : visibleIds;
+		setSelectedId((id) => (id && selectableIds.has(learning.idAliases?.[id] ?? id) ? id : null));
+	}, [visibleIds, icebergVisibleIds, mapView, query, learning.idAliases]);
 
 	// Feed #4 — region tuning. `isEmpty` in the deps (same as Feed #2):
 	// the settings fetch resolves BEFORE the snapshot creates the renderer,
@@ -1546,12 +1557,12 @@ export function GraphView({
 					)}
 				</div>
 			)}
-			{!isEmpty && mapView === "iceberg" && <LearningIceberg learning={learning} selectedId={canonicalSelectedId} onSelect={setSelectedId} visibleIds={visibleIds} className={`absolute inset-x-0 top-28 bottom-40 overflow-y-auto px-4 py-4 ${selected ? "md:pr-[24rem]" : ""}`} />}
+			{!isEmpty && mapView === "iceberg" && <LearningIceberg learning={icebergLearning} selectedId={canonicalSelectedId} onSelect={setSelectedId} visibleIds={icebergVisibleIds} subjects={subjects} subjectId={activeSubjectId} onSubjectChange={(id) => { setSubjectId(id); setSelectedId(null); setCtxNode(null); }} className={`absolute inset-x-0 top-28 bottom-40 overflow-y-auto px-4 py-4 ${selected ? "md:pr-[24rem]" : ""}`} />}
 
 			<div className="lh-no-drag absolute inset-x-3 top-14 z-10 flex flex-wrap items-start gap-2">
 				<div className="flex rounded-xl border bg-card/95 p-1 shadow-sm backdrop-blur" aria-label="Map view">
 					{(["prerequisites", "iceberg"] as const).map((view) => (
-						<button key={view} type="button" aria-pressed={mapView === view} onClick={() => { setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+						<button key={view} type="button" aria-pressed={mapView === view} onClick={() => { if (view === "iceberg" && !icebergLearning.nodes.some((node) => node.id === canonicalSelectedId)) setSelectedId(null); setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
 							{view === "prerequisites" ? "Prerequisites" : "Iceberg"}
 						</button>
 					))}
@@ -1661,7 +1672,7 @@ export function GraphView({
 					isEmpty={isEmpty}
 					query={query}
 					onQuery={setQuery}
-					noMatch={snapshot !== null && visibleIds.size === 0 && query.trim() !== ""}
+					noMatch={snapshot !== null && viewVisibleIds.size === 0 && query.trim() !== ""}
 					importing={importing}
 					searchInputRef={searchInputRef}
 					fileInputRef={fileInputRef}

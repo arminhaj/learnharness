@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ArrowDownIcon, ArrowUpRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { LEARNING_SUBJECT_UNASSIGNED_ID } from "@/src/core";
 import type { LearningGraphSnapshot, LearningProgress } from "@/src/core";
 
 export const LEARNING_PROGRESS_LABELS: Record<LearningProgress, string> = {
@@ -38,23 +40,40 @@ export interface LearningIcebergProps {
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	visibleIds?: ReadonlySet<string>;
+	subjects?: { id: string; name: string; nodeIds: string[] }[];
+	subjectId?: string | null;
+	onSubjectChange?: (id: string) => void;
 	className?: string;
 }
 
-export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, className }: LearningIcebergProps) {
+/** Remember the initial fallback too: a newly discovered subject must not
+ * switch the open map. An empty refresh does not erase the user's choice. */
+export function useLearningSubjectSelection(subjects: readonly { id: string }[]) {
+	const [subjectId, setSubjectId] = useState<string | null>(null);
+	const activeSubjectId = subjects.some((subject) => subject.id === subjectId) ? subjectId : subjects[0]?.id ?? null;
+	useEffect(() => {
+		if (activeSubjectId !== null) setSubjectId(activeSubjectId);
+	}, [activeSubjectId]);
+	return [activeSubjectId, setSubjectId] as const;
+}
+
+export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, subjects, subjectId, onSubjectChange, className }: LearningIcebergProps) {
 	const nodeById = new Map(learning.nodes.map((node) => [node.id, node]));
 	const groups = learning.groups.filter((group) => group.members.some((id) => !visibleIds || visibleIds.has(id)));
 	const levels = [...new Set(groups.map((group) => group.depth))].sort((a, b) => a - b);
 	const groupById = new Map(learning.groups.map((group) => [group.id, group]));
 	const groupedIds = new Set(learning.groups.flatMap((group) => group.members));
 	const ungrouped = learning.nodes.filter((node) => !groupedIds.has(node.id) && (!visibleIds || visibleIds.has(node.id)));
+	const subject = subjects?.find((value) => value.id === subjectId);
 	return (
 		<div data-testid="learning-iceberg" className={cn("lh-no-drag overflow-y-auto overscroll-contain bg-background px-4 pb-8 pt-4 sm:px-6", className)}>
 			<div className="mb-6 max-w-2xl">
-				<h2 className="font-title text-2xl">The shape of the subject</h2>
+				{subjects && onSubjectChange && <label className="mb-4 flex max-w-sm items-center gap-3 text-xs text-muted-foreground">Subject<select aria-label="Iceberg subject" value={subjectId ?? ""} onChange={(event) => onSubjectChange(event.target.value)} disabled={subjects.length === 0} className="min-h-10 min-w-0 flex-1 rounded-md border border-input bg-card px-3 py-2 text-sm text-foreground focus:border-foreground/60 disabled:opacity-50">{subjects.map((value) => <option key={value.id} value={value.id}>{value.name} · {value.nodeIds.length}</option>)}</select></label>}
+				<h2 className="font-title text-2xl">{subject?.name ?? "The shape of the subject"}</h2>
 				<p className="mt-2 font-prose text-base leading-relaxed text-muted-foreground">Concepts learned together, from foundations toward deeper applications. Your understanding sits on top of the map.</p>
+				{subject && <p className="mt-2 text-xs text-muted-foreground">{subject.id === LEARNING_SUBJECT_UNASSIGNED_ID ? "These concepts have no subject assignment yet. Set subjects in their details." : `Showing concepts assigned to ${subject.name}. Change a concept’s subjects in its details.`}</p>}
 				<LearningProgressLegend className="mt-4" />
-				<p className="mt-3 text-xs text-muted-foreground">Ready means the recorded prerequisites are comfortable. It does not mark the next concept as understood.</p>
+				<p className="mt-3 text-xs text-muted-foreground">Ready means the recorded prerequisites are comfortable, including prerequisites in other subjects. It does not mark the next concept as understood.</p>
 			</div>
 			{groups.length === 0 && ungrouped.length === 0 && <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">{visibleIds && visibleIds.size === 0 ? "No concepts match this search." : "Groups will appear as the harness maps related concepts from your sessions."}</p>}
 			<div className="space-y-6">

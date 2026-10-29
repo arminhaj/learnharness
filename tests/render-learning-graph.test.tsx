@@ -1,15 +1,18 @@
-import React from "react";
+import React, { act } from "react";
 (globalThis as Record<string, unknown>).React = React;
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot } from "react-dom/client";
+import { parseHTML } from "linkedom";
 import { LearningNodeSidebar, LearningSessionActions, learningMetadataPatch } from "../components/learning-node-sidebar.tsx";
-import { LearningIceberg } from "../components/learning-iceberg.tsx";
-import type { LearningConcept, LearningGraphSnapshot } from "../src/core/contracts/learning-graph.ts";
+import { LearningIceberg, useLearningSubjectSelection } from "../components/learning-iceberg.tsx";
+import { learningSubjectId, learningSubjects, scopeLearningGraphToSubject } from "../src/core/learning-subjects.ts";
+import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch } from "../src/core/contracts/learning-graph.ts";
 
 function node(id: string, name: string, patch: Partial<LearningConcept> = {}): LearningConcept {
-	return { id, name, statement: `${name} statement.`, aliases: [], createdAt: "2026-10-01T00:00:00Z", provenance: [], tags: [], symbols: [], progress: "unassessed", automaticProgress: "unassessed", progressOverride: null, progressEvidence: [], ready: true, unmetPrerequisiteIds: [], depth: 0, future: false, firstEncounteredAt: "2026-10-01T00:00:00Z", ...patch };
+	return { id, name, statement: `${name} statement.`, aliases: [], createdAt: "2026-10-01T00:00:00Z", provenance: [], tags: [], subjects: [], automaticSubjects: [], subjectsOverride: null, symbols: [], progress: "unassessed", automaticProgress: "unassessed", progressOverride: null, progressEvidence: [], ready: true, unmetPrerequisiteIds: [], depth: 0, future: false, firstEncounteredAt: "2026-10-01T00:00:00Z", ...patch };
 }
 
 const calculus = node("n_calculus", "Calculus", { progress: "comfortable", automaticProgress: "comfortable" });
@@ -68,6 +71,35 @@ describe("learning graph details", () => {
 		assert.match(html, /Source unavailable/);
 		assert.match(html, /Exponential growth factor/);
 		assert.doesNotMatch(html, /href="\/chat\/chat_1/);
+	});
+	it("explains subject correction ownership and keeps reset operations independent", async () => {
+		const { window, document } = parseHTML("<html><body></body></html>");
+		const originalWindow = globalThis.window;
+		const originalDocument = globalThis.document;
+		const originalActEnvironment = (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT;
+		Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		const saved: LearningNodePatch[] = [];
+		const concept = { ...euler, subjects: ["Mechanics", "Mathematics"], automaticSubjects: ["Mechanics"], subjectsOverride: ["Mechanics", "Mathematics"] };
+		try {
+			await act(async () => root.render(<LearningNodeSidebar node={concept} learning={learning} {...actions} onSave={async (patch) => { saved.push(patch); }} />));
+			assert.match(host.textContent ?? "", /Shared concepts appear only in the subjects listed here/);
+			assert.match(host.textContent ?? "", /Your subject correction is active/);
+			const resetMetadata = [...host.querySelectorAll("button")].find((button) => button.textContent === "Reset name, tags & symbols");
+			assert.ok(resetMetadata);
+			await act(async () => { resetMetadata.click(); });
+			assert.deepEqual(saved, [{ name: null, tags: null, symbols: null }]);
+			assert.equal(host.querySelector<HTMLInputElement>('input[id$="-subjects"]')?.value, "Mechanics, Mathematics");
+			const resetSubjects = [...host.querySelectorAll("button")].find((button) => button.textContent === "Use automatic subjects");
+			assert.ok(resetSubjects);
+			await act(async () => { resetSubjects.click(); });
+			assert.deepEqual(saved[1], { subjects: null });
+		} finally {
+			await act(async () => root.unmount());
+			Object.assign(globalThis, { window: originalWindow, document: originalDocument, IS_REACT_ACT_ENVIRONMENT: originalActEnvironment });
+		}
 	});
 });
 
@@ -140,5 +172,88 @@ describe("learning iceberg", () => {
 		assert.match(html, /Not grouped yet/);
 		assert.match(html, /Euler–Lagrange equation/);
 		assert.doesNotMatch(html, /aria-label="Foundations"/);
+	});
+});
+
+describe("subject-scoped iceberg", () => {
+	const cpp = node("n_cpp", "Pointer ownership", { subjects: ["C++"] });
+	const cppUngrouped = node("n_cpp_loose", "Move constructor", { subjects: ["C++"] });
+	const mechanics = node("n_mechanics", "Stationary action", { subjects: ["Mechanics"] });
+	const mechanicsUngrouped = node("n_mechanics_loose", "Generalized coordinates", { subjects: ["Mechanics"] });
+	const shared = node("n_shared", "Numerical approximation", { subjects: ["C++", "Mechanics"] });
+	const unassigned = node("n_unassigned", "Unsorted concept");
+	const snapshot: LearningGraphSnapshot = {
+		...learning,
+		nodes: [cpp, cppUngrouped, mechanics, mechanicsUngrouped, shared, unassigned],
+		prerequisites: [],
+		groups: [
+			{ ...learning.groups[0]!, id: "g_cpp", name: "C++ fundamentals", members: [cpp.id, shared.id], unlocks: [] },
+			{ ...learning.groups[1]!, id: "g_mechanics", name: "Mechanics foundations", members: [mechanics.id, shared.id], unlocks: [] },
+		],
+		groupEdges: [],
+	};
+	const subjects = learningSubjects(snapshot);
+	const renderSubject = (label: string, visibleIds?: ReadonlySet<string>) => {
+		const id = label === "Unassigned" ? "unassigned" : learningSubjectId(label);
+		return renderToStaticMarkup(<LearningIceberg learning={scopeLearningGraphToSubject(snapshot, id)} selectedId={null} onSelect={() => {}} subjects={subjects} subjectId={id} onSubjectChange={() => {}} visibleIds={visibleIds} />);
+	};
+	it("uses an accessible explicit subject selector without an All bucket", () => {
+		const html = renderSubject("C++");
+		assert.match(html, /aria-label="Iceberg subject"/);
+		assert.match(html, /value="subject:c%2B%2B" selected=""/);
+		assert.match(html, /<option value="unassigned">Unassigned · 1<\/option>/);
+		assert.doesNotMatch(html, /<option[^>]*>All/);
+	});
+	it("keeps grouped and ungrouped concept rows within the selected subject", () => {
+		const cppHtml = renderSubject("C++");
+		assert.match(cppHtml, /Pointer ownership/);
+		assert.match(cppHtml, /Move constructor/);
+		assert.match(cppHtml, /Numerical approximation/);
+		assert.doesNotMatch(cppHtml, /Stationary action|Generalized coordinates|Unsorted concept/);
+		const mechanicsHtml = renderSubject("Mechanics");
+		assert.match(mechanicsHtml, /Stationary action/);
+		assert.match(mechanicsHtml, /Generalized coordinates/);
+		assert.match(mechanicsHtml, /Numerical approximation/);
+		assert.doesNotMatch(mechanicsHtml, /Pointer ownership|Move constructor|Unsorted concept/);
+	});
+	it("does not show unrelated search matches and keeps unassigned concepts reachable", () => {
+		const scoped = scopeLearningGraphToSubject(snapshot, learningSubjectId("C++"));
+		const html = renderSubject("C++", new Set(scoped.nodes.filter((concept) => concept.name.includes("Stationary")).map((concept) => concept.id)));
+		assert.match(html, /No concepts match this search/);
+		assert.doesNotMatch(html, /Stationary action|Pointer ownership/);
+		const unassignedHtml = renderSubject("Unassigned");
+		assert.match(unassignedHtml, /Unsorted concept/);
+		assert.match(unassignedHtml, /These concepts have no subject assignment yet/);
+		assert.doesNotMatch(unassignedHtml, /Stationary action|Pointer ownership/);
+	});
+	it("remembers the initial subject across earlier arrivals and empty refreshes, falling back only when it disappears", async () => {
+		const { window, document } = parseHTML("<html><body></body></html>");
+		const originalWindow = globalThis.window;
+		const originalDocument = globalThis.document;
+		const originalActEnvironment = (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT;
+		Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		function Selection({ ids }: { ids: string[] }) {
+			const [selected] = useLearningSubjectSelection(ids.map((id) => ({ id })));
+			return <span>{selected ?? "empty"}</span>;
+		}
+		try {
+			await act(async () => root.render(<Selection ids={[]} />));
+			await act(async () => root.render(<Selection ids={["mechanics"]} />));
+			assert.equal(host.textContent, "mechanics");
+			await act(async () => root.render(<Selection ids={["cpp", "mechanics"]} />));
+			assert.equal(host.textContent, "mechanics", "new earlier subject must not replace the initial selection");
+			await act(async () => root.render(<Selection ids={[]} />));
+			assert.equal(host.textContent, "empty");
+			await act(async () => root.render(<Selection ids={["cpp", "mechanics"]} />));
+			assert.equal(host.textContent, "mechanics", "temporary empty data must retain the remembered subject");
+			await act(async () => root.render(<Selection ids={["cpp"]} />));
+			assert.equal(host.textContent, "cpp");
+		} finally {
+			await act(async () => root.unmount());
+			Object.assign(globalThis, { window: originalWindow, document: originalDocument, IS_REACT_ACT_ENVIRONMENT: originalActEnvironment });
+		}
 	});
 });

@@ -20,6 +20,8 @@ export interface LearningProgressEvidence {
 
 export interface LearningNodeContribution {
 	nodeId: string;
+	/** Explicit subject memberships; omission assigns no inferred taxonomy. */
+	subjects?: string[];
 	tags?: string[];
 	symbols?: LearningSymbol[];
 	progressEvidence?: LearningProgressEvidence[];
@@ -36,6 +38,8 @@ export interface LearningGroupInput {
 	id: string;
 	name: string;
 	description: string;
+	/** Explicit subject context for the group's title and description. */
+	subjects?: string[];
 	members: string[];
 }
 
@@ -55,6 +59,8 @@ export interface LearningContribution {
 export interface LearningNodePatch {
 	/** null clears a user override and follows automatic metadata again. */
 	name?: string | null;
+	/** [] deliberately leaves a concept unassigned; null follows automatic. */
+	subjects?: string[] | null;
 	tags?: string[] | null;
 	symbols?: LearningSymbol[] | null;
 	progress?: LearningProgress | null;
@@ -85,6 +91,9 @@ export interface LearningPrerequisite extends LearningPrerequisiteInput {
 }
 
 export interface LearningConcept extends GraphNode {
+	subjects: string[];
+	automaticSubjects: string[];
+	subjectsOverride: string[] | null;
 	tags: string[];
 	symbols: LearningSymbol[];
 	progress: LearningProgress;
