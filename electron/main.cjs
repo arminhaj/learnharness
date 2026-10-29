@@ -24,11 +24,12 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, session, shell, nativeTheme } = require("electron");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
+const { parseNativeAppearance, nativeAppearanceColors } = require("./appearance.cjs");
 const { desktopAPIHeaders } = require("./desktop-api.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
@@ -143,6 +144,28 @@ let subscriptionChild = null;
 let desktopAPISecret = null;
 let reopenWindow = null;
 const trustedAppWindows = new Set();
+let windowAppearance = { mode: "dark", background: null };
+
+function refreshWindowAppearance() {
+	const colors = nativeAppearanceColors(windowAppearance, nativeTheme.shouldUseDarkColors);
+	for (const win of trustedAppWindows) {
+		if (win.isDestroyed()) continue;
+		win.setBackgroundColor(colors.background);
+		if (process.platform !== "darwin") {
+			win.setTitleBarOverlay({ color: colors.background, symbolColor: colors.foreground });
+		}
+	}
+}
+
+function applyWindowAppearance(raw) {
+	const appearance = parseNativeAppearance(raw);
+	if (!appearance) return;
+	windowAppearance = appearance;
+	// Setting system removes any earlier explicit native override, restoring
+	// the real OS preference for both Chromium's media query and native UI.
+	nativeTheme.themeSource = appearance.mode;
+	refreshWindowAppearance();
+}
 
 // A GUI shell must never die to a stray exception (EPIPE dialogs, a race
 // in an event handler): the window + child server are the product, and
@@ -287,6 +310,7 @@ function killServer() {
  *  - will-navigate pinned to the app origin; window.open always denied —
  *    external links go to the real browser via shell.openExternal. */
 function createWindow(url) {
+	const colors = nativeAppearanceColors(windowAppearance, nativeTheme.shouldUseDarkColors);
 	const win = new BrowserWindow({
 		width: 1440,
 		height: 900,
@@ -308,7 +332,7 @@ function createWindow(url) {
 				// height. Do not force the zoom-invariant native overlay to match
 				// the renderer's 60 CSS px bar: zooming out would cover its border.
 				// The renderer reserves the actual width via env(titlebar-area-*).
-				titleBarOverlay: { color: "#141414", symbolColor: "#e5e5e5" },
+				titleBarOverlay: { color: colors.background, symbolColor: colors.foreground },
 				// Keep the custom bar alone; Alt reveals the native menu.
 				autoHideMenuBar: true,
 			}),
@@ -323,10 +347,10 @@ function createWindow(url) {
 		// the native window surface changes size before Chromium's compositor
 		// has a frame at the new size, and the gap shows the window's NATIVE
 		// background — Electron's default is white, glaring on a dark app.
-		// The app background (#141414) fills the lag instead. `show: false` +
+		// The current app background fills the lag instead. `show: false` +
 		// ready-to-show is the same treatment for first paint: the window
 		// appears only once the page has actually rendered.
-		backgroundColor: "#141414",
+		backgroundColor: colors.background,
 		show: false,
 		// Narrow-window behavior (owner, 2026-09-17): 640px is the floor —
 		// below it even a wrapped chrome row gets cramped and the chat header
@@ -645,6 +669,14 @@ async function main() {
 	process.on("SIGHUP", killServer);
 
 	await app.whenReady();
+	// Packaged data lives beside the server's settings. In external dev the
+	// renderer supplies that server's settings as soon as its fetch completes.
+	let savedAppearance;
+	try {
+		savedAppearance = JSON.parse(fs.readFileSync(path.join(DATA_DIR(), "settings.json"), "utf8"))?.appearance;
+	} catch { /* First boot or unreadable settings retain Dark. */ }
+	applyWindowAppearance(parseNativeAppearance(savedAppearance) ?? windowAppearance);
+	nativeTheme.on("updated", refreshWindowAppearance);
 
 	// Dev mode: point at a running `next dev` server (LH_DEV_URL) — no
 	// spawn, no packaging, full HMR. The rest of this shell still applies
@@ -716,6 +748,10 @@ async function main() {
 	// interval fire after it below. setupAutoUpdater's contract: failures
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
+	ipcMain.on("lh:appearance", (event, appearance) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) return;
+		applyWindowAppearance(appearance);
+	});
 	ipcMain.on("lh:update-install", () => installUpdateNow());
 	ipcMain.handle("lh:update:get", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");

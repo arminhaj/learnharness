@@ -176,15 +176,15 @@ describe("mermaid expand — the context seam", () => {
 });
 
 describe("md-blocks — key-idea callouts (GitHub alerts, owner round 2026-10-07)", () => {
-	it("an [!IMPORTANT] callout renders as the sharp white-outline box, marker never leaks", () => {
+	it("an [!IMPORTANT] callout renders as the sharp foreground-outline box, marker never leaks", () => {
 		const html = render("> [!IMPORTANT]\n> ALL X is done through Y.");
 		assert.ok(html.includes('data-testid="md-callout"'), "the callout box mounts");
 		assert.ok(html.includes('data-alert-kind="important"'), "the kind is recorded");
 		assert.match(html, /ALL X is done through Y\./, "the prose survives");
 		assert.ok(!html.includes("[!IMPORTANT]"), "the marker line never leaks as text");
-		// The owner's minimal law: sharp corners (no rounded), white stroke,
+		// The owner's minimal law: sharp corners (no rounded), foreground stroke,
 		// no background, no label, no icon — and the box hugs its text.
-		assert.match(html, /border-white/, "white stroke");
+		assert.match(html, /border-foreground/, "theme-aware stroke");
 		assert.match(html, /w-fit/, "width: fit-content — the hug");
 		assert.ok(!html.includes("rounded"), "sharp corners — no rounding anywhere");
 		assert.ok(!html.includes("bg-card") && !html.includes("bg-background"), "transparent — no background");

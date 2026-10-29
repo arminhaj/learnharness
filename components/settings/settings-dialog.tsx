@@ -256,7 +256,7 @@ export function SettingsDialogBody({
 			);
 			notifySettingsSaved(section);
 			if (section === "appearance")
-				onAppearanceChange(body as AppearanceSettings);
+				onAppearanceChange(stored ? stored.appearance : body as AppearanceSettings);
 		},
 		[onAppearanceChange],
 	);

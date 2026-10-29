@@ -1,7 +1,7 @@
 /**
  * Settings-surface render tests (thin settings wave): SSR of the section
  * components pins the THIN markup — toggle rows, the graph ladder's
- * graying, the mode control's honest disabled state, the role rows and
+ * graying, the appearance mode control, the role rows and
  * tool rows. Fetches don't run under renderToStaticMarkup (effects never
  * fire), so the SSR state IS the loading state — asserted as such.
  * Same tsx classic-JSX shim as render-sidebar.test.tsx.
@@ -275,12 +275,19 @@ describe("KeysSection (thin SSR)", () => {
 });
 
 describe("AppearanceSection (thin SSR)", () => {
-	it("mode is rendered DISABLED — dark-only this wave, no lying control", () => {
+	it("offers enabled Light, Dark, and System appearance choices", () => {
 		const html = renderToStaticMarkup(<AppearanceSection appearance={undefined} onSectionChange={() => {}} />);
-		assert.ok(tagOf(html, "select-mode").includes("disabled"), "mode select disabled");
-		assert.ok(html.includes("Coming soon"));
-		// The whole row dims, graph-view style (the control never adds its own).
-		assert.ok(tagOf(html, "row-mode").includes("opacity-40"), "mode row dims whole");
+		assert.ok(!tagOf(html, "select-mode").includes("disabled"));
+		assert.ok(!html.includes("Coming soon"));
+		assert.ok(!tagOf(html, "row-mode").includes("opacity-40"));
+		for (const mode of ["light", "dark", "system"]) assert.ok(html.includes(`value="${mode}"`));
+	});
+
+	it("shows each persisted mode as selected", () => {
+		for (const mode of ["light", "dark", "system"] as const) {
+			const html = renderToStaticMarkup(<AppearanceSection appearance={{ mode }} onSectionChange={() => {}} />);
+			assert.match(html, new RegExp(`<option[^>]*value="${mode}"[^>]*selected=""`));
+		}
 	});
 
 	it("hex inputs carry the factory placeholders; prose size resolves against the factory", () => {

@@ -69,7 +69,7 @@ import Link from "next/link";
 import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
-import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
+import { GraphCanvasRenderer, type CanvasColors, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { useActivity } from "@/components/activity-dock";
 import { useServerEvent, useServerResync } from "@/components/server-events";
@@ -77,6 +77,7 @@ import { MenuShell } from "@/components/menu-shell.tsx";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { Hint } from "@/components/ui/hint";
+import { useAppearance } from "@/components/settings/appearance";
 import {
 	ARROW_LENGTH_LADDER,
 	CHARGE_RANGE,
@@ -213,6 +214,18 @@ function cssColorToHex(css: string): string {
 function tokenHex(cssVar: string): string {
 	const value = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
 	return value ? cssColorToHex(value) : "#888888";
+}
+
+function canvasColors(): CanvasColors {
+	return {
+		node: tokenHex(NODE_COLOR_TOKEN),
+		edge: tokenHex("--ring"),
+		label: tokenHex("--muted-foreground"),
+		hoverText: tokenHex("--foreground"),
+		clusterLabelLightness: Number.parseFloat(
+			getComputedStyle(document.documentElement).getPropertyValue("--lh-graph-label-lightness"),
+		) || 78,
+	};
 }
 
 // ---- Component ------------------------------------------------------------
@@ -974,6 +987,7 @@ export function GraphView({
 	onPracticeSelectionChange?: (nodes: { id: string; name: string; statement: string }[]) => void;
 	onChainSelectClose?: () => void;
 }) {
+	const { appearance, resolvedMode } = useAppearance();
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const cardRef = useRef<HTMLDivElement | null>(null);
@@ -1426,16 +1440,20 @@ export function GraphView({
 			logicalEdges: snapshot.logicalEdges.map((e) => ({ from: e.from, to: e.to })),
 			impLinks: snapshot.impLinks,
 			clusters: snapshot.clusters.map((c) => ({ id: c.id, label: c.label, members: c.members })),
-			colors: {
-				node: tokenHex(NODE_COLOR_TOKEN),
-				edge: tokenHex("--ring"),
-				label: tokenHex("--muted-foreground"),
-				hoverText: tokenHex("--foreground"),
-			},
+			colors: canvasColors(),
 			// Match the app typography (Geist via the body's stack).
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
 	}, [snapshot, isEmpty]);
+
+	// CSS variables apply in the parent provider's effect. Read them on the
+	// next frame, then repaint without replaying the data/simulation feed.
+	useEffect(() => {
+		const frame = requestAnimationFrame(() => {
+			rendererRef.current?.setColors(canvasColors());
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [appearance.background, resolvedMode, isEmpty]);
 
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).

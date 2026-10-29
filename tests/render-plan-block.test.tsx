@@ -172,9 +172,9 @@ describe("plan block render", () => {
 		assert.match(html, /<text[^>]*x="48"[^>]*text-anchor="middle"/); // 96/2
 		assert.ok(!/x="12"/.test(html), "no left-inset text");
 		// The in-chat block speaks the dock language (owner, 2026-10-07):
-		// lighter-background boxes like the composer shells — with WHITE
-		// outlines (owner follow-up: gray fill good, box edges stay white).
-		assert.match(html, /<rect[^>]*class="fill-card stroke-white"/);
+		// raised-background boxes like the composer shells, with outlines
+		// that follow the foreground ink in either appearance.
+		assert.match(html, /<rect[^>]*class="fill-card stroke-foreground"/);
 		// Two stacked nodes: 2*NODE_H + GAP_Y = 136 extent + GRAPH_PAD on
 		// every side (strokes/glow never clip at the edges). The width
 		// rides the hug now: 96-min boxes, not the old 160 slabs.
@@ -243,7 +243,7 @@ describe("plan popup (live derivation)", () => {
 		assert.match(html, /opacity: ?0[;,}]/, "diagram hidden until the first fit applies");
 	});
 
-	it("dims an arrow when EITHER end is gray — white needs both ends white (owner, 2026-09-26)", () => {
+	it("dims an arrow when EITHER end is upcoming — full ink needs both ends covered (owner, 2026-09-26)", () => {
 		// x upcoming → y visited: the OLD rule (target-only) painted this
 		// white; the new rule keeps it gray — a gray box's outgoing arrows
 		// stay gray even into covered territory. y → z (visited → current)
@@ -272,11 +272,11 @@ describe("plan popup (live derivation)", () => {
 		// Exactly one gray edge (x→y, gray origin) and one white edge (y→z,
 		// both ends white): count the head markers, one per edge.
 		const dimHeads = (html.match(/marker-end="url\(#.*-dim\)"/g) ?? []).length;
-		const whiteHeads = (html.match(/marker-end="url\(#(?:R\d+|[a-z0-9-]+)\)"/g) ?? []).length;
+		const coveredHeads = (html.match(/marker-end="url\(#(?:R\d+|[a-z0-9-]+)\)"/g) ?? []).length;
 		assert.equal(dimHeads, 1, "the gray-origin edge dims");
-		assert.equal(whiteHeads, 1, "the both-white edge stays white");
+		assert.equal(coveredHeads, 1, "the covered edge keeps the foreground ink");
 		assert.match(html, /<path[^>]*class="fill-none stroke-border"/);
-		assert.match(html, /<path[^>]*class="fill-none stroke-white"/);
+		assert.match(html, /<path[^>]*class="fill-none stroke-foreground"/);
 	});
 
 	it("renders the empty state when the session has no plan", () => {

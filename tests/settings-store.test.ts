@@ -37,6 +37,14 @@ afterEach(() => {
 });
 
 describe("the settings store", () => {
+	it("persists all appearance choices with the rest of the appearance settings", () => {
+		for (const mode of ["light", "dark", "system"]) {
+			const appearance = { mode, background: null, fontFamily: "Georgia", proseFontSize: 18 };
+			writeSettings({ version: 1, appearance });
+			assert.deepEqual(readSettings()?.appearance, appearance);
+		}
+	});
+
 	it("reads null on first boot (no record)", () => {
 		fs.rmSync(SETTINGS_FILE, { force: true });
 		assert.equal(readSettings(), null);

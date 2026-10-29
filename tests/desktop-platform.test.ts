@@ -25,6 +25,7 @@ function windowOptions(platform: string, env: Record<string, string> = {}) {
 	const electron = {
 		app: { setName() {}, getPath: () => "/fixture/LearnHarness", setPath() {}, requestSingleInstanceLock: () => false, quit() {} },
 		BrowserWindow: FakeWindow,
+		nativeTheme: { shouldUseDarkColors: true },
 		session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
 	};
 	const context = {
@@ -96,9 +97,68 @@ describe("desktop window chrome", () => {
 		runInNewContext(readFileSync(new URL("../electron/preload.cjs", import.meta.url), "utf8"), context);
 		assert.equal(bridge.platform, "win32");
 		assert.deepEqual(Object.keys(bridge).sort(), [
-			"chatgpt", "checkForUpdates", "expandWindow", "getUpdateState", "getZoom", "installUpdate", "onOpenSettings", "onUpdateStatus", "onZoom", "platform", "subscriptions",
+			"chatgpt", "checkForUpdates", "expandWindow", "getUpdateState", "getZoom", "installUpdate", "onOpenSettings", "onUpdateStatus", "onZoom", "platform", "setAppearance", "subscriptions",
 		]);
 		assert.deepEqual(Object.keys(bridge.subscriptions as object).sort(), ["cancel", "consent", "disconnect", "login", "onChange", "open", "respond", "retry", "status"]);
+	});
+});
+
+describe("native appearance", () => {
+	it("explicit modes and returning to System keep native colors synchronized without changing window geometry", () => {
+		let systemDark = false;
+		const windows: Array<{ background: string; overlay: unknown }> = [];
+		class FakeWindow {
+			background = "";
+			overlay: unknown;
+			constructor(readonly options: unknown) { windows.push(this); }
+			webContents = { on() {}, setWindowOpenHandler() {} };
+			loadURL() {}
+			once() {}
+			isDestroyed() { return false; }
+			setBackgroundColor(color: string) { this.background = color; }
+			setTitleBarOverlay(overlay: unknown) { this.overlay = JSON.parse(JSON.stringify(overlay)); }
+		}
+		const nativeTheme = {
+			themeSource: "system",
+			get shouldUseDarkColors() {
+				return this.themeSource === "system" ? systemDark : this.themeSource === "dark";
+			},
+		};
+		const electron = {
+			app: { setName() {}, getPath: () => "/fixture/LearnHarness", requestSingleInstanceLock: () => false, quit() {} },
+			BrowserWindow: FakeWindow,
+			nativeTheme,
+			session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
+		};
+		const context = {
+			require: (id: string) => id === "electron" ? electron : mainRequire(id),
+			process: { platform: "win32", argv: [], env: {}, on() {} },
+			__dirname: dirname(mainFile),
+		};
+		runInNewContext(mainSource, context, { filename: mainFile });
+		runInNewContext('createWindow("http://127.0.0.1:9000")', context);
+		const win = windows[0]!;
+		runInNewContext('applyWindowAppearance({ mode: "light" })', context);
+		assert.equal(nativeTheme.themeSource, "light");
+		assert.equal(win.background, "#fafafa");
+		assert.deepEqual(win.overlay, { color: "#fafafa", symbolColor: "#242424" });
+		systemDark = true;
+		runInNewContext('refreshWindowAppearance()', context);
+		assert.equal(win.background, "#fafafa", "explicit Light ignores OS Dark");
+		runInNewContext('applyWindowAppearance({ mode: "system" })', context);
+		assert.equal(nativeTheme.themeSource, "system", "restores OS preference rather than retaining a native override");
+		assert.equal(win.background, "#141414");
+		systemDark = false;
+		runInNewContext('refreshWindowAppearance()', context);
+		assert.equal(win.background, "#fafafa", "nativeTheme updated refresh follows OS Light");
+		runInNewContext('applyWindowAppearance({ mode: "dark", background: "#123456" })', context);
+		assert.equal(win.background, "#123456");
+		assert.deepEqual(win.overlay, { color: "#123456", symbolColor: "#e5e5e5" });
+		runInNewContext('applyWindowAppearance({ mode: "sepia", background: "bad" })', context);
+		assert.equal(nativeTheme.themeSource, "dark", "invalid renderer payload cannot change native preferences");
+		assert.equal(win.background, "#123456");
+		runInNewContext('applyWindowAppearance({ mode: "dark", background: null })', context);
+		assert.equal(win.background, "#141414", "clearing the override restores the theme default");
 	});
 });
 
