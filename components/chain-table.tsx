@@ -67,7 +67,7 @@ import {
 	SearchIcon,
 	XIcon,
 } from "lucide-react";
-import { chainsForSelection, formatChainLine, fuzzyScore } from "@/src/core";
+import { birthSessionOf, chainsForSelection, formatChainLine, fuzzyScore } from "@/src/core";
 import type { GraphChain, GraphNode } from "@/src/core";
 import { TopBar } from "@/components/top-bar";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
@@ -100,6 +100,7 @@ export function ChainTableBody({
 	nodes,
 	chains: storedChains,
 	sessions,
+	subjectLabels,
 	fileSources,
 	query,
 	onQuery,
@@ -120,6 +121,7 @@ export function ChainTableBody({
 	nodes: GraphNode[];
 	chains: GraphChain[];
 	sessions: Record<string, string>;
+	subjectLabels?: Record<string, string>;
 	fileSources: Record<string, string>;
 	query: string;
 	onQuery: (v: string) => void;
@@ -176,13 +178,13 @@ export function ChainTableBody({
 		const map = new Map<string, ClusterGroup>();
 		for (const chain of visibleChains) {
 			const conclusion = byId.get(chain.conclusion);
-			const birth = conclusion?.provenance[0]?.chatId ?? null;
+			const birth = conclusion ? birthSessionOf(conclusion) : null;
 			const key = birth ?? "\0unlabeled";
 			let group = map.get(key);
 			if (!group) {
-				const label = birth === null ? null : (sessions[birth] ?? fileSources[birth] ?? null);
+				const label = birth === null ? null : (subjectLabels?.[birth] ?? sessions[birth] ?? fileSources[birth] ?? null);
 				const kind =
-					birth === null ? null : sessions[birth] !== undefined ? "chat" : fileSources[birth] !== undefined ? "notes" : null;
+					birth === null ? null : subjectLabels?.[birth] !== undefined || sessions[birth] !== undefined ? "chat" : fileSources[birth] !== undefined ? "notes" : null;
 				group = { key, birth, label, kind, chains: [], nodeIds: [], newestCreatedAt: "" };
 				map.set(key, group);
 			}
@@ -222,7 +224,7 @@ export function ChainTableBody({
 			);
 		}
 		return list;
-	}, [visibleChains, byId, sessions, fileSources, sort]);
+	}, [visibleChains, byId, sessions, subjectLabels, fileSources, sort]);
 
 	// The derived shape under the floating bar (the agents' ACTUAL input).
 	const derived = useMemo(() => {
@@ -598,6 +600,7 @@ export function ChainTableOverlay({
 	nodes,
 	chains: storedChains,
 	sessions,
+	subjectLabels,
 	fileSources,
 	onClose,
 	/** PRACTICE SELECT (owner vision, 2026-10-04): the selection is
@@ -614,6 +617,7 @@ export function ChainTableOverlay({
 	nodes: GraphNode[];
 	chains: GraphChain[];
 	sessions: Record<string, string>;
+	subjectLabels?: Record<string, string>;
 	fileSources: Record<string, string>;
 	onClose: () => void;
 	selectMode?: boolean;
@@ -685,6 +689,7 @@ export function ChainTableOverlay({
 					nodes={nodes}
 					chains={storedChains}
 					sessions={sessions}
+					subjectLabels={subjectLabels}
 					fileSources={fileSources}
 					query={query}
 					onQuery={setQuery}

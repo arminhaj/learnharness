@@ -46,9 +46,11 @@ export interface PracticeDockProps {
 	 *  and say so in the hint row. The server registry is the real gate;
 	 *  this is the affordance. */
 	compactionRunning?: boolean;
+	/** Pause interaction without losing the current thinking draft. */
+	paused?: boolean;
 }
 
-export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false }: PracticeDockProps) {
+export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
 	// Ref MIRRORS the field ("nothing gets lost", the question-dock
 	// discipline): a submit resuming after `await finishDictation()` reads
@@ -64,11 +66,11 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 			},
 			[],
 		),
-		true,
+		!paused,
 	);
 
 	const submit = () => {
-		if (compactionRunning) return;
+		if (compactionRunning || paused) return;
 		const text = thinkingRef.current.trim();
 		if (text.length === 0) return;
 		thinkingRef.current = "";
@@ -80,7 +82,7 @@ export function PracticeDock({ problemCallId, input, expanded, onExpand, onSubmi
 	 * means the field is often never focused — the window-level Enter
 	 * (typing surfaces and buttons excluded) submits the trace. Mounted
 	 * while the dock is — collapsed bar included (the trace survives). */
-	useEnterSubmits(submit);
+	useEnterSubmits(submit, !paused);
 
 	/* ── the collapsed bar ── */
 	if (!expanded) {

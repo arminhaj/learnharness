@@ -655,6 +655,10 @@ interface LhExtractionGlobal {
 		running: Map<string, RunningExtraction>;
 		/** The single-flight guard, shared by every pipeline instance. */
 		inFlight: Set<string>;
+		/** Full-chat lifecycle waiters, including gaps between chunk jobs. */
+		idleWaiters?: Map<string, Set<() => void>>;
+		/** At most one explicit follow-up waits behind a chat's current run. */
+		followUps?: Map<string, Promise<void>>;
 		/** Last minted startedAt — kept monotonic so two runs starting in the
 		 *  same millisecond never collide on the usage idempotency key. */
 		lastStartedAt: number;
@@ -686,6 +690,35 @@ function runs(): NonNullable<LhExtractionGlobal["__lhExtractionRuns"]> {
 /** In-flight pipeline runs (oldest first) — the /api/graph/status payload. */
 export function extractionStatuses(): RunningExtraction[] {
 	return [...runs().running.values()].sort((a, b) => a.startedAt - b.startedAt);
+}
+
+/** Queue one explicit follow-up after any current chat extraction finishes.
+ * The source-level guard covers the whole pipeline, unlike chunk statuses.
+ * There are no timers or automatic retries; callers recheck whether their
+ * request is still applicable when the callback runs. */
+export function afterExtractionIdle(chatId: string, followUp: () => void | Promise<void>): Promise<void> {
+	const state = runs();
+	const pending = (state.followUps ??= new Map());
+	const existing = pending.get(chatId);
+	if (existing) return existing;
+	const task = (async () => {
+		// Yield once so even an already-idle callback is registered before
+		// it can synchronously queue another request for the same source.
+		await Promise.resolve();
+		while (state.inFlight.has(chatId)) {
+			await new Promise<void>((resolve) => {
+				const waiters = (state.idleWaiters ??= new Map());
+				const sourceWaiters = waiters.get(chatId) ?? new Set<() => void>();
+				sourceWaiters.add(resolve);
+				waiters.set(chatId, sourceWaiters);
+			});
+		}
+		await followUp();
+	})();
+	pending.set(chatId, task);
+	const clear = () => { if (pending.get(chatId) === task) pending.delete(chatId); };
+	void task.then(clear, clear);
+	return task;
 }
 
 /** True cancellation of the in-flight run for a chat (the dock's abort
@@ -1192,6 +1225,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								const foldedAt = new Date().toISOString();
 								const batchStats = mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
 									foldedAt,
+									subjectId: record.exploration?.parentChatId,
 									coverage: batch
 										.filter((slot) => slot.tokens > 0)
 										.map((slot) => ({ chatId, fp: slot.fp, tokens: slot.tokens, foldedAt })),
@@ -1231,6 +1265,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		} finally {
 			inFlight.delete(chatId);
 			finishExtraction(chatId); // done or failed — no longer running
+			const waiters = runs().idleWaiters?.get(chatId);
+			runs().idleWaiters?.delete(chatId);
+			for (const resolve of waiters ?? []) resolve();
 		}
 	}
 

@@ -44,6 +44,7 @@ import type {
 import type { GraphStore } from "../src/core/ports.ts";
 import {
 	abortExtraction,
+	afterExtractionIdle,
 	createExtractionPipeline,
 	NotesImportError,
 	extractionStatuses,
@@ -2521,4 +2522,51 @@ describe("notes import completion and retry reliability", () => {
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
 		assert.equal(ledgers.readNodes().length, 2);
 	});
+});
+
+it("closing an exploration waits for current extraction, then covers the final short reply once", async () => {
+	const parent = chatStore.createChat("Parent lesson");
+	const child = chatStore.createChat("Short exploration", undefined, {
+		exploration: { parentChatId: parent.id, sourceMessageId: "parent-passage", parentTitle: parent.title, topic: "An example", status: "active" },
+	});
+	createdChats.push(parent.id, child.id);
+	chatStore.saveMessages(child.id, assistant("first-passage", [{ type: "text", text: "A relation associates values." }]));
+	const ledgers = memoryLedgers();
+	let release!: () => void, entered!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	let calls = 0;
+	const step: FauxResponseStep = async (context) => {
+		const call = ++calls;
+		if (call === 1) { entered(); await gate; }
+		const messageId = /TEACHER \[([^\]]+)\]/.exec(capturedView(context))?.[1];
+		assert.ok(messageId);
+		return fauxAssistantMessage([fauxToolCall("submit_findings", {
+			propositions: [{ id: `p${call}`, name: `Concept ${call}`, statement: `Statement ${call}`, aliases: [], messageId }], chains: [],
+		}, { id: `findings-${call}` })], { stopReason: "toolUse" });
+	};
+	const review: FauxResponseStep = () => fauxAssistantMessage([fauxToolCall("submit_review", { links: [] })], { stopReason: "toolUse" });
+	const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: fauxEngine([step, step]), auditor: fauxEngine([review, review]) });
+	const first = pipeline.runExtraction(child.id);
+	await started;
+	chatStore.saveMessages(child.id, [...chatStore.getChat(child.id)!.messages, ...assistant("last-passage", [{ type: "text", text: "A function associates exactly one output with each input." }])]);
+	chatStore.setExplorationStatus(child.id, "closed");
+	let followUps = 0;
+	const queued = afterExtractionIdle(child.id, async () => {
+		followUps++;
+		assert.equal(chatStore.getChat(child.id)?.exploration?.status, "closed");
+		await pipeline.runExtraction(child.id);
+	});
+	assert.equal(afterExtractionIdle(child.id, () => { throw new Error("Duplicate close must coalesce"); }), queued);
+	try {
+		await Promise.resolve();
+		assert.equal(followUps, 0, "the existing source-wide extraction still owns its snapshot");
+	} finally { release(); }
+	await Promise.all([first, queued]);
+	assert.equal(followUps, 1);
+	assert.equal(calls, 2);
+	assert.equal(coverageOf(chatStore.getChat(child.id)!.messages, ledgers.readCoverage(), child.id).uncoveredCount, 0);
+	const final = getGraph(ledgers).nodes.find((node) => node.provenance.some((point) => point.messageId === "last-passage"));
+	assert.deepEqual(final?.provenance, [{ chatId: child.id, messageId: "last-passage", subjectId: parent.id }]);
+	assert.deepEqual(chatStore.getChat(parent.id)?.messages, []);
 });

@@ -8,6 +8,7 @@ import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
 import { discardChatDeliveries } from "./jobs.ts";
+import { compactionInFlight } from "./compaction.ts";
 
 /**
  * Server-side chat entries for the transport layer (app/api/chats*,
@@ -69,6 +70,15 @@ export type ChatDeleteOutcome =
  *      nothing merged.
  */
 function runningWorkBlocker(chatId: string): Extract<ChatDeleteOutcome, { status: 409 }> | null {
+	if (compactionInFlight(chatId)) {
+		return {
+			ok: false,
+			status: 409,
+			code: "turn_in_flight",
+			error: "This session is compacting — try again when it finishes",
+			jobIds: [],
+		};
+	}
 	if (isTurnRunning(chatId)) {
 		return {
 			ok: false,
@@ -95,40 +105,62 @@ function runningWorkBlocker(chatId: string): Extract<ChatDeleteOutcome, { status
 	return null;
 }
 
+/** The store enumerates every chat; only the sidebar hides explorations.
+ * A direct exploration deletion affects itself. A lesson deletion includes
+ * its embedded explorations, with the same graph choice for every source. */
+function deletionGroup(chatId: string): string[] {
+	return [chatId, ...stores.chatStore.listChats()
+		.filter((chat) => chat.exploration?.parentChatId === chatId)
+		.map((chat) => chat.id)];
+}
+
 export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): Promise<ChatDeleteOutcome> {
 	if (!stores.chatStore.getChat(chatId)) {
 		return { ok: false, status: 404, code: "not_found", error: "No such session" };
 	}
-	const blocker = runningWorkBlocker(chatId);
-	if (blocker) return blocker;
-	if (extractionStatuses().some((run) => run.chatId === chatId)) {
-		abortExtraction(chatId); // true cancellation — spend stops, nothing merges
-		const deadline = Date.now() + WIND_DOWN_TIMEOUT_MS;
-		while (extractionStatuses().some((run) => run.chatId === chatId)) {
-			if (Date.now() > deadline) {
-				return {
-					ok: false,
-					status: 503,
-					code: "extraction_winding_down",
-					error: "The session's extraction is still winding down — try again in a moment",
-				};
-			}
-			await new Promise((resolve) => setTimeout(resolve, WIND_DOWN_POLL_MS));
+	const deadline = Date.now() + WIND_DOWN_TIMEOUT_MS;
+	let targets: string[];
+	for (;;) {
+		// Re-read after every await: a new exploration or worker may have
+		// appeared while another extraction was winding down.
+		targets = deletionGroup(chatId);
+		for (const id of targets) {
+			const blocker = runningWorkBlocker(id);
+			if (blocker) return blocker;
 		}
+		const pending = extractionStatuses().filter((run) => targets.includes(run.chatId));
+		if (pending.length === 0) break;
+		for (const id of new Set(pending.map((run) => run.chatId))) abortExtraction(id);
+		if (Date.now() > deadline) {
+			return {
+				ok: false,
+				status: 503,
+				code: "extraction_winding_down",
+				error: "The session's extraction is still winding down — try again in a moment",
+			};
+		}
+		await new Promise((resolve) => setTimeout(resolve, WIND_DOWN_POLL_MS));
 	}
 
-	// A result wake or a worker may have started during extraction wind-down.
-	// Recheck immediately before the synchronous purge, with no await gap.
-	const lateBlocker = runningWorkBlocker(chatId);
-	if (lateBlocker) return lateBlocker;
-
-	// THE SYNC BLOCK — no awaits below (see the doc comment). Order:
-	// ledgers → jobs → the chat record.
-	const stats = deleteChatTraces(stores.graphStore, chatId, mode);
-	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
-	if (stores.chatStore.deleteChat(chatId)) {
-		discardChatDeliveries(chatId);
-		clearTurnFailure(chatId);
+	// No await between the final group/gate scan and this synchronous purge.
+	// Keep all records until all graph and job cleanup has succeeded.
+	const stats: ChatDeletionStats = { nodesRemoved: 0, chainsRemoved: 0, coverageRemoved: 0, checkpointsRemoved: 0 };
+	let jobsRemoved = 0;
+	for (const id of targets) {
+		const removed = deleteChatTraces(stores.graphStore, id, mode);
+		stats.nodesRemoved += removed.nodesRemoved;
+		stats.chainsRemoved += removed.chainsRemoved;
+		stats.coverageRemoved += removed.coverageRemoved;
+		stats.checkpointsRemoved += removed.checkpointsRemoved;
+		jobsRemoved += stores.jobStore.deleteJobsForChat(id);
+	}
+	// Children first: an interrupted deletion leaves the lesson available
+	// for a repeat rather than an unreachable embedded exploration.
+	for (const id of [...targets].reverse()) {
+		if (stores.chatStore.deleteChat(id)) {
+			discardChatDeliveries(id);
+			clearTurnFailure(id);
+		}
 	}
 	return { ok: true, mode, stats, jobsRemoved, graphRevision: graphRevision() };
 }

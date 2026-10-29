@@ -105,6 +105,10 @@ function chainKey(premises: ReadonlyArray<string>, conclusion: string): string {
  *  the whole-file checkpoint. */
 export interface MergeSource {
 	foldedAt: string;
+	/** Trusted chat metadata supplied by the pipeline, never by the
+	 * extractor. Keeps a lesson and its explorations in one subject while provenance
+	 * continues to point to the actual contributing transcript. */
+	subjectId?: string;
 	/** The batch being merged (chat path): one entry per message in the
 	 *  extracted batch — undefined (notes path / coverage-less callers) →
 	 *  the legacy whole-chat checkpoint is written instead. */
@@ -117,8 +121,8 @@ export interface MergeSource {
  *  message id — the extractor-copied messageId, validated at the submit
  *  seam against the current batch. Chains, notes imports, and
  *  legacy/core callers lacking an anchor keep "" (chat-level). */
-function pointOf(chatId: string, messageId?: string): ProvenancePoint[] {
-	return [{ chatId, messageId: messageId ?? "" }];
+function pointOf(chatId: string, messageId?: string, subjectId?: string): ProvenancePoint[] {
+	return [{ chatId, messageId: messageId ?? "", ...(subjectId ? { subjectId } : {}) }];
 }
 
 const samePoint = (a: ProvenancePoint, b: ProvenancePoint): boolean =>
@@ -175,7 +179,7 @@ export function mergeFindings(
 		// passage's messageId — it rides BOTH the create and the link-append
 		// line (each re-encounter anchors to ITS passage); absent (notes,
 		// legacy/core callers) → "", chat-level as before.
-		const points = pointOf(chatId, p.messageId);
+		const points = pointOf(chatId, p.messageId, source.subjectId);
 		const linkTo = linkOf.get(p.id);
 		let graphNodeId: string;
 		if (linkTo !== undefined && existingIds.has(linkTo)) {
@@ -247,7 +251,7 @@ export function mergeFindings(
 		const key = chainKey(premises, conclusion);
 		if (assertedByChat.has(key)) return; // this chat already asserted this argument
 		const id = idOfKey.get(key) ?? newGraphChainId();
-		ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId) });
+		ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId, undefined, source.subjectId) });
 		idOfKey.set(key, id);
 		assertedByChat.add(key);
 		stats.chains!++;
@@ -505,6 +509,22 @@ export function deriveView(graph: DerivedGraph): {
 
 // ─── the /api/graph payload ──────────────────────────────────────────────────
 
+/** Subject labels are a display join, never source navigation. Live root
+ * chat titles win; a surviving exploration retains the subject's name
+ * after the original transcript is removed. */
+function subjectLabelsOf(chatStore: ChatStore): Record<string, string> {
+	const labels: Record<string, string> = {};
+	for (const chat of chatStore.listChats()) {
+		const id = chat.exploration?.parentChatId ?? chat.id;
+		labels[id] ??= chat.exploration?.parentTitle ?? chat.title;
+	}
+	for (const id of Object.keys(labels)) {
+		const root = chatStore.getChat(id);
+		if (root) labels[id] = root.title;
+	}
+	return labels;
+}
+
 /** Everything the home graph view needs, in one fetch (shape: contracts). */
 export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	const graph = getGraph(deps.graphStore);
@@ -558,16 +578,18 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	// is the session's NAME (chat title / file path): no LLM naming pass, no
 	// persisted partition to invalidate. MIN_CLUSTER_SIZE stays the hull
 	// presentation rule (a region needs >= 3 propositions for a hull). A
-	// birth session whose record is gone (deleted chat) keeps its members
-	// but renders unlabeled — honest, never guessed.
+	// subject whose records are all gone keeps its members but renders
+	// unlabeled. An exploration retains the original subject's name even
+	// after that original transcript has been deleted.
 	// PROPOSITIONS ONLY (owner, 2026-09-30): derived implication nodes
 	// never partition — the stored world clusters, its image follows.
+	const subjectLabels = subjectLabelsOf(deps.chatStore);
 	const communities = birthSessionPartition(graph.nodes);
 	const clusters: Cluster[] = communities
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
 		.map((community) => ({
 			id: community.id,
-			label: sessions[community.id] ?? fileSources[community.id] ?? null,
+			label: subjectLabels[community.id] ?? sessions[community.id] ?? fileSources[community.id] ?? null,
 			members: community.members,
 		}));
 	// IMP-NODE CLUSTER ASSIGNMENT (owner, 2026-09-30): majority among the
@@ -591,6 +613,7 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 		impLinks: view.impLinks,
 		chains: graph.chains,
 		sessions,
+		subjectLabels,
 		fileSources,
 		nodeSessions,
 		clusters,
@@ -634,16 +657,19 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 		counts.set(cluster.id, cluster.members.length);
 	}
 	const chats = new Map(deps.chatStore.listChats().map((chat) => [chat.id, chat]));
+	const subjectLabels = subjectLabelsOf(deps.chatStore);
 	const sources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
 	const entries: GraphSessionEntry[] = [];
 	for (const [id, propositions] of counts) {
-		const chat = chats.get(id);		if (chat) {
+		const members = [...chats.values()].filter((chat) => (chat.exploration?.parentChatId ?? chat.id) === id);
+		const chat = chats.get(id) ?? members[0];
+		if (chat) {
 			entries.push({
 				id,
-				name: chat.title,
+				name: subjectLabels[id] ?? chat.title,
 				kind: "chat",
-				createdAt: chat.createdAt,
-				updatedAt: chat.updatedAt,
+				createdAt: members.map((member) => member.createdAt).sort()[0] ?? chat.createdAt,
+				updatedAt: members.map((member) => member.updatedAt).sort().at(-1) ?? chat.updatedAt,
 				propositions,
 			});
 			continue;
@@ -678,7 +704,8 @@ export interface GraphSessionProposition {
 /** The propositions BORN in one session — what that session first
  *  articulated. Members sorted by node id — deterministic. */
 export function graphSessionPropositions(deps: GraphDeps, sessionId: string): GraphSessionProposition[] {
-	const born = getGraph(deps.graphStore).nodes.filter((node) => birthSessionOf(node) === sessionId);
+	const subjectId = deps.chatStore.getChat(sessionId)?.exploration?.parentChatId ?? sessionId;
+	const born = getGraph(deps.graphStore).nodes.filter((node) => birthSessionOf(node) === subjectId);
 	return born
 		.map((node) => ({ nodeId: node.id, name: node.name }))
 		.sort((a, b) => (a.nodeId < b.nodeId ? -1 : 1));

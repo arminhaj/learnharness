@@ -80,6 +80,7 @@ import {
 	questionNeedsReveal,
 } from "@/src/core";
 import { ReadingThinkingField } from "@/components/reading-thinking";
+import { ExplorationStarter, InlineExploration, useInlineExplorations } from "@/components/inline-exploration";
 import { currentUserThinkingOpen, setAllUserThinkingOpen } from "@/components/thinking-block";
 
 /** One width for everything: transcript, cards, and the bottom blob share this column. */
@@ -257,6 +258,43 @@ export function Chat({
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const scrollContextRef = useRef<StickToBottomContext | null>(null);
+	const explorations = useInlineExplorations(chatId);
+	const explorationPausedRef = useRef(explorations.paused);
+	explorationPausedRef.current = explorations.paused;
+	const lastLessonFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+	const returnPlaceRef = useRef<{
+		scrollTop: number;
+		element: HTMLElement | null;
+		selectionStart: number | null;
+		selectionEnd: number | null;
+	} | null>(null);
+	const rememberLessonPlace = () => {
+		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		const element = focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement ? focused : lastLessonFieldRef.current ?? focused;
+		const field = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement ? element : null;
+		returnPlaceRef.current = {
+			scrollTop: scrollContextRef.current?.scrollRef.current?.scrollTop ?? 0,
+			element,
+			selectionStart: field?.selectionStart ?? null,
+			selectionEnd: field?.selectionEnd ?? null,
+		};
+		scrollContextRef.current?.stopScroll();
+	};
+	const restoreLessonPlace = () => {
+		const saved = returnPlaceRef.current;
+		returnPlaceRef.current = null;
+		requestAnimationFrame(() => {
+			scrollContextRef.current?.stopScroll();
+			if (saved?.element?.isConnected) {
+				saved.element.focus({ preventScroll: true });
+				if (saved.selectionStart !== null && saved.selectionEnd !== null && (saved.element instanceof HTMLTextAreaElement || saved.element instanceof HTMLInputElement)) {
+					saved.element.setSelectionRange(saved.selectionStart, saved.selectionEnd);
+				}
+			}
+			const scroller = scrollContextRef.current?.scrollRef.current;
+			if (scroller && saved) scroller.scrollTop = saved.scrollTop;
+		});
+	};
 	const sourceTextParts = useMemo(() => firstSourceTextParts(messages), [messages]);
 
 	// The reattach settled terminal → the sync-and-continue seam (below).
@@ -372,6 +410,7 @@ export function Chat({
 	abortAskRef.current = abortAsk;
 	useEffect(() => {
 		const onAbort = () => {
+			if (explorationPausedRef.current) return;
 			const target = escAbortTarget({
 				abortAsk: abortAskRef.current !== null,
 				mermaidFocus: mermaidFocusRef.current !== null || figureFocusRef.current !== null,
@@ -438,11 +477,11 @@ export function Chat({
 	// it; the poll below resumes instead).
 	const mountContinuation = useRef(false);
 	useEffect(() => {
-		if (mountContinuation.current) return;
+		if (mountContinuation.current || !explorations.ready) return;
 		mountContinuation.current = true;
-		if (!turnInFlight) continueIfOwed(initialMessages);
-		// mount-only by design (turnInFlight read at initial value)
-	}, []);
+		if (!turnInFlight && !explorationPausedRef.current) continueIfOwed(initialMessages);
+		// Wait for the exploration gate before considering the mount continuation.
+	}, [explorations.ready]);
 
 	const pending = findPendingToolCall(messages);
 	// The abort handler reads the pending question from a ref (the window
@@ -493,7 +532,7 @@ export function Chat({
 	const submitThinking = useCallback(
 		(text: string) => {
 			const problem = activeProblemRef.current;
-			if (!problem) return;
+			if (!problem || explorationPausedRef.current) return;
 			void send({ type: "thinking", problemCallId: problem.toolCallId, text });
 		},
 		[send],
@@ -685,7 +724,7 @@ export function Chat({
 	// DOM at event time — the docks mount and unmount, refs would go
 	// stale. The quiz dock's rows↔thinking claim never reaches here.
 	const cycleChatFields = useCallback((): readonly HTMLElement[] => {
-		const pick = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(sel));
+		const pick = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(element => !element.closest("[inert]"));
 		return [
 			...pick('[data-testid="reading-thinking-field"] textarea'),
 			...pick('[data-testid="question-dock"] textarea'),
@@ -738,10 +777,10 @@ export function Chat({
 	// and completed work, without another learner message. Offered from
 	// "error" too: a dropped stream leaves the model there, and send()
 	// recovers from it. Later compaction requires new input instead.
-	const retryable = (status === "ready" || status === "error") && !busy && !compacting && endsInFailedTurn(nativeMessages);
+	const retryable = !explorations.paused && (status === "ready" || status === "error") && !busy && !compacting && endsInFailedTurn(nativeMessages);
 	const retryFailedTurn = () => retryFailedResponse(send, draftRef);
 	const canSend =
-		(text.trim().length > 0 || dictation.active) && !pending && !activeProblem && !compacting;
+		(text.trim().length > 0 || dictation.active) && !pending && !activeProblem && !compacting && !explorations.paused;
 
 	/* THE PRACTICE PAUSE (owner round 16): between problems — practice
 	 * kind, nothing active, nothing in flight, and at least one problem
@@ -749,6 +788,7 @@ export function Chat({
 	 * the move-on). Enter-on-empty and the Next chip both key on it. */
 	const nextReady =
 		kind === "practice" &&
+		!explorations.paused &&
 		!pending &&
 		!activeProblem &&
 		!compacting &&
@@ -773,7 +813,7 @@ export function Chat({
 	 * self-guards on nextReady, so the listener is inert outside the
 	 * pause — the dock-mounted listeners are gone by then (docks unmount
 	 * when nothing is active; the two never overlap). */
-	useEnterSubmits(sendNext);
+	useEnterSubmits(sendNext, !explorations.paused);
 
 	const syncFromServer = useCallback(async () => {
 		const res = await fetch(`/api/chats/${chatId}`);
@@ -790,7 +830,7 @@ export function Chat({
 		// lastAssistantMessageIsCompleteWithToolCalls check.
 		// Current model truth also guards retained/live failures: canonical
 		// sync must never automatically replace a reply that failed to save.
-		continueIfOwed(record.messages);
+		if (!explorationPausedRef.current) continueIfOwed(record.messages);
 	}, [chatId, setMessages, continueIfOwed]);
 
 	// The settled terminal's other half (stream-reattach wave): the
@@ -1189,7 +1229,7 @@ export function Chat({
 	});
 
 	const onSend = () => {
-		if (pending || compacting) return;
+		if (pending || compacting || explorationPausedRef.current) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): a learner who keeps
 		 * talking right through Enter must not lose the tail — stop the run,
 		 * let the last finals land in the composer, then send the REF value
@@ -1201,7 +1241,7 @@ export function Chat({
 		void dictation.finish().then(doSteerOrSend);
 	};
 	const doSend = () => {
-		if (busy || pending || compacting) return;
+		if (busy || pending || compacting || explorationPausedRef.current) return;
 		const t = textRef.current.trim();
 		if (!t) return;
 		if (zeroKeys) {
@@ -1231,7 +1271,7 @@ export function Chat({
 	 * time the send's POST resolved, so the steer lands. Idle takes the
 	 * plain send; a raced settle 409s and falls back to exactly that. */
 	const doSteerOrSend = () => {
-		if (pending || compacting) return;
+		if (pending || compacting || explorationPausedRef.current) return;
 		const t = textRef.current.trim();
 		if (!t) return;
 		if (busy) {
@@ -1241,6 +1281,28 @@ export function Chat({
 		}
 		doSend();
 	};
+	const renderSourceExplorations = (sourceId: string) => <>
+		<button type="button" data-testid="explore-message" disabled={busy || compacting || explorations.paused}
+			onPointerDown={rememberLessonPlace}
+			onClick={() => {
+				if (!returnPlaceRef.current) rememberLessonPlace();
+				void finishDictation().then(() => explorations.setDraftSourceId(sourceId));
+			}}
+			className="mt-2 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">Explore this</button>
+		{explorations.draftSourceId === sourceId && <ExplorationStarter busy={explorations.changing}
+			dictationSlot={<DictationBar dictation={dictation} />}
+			onStart={topic => { void explorations.create(sourceId, topic); }}
+			onCancel={() => { explorations.setDraftSourceId(null); restoreLessonPlace(); }} />}
+		{explorations.records.filter(chat => chat.exploration.sourceMessageId === sourceId).map(child => <InlineExploration key={child.id}
+			dictationSlot={<DictationBar dictation={dictation} />}
+			chat={child} expanded={explorations.isExpanded(child)} changing={explorations.changing}
+			canReopen={!busy && !compacting && !explorations.active && !explorations.draftSourceId}
+			initialPrompt={explorations.opening?.id === child.id ? explorations.opening.text : undefined}
+			onInitialDelivered={explorations.openingDelivered}
+			onToggle={() => explorations.toggle(child.id)}
+			onClose={() => { void finishDictation().then(() => explorations.change(child, "close")).then(closed => { if (closed) restoreLessonPlace(); }); }}
+			onReopen={() => { rememberLessonPlace(); void explorations.change(child, "reopen"); }} />)}
+	</>;
 
 	return (
 		<ChatActionsContext.Provider
@@ -1248,6 +1310,7 @@ export function Chat({
 				chatId,
 				syncFromServer,
 				sendText: (t: string) => {
+					if (explorationPausedRef.current) return;
 					void send({ type: "text", text: t });
 				},
 				openSetup: () => setSetupOpen(true),
@@ -1387,7 +1450,10 @@ export function Chat({
 				</TopBar>
 
 				<SessionFind scopeRef={sessionFindScopeRef} scrollContextRef={scrollContextRef} />
-				<div ref={sessionFindScopeRef} className="relative flex min-h-0 flex-1">
+				<div ref={sessionFindScopeRef} className="relative flex min-h-0 flex-1" onFocusCapture={event => {
+					const element = event.target;
+					if ((element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) && element.closest("[data-lesson-dock]")) lastLessonFieldRef.current = element;
+				}}>
 				<Conversation className="h-full min-w-0 flex-1" initial="instant" contextRef={scrollContextRef}>
 					<SessionMessageNavigation />
 					<ConversationContent className="min-h-full gap-0 p-0">
@@ -1549,6 +1615,7 @@ export function Chat({
 														return (
 															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
 																<MessageResponse>{part.text}</MessageResponse>
+																{kind === "teach" && sourceId && sourceTextParts.get(sourceId) === part.id && renderSourceExplorations(sourceId)}
 															</div>
 														);
 													}
@@ -1647,6 +1714,9 @@ export function Chat({
 									</Shimmer>
 								</span>
 							)}
+							{explorations.error && <div role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">
+								{explorations.error} {!explorations.ready && <button type="button" className="ml-2 underline" onClick={() => { void explorations.load(); }}>Retry</button>}
+							</div>}
 							{openingError && <p role="alert" className="text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
 							{error && (
 								<div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
@@ -1674,6 +1744,7 @@ export function Chat({
 				    height morph (typing, a question growing the band, the
 				    fold) and NEVER overlaps the composer. */}
 				<DockOverlay
+					paused={explorations.paused}
 					pending={pending}
 					initialQuestionDraft={pending ? questionDraft(pending.toolCallId)?.form : undefined}
 					onSaveQuestionDraft={(form) => { if (pending) saveQuestionDraft(pending.toolCallId, { form }); }}
@@ -1736,7 +1807,7 @@ export function Chat({
 						/>
 					}
 					onSubmitAnswer={(output) => {
-						if (!pending) return;
+						if (!pending || explorationPausedRef.current) return;
 						// THE ANSWER IS THE QUESTION CALL'S TOOL RESULT (fork 1, owner
 						// 2026-09-26): one input event, one turn — the hook appends
 						// the optimistic graded result (the AnsweredCard shows at
@@ -1904,6 +1975,7 @@ export function shouldStampGeometryMute(nextH: number, prevH: number, pending: b
 }
 
 function DockOverlay({
+	paused,
 	pending,
 	initialQuestionDraft,
 	onSaveQuestionDraft,
@@ -1929,6 +2001,7 @@ function DockOverlay({
 	setupCta,
 	queuedSteers,
 }: {
+	paused: boolean;
 	pending: ReturnType<typeof findPendingToolCall>;
 	initialQuestionDraft?: QuestionFormDraft;
 	onSaveQuestionDraft: (draft: QuestionFormDraft) => void;
@@ -1980,6 +2053,8 @@ function DockOverlay({
 	setupCta?: React.ReactNode;
 }) {
 	const { isAtBottom, scrollToBottom, scrollRef } = useStickToBottomContext();
+	const pausedRef = useRef(paused);
+	pausedRef.current = paused;
 	// Render-fresh bottom state (flicker round): the arrival block below reads
 	// it DURING RENDER — the same value the after-paint effect used to read a
 	// frame too late. Assigned per render like the other refs below.
@@ -1994,6 +2069,19 @@ function DockOverlay({
 	// revealed, the normal collapse machine rules apply untouched.
 	const [revealed, setRevealed] = useState(false);
 	const revealPending = requiresReveal && !revealed;
+	const pauseSnapshotRef = useRef({ paused, expanded, revealed });
+	const returnGeometryUntilRef = useRef(0);
+	if (paused !== pauseSnapshotRef.current.paused) {
+		if (paused) pauseSnapshotRef.current = { paused, expanded, revealed };
+		else {
+			pauseSnapshotRef.current.paused = false;
+			setExpanded(pauseSnapshotRef.current.expanded);
+			setRevealed(pauseSnapshotRef.current.revealed);
+			// Collapsing the exploration changes transcript height. That is
+			// restoration geometry, not a request to collapse the lesson dock.
+			returnGeometryUntilRef.current = Date.now() + 500;
+		}
+	}
 
 	const pendingId = pending?.toolCallId ?? null;
 	const initialPendingRef = useRef(pendingId);
@@ -2207,7 +2295,7 @@ function DockOverlay({
 	// a focused button activates natively) — this listener claims only
 	// the dead case: plain focus with Enter doing nothing.
 	useEffect(() => {
-		if (!pending || expanded) return;
+		if (!pending || expanded || paused) return;
 		const onKeyDown = (e: KeyboardEvent) => {
 			if (e.key !== "Enter" || e.altKey) return;
 			if (e.shiftKey && !e.metaKey && !e.ctrlKey) return;
@@ -2227,13 +2315,14 @@ function DockOverlay({
 		};
 		document.addEventListener("keydown", onKeyDown);
 		return () => document.removeEventListener("keydown", onKeyDown);
-	}, [pending, expanded]);
+	}, [pending, expanded, paused]);
 
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (!el) return;
 		const onScroll = () => {
-			if (!pendingRef.current) return;
+			if (!pendingRef.current || pausedRef.current) return;
+			if (Date.now() < returnGeometryUntilRef.current) return;
 			// Resize mute (owner, resize round): a geometry change re-clamps
 			// scrollTop and the browser emits the clamp as a scroll event —
 			// reading the transient position folded the box to the bar for a
@@ -2324,7 +2413,7 @@ function DockOverlay({
 	});
 
 	return (
-		<div className="pointer-events-none absolute inset-x-0 bottom-0" style={{ right: sbInset }}>
+		<div data-lesson-dock="" inert={paused} aria-hidden={paused || undefined} className={`pointer-events-none absolute inset-x-0 bottom-0 ${paused ? "invisible" : ""}`} style={{ right: sbInset }}>
 			<div className="h-24 bg-gradient-to-t from-background via-background/85 to-transparent" />
 			<div ref={blockRef} className="relative bg-background pb-5">
 				<div className={DOCK}>
@@ -2354,7 +2443,7 @@ function DockOverlay({
 										}
 									: undefined
 							}
-							claim={revealPending}
+							claim={revealPending && !paused}
 						/>
 					)}
 					<div ref={shellRef} className="pointer-events-auto overflow-hidden rounded-2xl border bg-card shadow-lg">
@@ -2367,6 +2456,7 @@ function DockOverlay({
 						>
 							{pending ? (
 								<QuestionDock
+									paused={paused}
 									toolName={pending.tool as "quiz" | "probe" | "ask_user_question" | "explain" | "recall"}
 									toolCallId={pending.toolCallId}
 									input={pending.input as never}
@@ -2378,11 +2468,12 @@ function DockOverlay({
 									initialDraft={initialQuestionDraft}
 									onSaveDraft={onSaveQuestionDraft}
 									onEscape={dictationCancel}
-									dictationClaim={!revealPending}
+									dictationClaim={!revealPending && !paused}
 									compactionRunning={compactionRunning}
 								/>
 							) : practice ? (
 								<PracticeDock
+									paused={paused}
 									problemCallId={practice.toolCallId}
 									input={practice.input as { statement: string }}
 									expanded={expanded}

@@ -22,6 +22,7 @@ import { QUESTION_TOOLS, type EnabledTools } from "../core/pending.ts";
 import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
 import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
+import { EXPLORATION_INSTRUCTIONS } from "./exploration-instructions.ts";
 
 /**
  * The two teaching-side agents (docs/probe-teach-split.md): the PROBER and
@@ -174,16 +175,16 @@ function makeQuestionStopper(kind: AgentKind) {
 	};
 }
 
-function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[]) {
+function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], instructions?: string) {
 	// Practice never reaches the role fallback (the handler ALWAYS injects
 	// the session's conversation engine — practice rides the same
 	// conversation-spec resolution as teaching); the cast keeps AgentKind
 	// ("practice" is not a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
 	const stopper = makeQuestionStopper(kind);
-	const systemPrompt = opts.promptSwitches
+	const systemPrompt = instructions ?? (opts.promptSwitches
 		? composeInstructions(kind, opts.promptSwitches)
-		: composedInstructions[kind]!;
+		: composedInstructions[kind]!);
 	// Debug recorder (owner, 2026-10-04): raw provider events when
 	// LH_PROVIDER_EVENTS=1 and the caller handed a chatId; undefined is
 	// the normal no-observer path (tests, env-off).
@@ -334,6 +335,14 @@ export function bareQuestionTools(): Record<string, AgentTool<any>> {
 export function createPracticeAgent(ctx: PracticeToolContext, opts: AgentBuildOptions = {}) {
 	const tools = opts.tools ?? practiceTools(ctx);
 	return baseAgentOptions("practice", opts, Object.values(tools));
+}
+
+/** A plain conversational tutor; no tools can mutate the lesson's plan or
+ * answer its pending question. The separate record is the isolation boundary. */
+export function createExplorationAgent(opts: AgentBuildOptions = {}) {
+	// The base factory may add Claude's output-only send_to_user adapter.
+	// Caller-supplied registries must not reintroduce lesson-mutating tools.
+	return baseAgentOptions("teacher", { ...opts, tools: undefined }, [], EXPLORATION_INSTRUCTIONS);
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;

@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
+import type { ChatCreateInit, ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -32,14 +32,16 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice"): ChatRecord {
+function createChat(title: string, kind?: "practice", init?: ChatCreateInit): ChatRecord {
 	const now = new Date().toISOString();
 	const record: ChatRecord = {
 		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
 		title: title.trim() || "Untitled session",
 		createdAt: now,
 		updatedAt: now,
-		messages: [],
+		messages: init?.messages ?? [],
+		...(init?.exploration ? { exploration: init.exploration } : {}),
+		...(init?.settings ? { settings: init.settings } : {}),
 		// Practice sessions carry the marker; teach stays ABSENT (absence
 		// reads as teach — pre-practice records never migrate).
 		...(kind === "practice" ? { kind: "practice" as const } : {}),
@@ -48,6 +50,15 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
 	writeChat(record);
 	emit("chats-changed", {});
 	return { ...record, version: CURRENT_CHAT_VERSION }; // the in-memory twin of what landed on disk
+}
+
+function setExplorationStatus(id: string, status: "active" | "closed"): ChatRecord {
+	const record = getChat(id);
+	if (!record?.exploration) throw new Error(`Exploration not found: ${id}`);
+	record.exploration = { ...record.exploration, status };
+	writeChat(record);
+	emit("chats-changed", {});
+	return record;
 }
 
 /** THE WRITE CHOKE POINT (schema-versioning wave, owner 2026-10-10): every
@@ -207,6 +218,7 @@ function saveTree(id: string, tree: PlanTree): void {
 
 export const chatStore: ChatStore = {
 	createChat,
+	setExplorationStatus,
 	getChat,
 	listChats,
 	saveMessages,

@@ -59,11 +59,14 @@ export function buttonKeepsNativeEnter(el: HTMLElement): boolean {
 
 /** Mount-scoped: while the dock is mounted (a problem/question is active),
  *  plain Enter anywhere outside a typing surface or button submits it. */
-export function useEnterSubmits(submit: () => void): void {
+export function useEnterSubmits(submit: () => void, enabled = true): void {
 	const submitRef = useRef(submit);
 	submitRef.current = submit;
+	const enabledRef = useRef(enabled);
+	enabledRef.current = enabled;
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			if (!enabledRef.current) return;
 			if (e.key !== "Enter") return;
 			if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
 			if (isTypingSurface(e)) return;

@@ -11,7 +11,7 @@ import type { ChatListItem } from "@/src/core";
  *  (a running spinner per row would double-signal them), so busy means
  *  exactly "a teach turn is in flight". */
 export async function GET() {
-	const chats: ChatListItem[] = listChats().map((c) => ({
+	const chats: ChatListItem[] = listChats().filter((c) => !c.exploration).map((c) => ({
 		...c,
 		busy: isTurnRunning(c.id),
 		compacting: compactionInFlight(c.id),

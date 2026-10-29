@@ -80,6 +80,10 @@ export interface ProvenancePoint {
 	 *  recorded through the mapping line + the source record). */
 	chatId: string;
 	messageId: string;
+	/** Parent lesson for an inline exploration. Source links and
+	 * deletion still use chatId; this stable id only controls grouping.
+	 * Absent on existing records and notes imports: group by chatId. */
+	subjectId?: string;
 }
 
 /** One imported notes file — the format-agnostic front door's bookkeeping
@@ -327,6 +331,9 @@ export interface GraphSnapshot {
 	chains: GraphChain[];
 	/** chatId → title, for every chat that touched the graph. */
 	sessions: Record<string, string>;
+	/** Subject id → display title for lessons with inline explorations. Separate
+	 * from sessions so grouping never invents a transcript source link. */
+	subjectLabels?: Record<string, string>;
 	/** srcId → file path, for every IMPORTED NOTES file that touched the
 	 *  graph (the format-agnostic front door): a static provenance entry —
 	 *  the detail card shows the path as plain text, not a link. */

@@ -21,8 +21,12 @@ export function messageIdFromHash(hash: string): string | null {
 /** Old empty anchors do not mask a later real one. Ledger order, not date or
  * lexical order, selects the FIRST recorded message in this source. */
 export function propositionSessionHref(node: Pick<GraphNode, "provenance">, chatId: string): string {
-	const messageId = node.provenance.find((p) => p.chatId === chatId && p.messageId !== "")?.messageId;
-	return `/chat/${encodeURIComponent(chatId)}${messageId ? `#${encodeURIComponent(messageAnchorId(messageId))}` : ""}`;
+	const point = node.provenance.find((p) => p.chatId === chatId && p.messageId !== "") ?? node.provenance.find((p) => p.chatId === chatId);
+	const parentId = point?.subjectId;
+	const location = parentId && parentId !== chatId
+		? `/chat/${encodeURIComponent(parentId)}?exploration=${encodeURIComponent(chatId)}`
+		: `/chat/${encodeURIComponent(chatId)}`;
+	return `${location}${point?.messageId ? `#${encodeURIComponent(messageAnchorId(point.messageId))}` : ""}`;
 }
 
 /** projectView's text-part identity is <native message ID>-t<text index>.
