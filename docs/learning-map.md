@@ -6,6 +6,10 @@ Understanding is separate from readiness. Unassessed means there is no assessmen
 
 Press a dot or an iceberg concept to open its details. Names, tags, symbols, understanding, and prerequisite connections can be corrected. Symbol search accepts notation, plain names, aliases, and meanings. Details show when the concept was added, when it was first encountered, and links to the relevant conversation passages. Planned concepts have no invented encounter date or understanding.
 
+Choose **Learn this concept** to open a focused teaching session, or **Test my understanding** for a practice session. Both work for Unassessed and Learning concepts, and remain available for review when Comfortable. Sessions carry the selected concept, its symbols, and recorded prerequisite gaps as reference context. Starting a session does not change understanding; actual learner responses drive subsequent automatic updates, while manual corrections retain precedence. Planned concepts can be practice targets before they appear in the original reasoning ledger.
+
+These actions use the normal model setup and connection checks. Unsaved concept edits must be saved or discarded first. Any unrelated home-composer draft, mode, and node picks are preserved when leaving for a concept session and restored on return.
+
 ## Automatic updates
 
 The configured extraction model maintains the learning layer after teaching and practice turns and notes extraction. It reads learner-authored evidence separately from teacher prose; notes can establish concepts and connections but cannot demonstrate personal understanding. The updater records why it inferred an assessment or prerequisite and retains source message IDs. Update map backfills existing conversations through the same pipeline. Jobs, cancellation, and model usage appear in the existing activity/cost surfaces. Automatic assessments remain inferences and can be corrected in details.

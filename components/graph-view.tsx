@@ -65,7 +65,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import { ListTreeIcon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
-import { buildLearningGraphSnapshot, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
+import { buildLearningGraphSnapshot, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningConcept, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
@@ -959,6 +959,8 @@ export function GraphView({
 	practiceSelection,
 	onPracticeSelectionChange,
 	onChainSelectClose,
+	onStartConcept,
+	conceptStarting = null,
 }: {
 	/** PRACTICE SELECT (owner vision, 2026-10-04): the LIFTED, persistent
 	 *  pick set — every check/clear in the chain table (however opened)
@@ -969,6 +971,8 @@ export function GraphView({
 	practiceSelection?: ReadonlySet<string>;
 	onPracticeSelectionChange?: (nodes: { id: string; name: string; statement: string }[]) => void;
 	onChainSelectClose?: () => void;
+	onStartConcept?: (node: LearningConcept, mode: "teach" | "practice") => Promise<void>;
+	conceptStarting?: "teach" | "practice" | null;
 }) {
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1693,6 +1697,8 @@ export function GraphView({
 					onSelect={setSelectedId}
 					onSave={(patch) => patchLearning(`/api/graph/nodes/${encodeURIComponent(selected.id)}`, patch)}
 					onPrerequisiteChange={(patch) => patchLearning("/api/graph/prerequisites", patch)}
+					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode) : undefined}
+					sessionStarting={conceptStarting}
 					className="lh-no-drag absolute inset-x-2 bottom-36 z-20 max-h-[52%] md:inset-x-auto md:right-3 md:top-28 md:bottom-40 md:max-h-none md:w-[22rem]"
 				/>
 			)}

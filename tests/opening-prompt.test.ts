@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { clearOpeningPrompt, readOpeningPrompt, readOpeningPromptEntry, stashOpeningPrompt } from "../components/opening-prompt.ts";
 import { SessionStarter } from "../components/start-session.ts";
+import { createConceptSessionRequest } from "../src/core/learning-session.ts";
+import { stashHomeDraft, takeHomeDraft } from "../components/home-draft.ts";
 
 const original = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 let data: Map<string, string>;
@@ -78,6 +80,36 @@ describe("new-session create and handover", () => {
 		}) as typeof fetch;
 		return { bodies, fetchLike };
 	}
+	it("concept launches carry their identity in either mode and preserve unrelated composer handoffs", async () => {
+		const { bodies, fetchLike } = createFetch();
+		const composerStarter = new SessionStarter();
+		await composerStarter.start({ title: "My separate learning question" }, fetchLike);
+		const draft = { topic: "An unfinished question", mode: "practice" as const, picks: [{ id: "p_original", name: "Original", statement: "Original pick" }] };
+		assert.equal(stashHomeDraft(draft), true);
+		for (const mode of ["teach", "practice"] as const) {
+			const request = createConceptSessionRequest({ id: "n_future_gamma", name: "Growth factor γ" }, mode);
+			const target = await new SessionStarter().start(request, fetchLike);
+			assert.equal(target, `/chat/chat_${bodies.length}`);
+			assert.deepEqual(bodies.at(-1), request);
+			assert.deepEqual(request.learningContext, { nodeId: "n_future_gamma" });
+			assert.equal(request.kind, mode === "practice" ? "practice" : undefined);
+			assert.equal(readOpeningPrompt(`chat_${bodies.length}`), request.title);
+			assert.equal(readOpeningPrompt("chat_1"), "My separate learning question");
+		}
+		assert.deepEqual(takeHomeDraft(), draft);
+	});
+
+	it("an unchanged concept launch retries handover without creating a duplicate session", async () => {
+		const { bodies, fetchLike } = createFetch();
+		const starter = new SessionStarter();
+		const request = createConceptSessionRequest({ id: "n_target", name: "Target" }, "practice");
+		const setItem = storage.setItem;
+		storage.setItem = fail;
+		await assert.rejects(starter.start(request, fetchLike));
+		storage.setItem = setItem;
+		assert.equal(await starter.start(request, fetchLike), "/chat/chat_1");
+		assert.equal(bodies.length, 1);
+	});
 	it("refuses navigation on quota failure, then reuses the created session for unchanged retry", async () => {
 		const starter = new SessionStarter();
 		const { bodies, fetchLike } = createFetch();

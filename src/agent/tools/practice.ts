@@ -38,6 +38,8 @@ export interface PracticeToolContext {
 	 *  not just the session's picks, so pickless sessions and future
 	 *  graph-tools poses stay valid. Absent (tests) = no validation. */
 	graphNodes?: () => ReadonlyArray<Pick<import("../../core/contracts/graph.ts").GraphNode, "id" | "name">>;
+	/** Resolves current effective identities, including reconciled planned ids. */
+	resolveTargetId?: (target: string) => string | null;
 	/** THE RARELY-NEEDED SET (owner round 10, 2026-10-05): the map readers
 	 *  behind the SAME settings gate as the prober's (graphToolsEnabled at
 	 *  the composition root); the research + pdf jobs (both keyless).
@@ -97,7 +99,9 @@ export type ProblemInput = Static<typeof problemInputObject>;
 export function problemTool(
 	gate: PracticeGate,
 	graphNodes?: PracticeToolContext["graphNodes"],
+	resolveTarget?: PracticeToolContext["resolveTargetId"],
 ): AgentTool<typeof problemInputObject> {
+	const resolve = resolveTarget ?? ((target: string) => resolveTargetId(target, graphNodes?.() ?? []));
 	return {
 		name: "problem",
 		label: "problem",
@@ -116,7 +120,7 @@ export function problemTool(
 			// UNTAGGED PROBLEMS (owner round 12): an explicit empty list is
 			// the model saying "no targets" — healed AWAY, so the record's
 			// canonical form is tagged-or-absent, never [].
-			if (!graphNodes) {
+			if (!graphNodes && !resolveTarget) {
 				const bare = (healed as { target?: unknown }).target;
 				return Array.isArray(bare) && bare.length === 0
 					? ({ ...(healed as Record<string, unknown>), target: undefined } as never)
@@ -126,9 +130,8 @@ export function problemTool(
 			if (!Array.isArray(target) || target.length === 0) {
 				return { ...(healed as Record<string, unknown>), target: undefined } as never;
 			}
-			const list = graphNodes();
 			const normalized = target.map((t) =>
-				typeof t === "string" ? (resolveTargetId(t, list) ?? t) : t,
+				typeof t === "string" ? (resolve(t) ?? t) : t,
 			);
 			if (normalized.every((t, i) => t === target[i])) return healed as never;
 			return { ...(healed as Record<string, unknown>), target: normalized } as never;
@@ -145,9 +148,8 @@ export function problemTool(
 			// freely. A one-line rejection — the proposition list already
 			// sits in the agent's context (the [id] marker); no re-listing.
 			// The message teaches the exit: omitting always works.
-			if (graphNodes && input.target && input.target.length > 0) {
-				const list = graphNodes();
-				const unknown = input.target.filter((t) => resolveTargetId(t, list) === null);
+			if ((graphNodes || resolveTarget) && input.target && input.target.length > 0) {
+				const unknown = input.target.filter((t) => resolve(t) === null);
 				if (unknown.length > 0) {
 					return invalidInputResult("problem", [
 						`target ${JSON.stringify(unknown)} is not a known proposition — targets must be proposition ids from the session context; if the material is not in the map, omit target entirely`,
@@ -236,7 +238,7 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 	// keep their own (target-normalizing) prepareArguments as the composed
 	// inner pass; the double heal is idempotent by construction.
 	return healToolRecord({
-		problem: problemTool(gate, ctx.graphNodes),
+		problem: problemTool(gate, ctx.graphNodes, ctx.resolveTargetId),
 		conclude: concludeTool(gate),
 		read: readTool,
 		ls: lsTool,

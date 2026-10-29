@@ -27,15 +27,34 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const answerTools = new Set<string>(QUESTION_TOOLS);
 const textOf = (value: unknown) => userFacingTextOf(value).join("\n");
 
+/** Stored map picks establish identity, never evidence of understanding. */
+function sessionReferences(messages: readonly ChatRecord["messages"][number][]): { nodeIds: string[]; launchPrompt?: string } {
+	const nodeIds = new Set<string>();
+	let launchPrompt: string | undefined;
+	for (const message of messages) {
+		if (message.role !== "custom" || message.customType !== "graph-context") continue;
+		const details = message.details as { propositions?: { id?: unknown }[]; learningContext?: { nodeId?: unknown; launchPrompt?: unknown } } | undefined;
+		for (const pick of Array.isArray(details?.propositions) ? details.propositions : []) {
+			if (pick && typeof pick.id === "string") nodeIds.add(pick.id);
+		}
+		if (typeof details?.learningContext?.nodeId === "string") nodeIds.add(details.learningContext.nodeId);
+		if (launchPrompt === undefined && typeof details?.learningContext?.launchPrompt === "string") launchPrompt = details.learningContext.launchPrompt;
+	}
+	return { nodeIds: [...nodeIds], launchPrompt };
+}
+
 export function learningPassages(record: Pick<ChatRecord, "messages" | "updatedAt">): LearningPassage[] {
 	const failed = failedOutputCallIds(record.messages);
 	const failedCalls = new Set(record.messages.flatMap((message) => message.role === "toolResult" && message.isError ? [message.toolCallId] : []));
+	const { launchPrompt } = sessionReferences(record.messages);
+	const firstTurnMessage = record.messages.find((message) => message.role === "user" || message.role === "assistant");
 	return record.messages.flatMap((message): LearningPassage[] => {
 		let text = "";
 		let learnerEvidence = false;
 		let canSupportComfortable = false;
 		if (message.role === "user") {
 			text = textOf(message.content);
+			if (message === firstTurnMessage && launchPrompt !== undefined && text.trim() === launchPrompt.trim()) return [];
 			learnerEvidence = Boolean(text.trim());
 			canSupportComfortable = learnerEvidence;
 		} else if (message.role === "custom" && message.customType === "practice-thinking") {
@@ -159,10 +178,10 @@ Submit empty arrays for absent information. Do not output readiness or percentag
 
 /** A bounded working set keeps a large global map out of each model call.
  * The search tool below can retrieve omitted concepts before creating one. */
-function contextNodes(record: Pick<ChatRecord, "id" | "title" | "tree">, passages: readonly LearningPassage[], nodes: GraphNode[]): GraphNode[] {
+function contextNodes(record: Pick<ChatRecord, "id" | "title" | "tree">, passages: readonly LearningPassage[], nodes: GraphNode[], selectedIds: ReadonlySet<string>): GraphNode[] {
 	if (nodes.length <= 120) return nodes;
 	const words = new Set(`${record.title} ${JSON.stringify(record.tree ?? "")} ${passages.map((p) => p.text).join(" ")}`.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
-	const score = (node: GraphNode) => (node.provenance.some((point) => point.chatId === record.id) ? 100 : 0) +
+	const score = (node: GraphNode) => (selectedIds.has(node.id) ? 10000 : 0) + (node.provenance.some((point) => point.chatId === record.id) ? 100 : 0) +
 		(node.name.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []).filter((word) => words.has(word)).length;
 	return [...nodes].sort((a, b) => score(b) - score(a)).slice(0, 120);
 }
@@ -242,6 +261,7 @@ export async function runLearningMap(options: {
 	record: ChatRecord;
 	passages: LearningPassage[];
 	nodes: GraphNode[];
+	idAliases?: Record<string, string>;
 	groups: LearningGroupInput[];
 	engine: PiEngine;
 	signal?: AbortSignal;
@@ -249,13 +269,15 @@ export async function runLearningMap(options: {
 	onProgress?: (progress: ModelStreamProgress) => void;
 }): Promise<LearningContribution> {
 	const { record, passages, nodes, groups } = options;
-	const visible = contextNodes(record, passages, nodes);
+	const knownIds = new Set(nodes.map((node) => node.id));
+	const targetIds = [...new Set(sessionReferences(record.messages).nodeIds.map((id) => options.idAliases?.[id] ?? id))].filter((id) => knownIds.has(id));
+	const visible = contextNodes(record, passages, nodes, new Set(targetIds));
 	const visibleIds = new Set(visible.map((node) => node.id));
 	const value = await runSubmitAgent<LearningSubmit>({
 		role: "extractor", toolName: "submit_learning_map", toolDescription: "Submit grounded learning metadata, prerequisites and study groups.",
 		parameters: learningSchema, fill: (input) => input,
 		systemPrompt: LEARNING_MAP_INSTRUCTIONS,
-		prompt: `SESSION: ${record.title}\n\nEXISTING CONCEPTS (ids are stable; ${visible.length} of ${nodes.length} shown). Search find_learning_concepts before creating a concept that may exist elsewhere.\n${JSON.stringify(visible.map(({ id, name, statement }) => ({ id, name, statement })))}\n\nEXISTING RELATED GROUPS:\n${JSON.stringify(groups.filter((group) => group.members.some((id) => visibleIds.has(id))).slice(0, 40))}\n\nSUBJECT PLAN (structure only; no understanding evidence):\n${JSON.stringify(record.tree ?? null)}\n\nTRANSCRIPT EVIDENCE:\n${passages.map((p) => p.text).join("\n\n")}`,
+		prompt: `SESSION: ${record.title}\n\nSELECTED CONCEPT IDS (reuse these identities when the learner's work concerns them; selection and the launch goal are not understanding evidence):\n${JSON.stringify(targetIds)}\n\nEXISTING CONCEPTS (ids are stable; ${visible.length} of ${nodes.length} shown). Search find_learning_concepts before creating a concept that may exist elsewhere.\n${JSON.stringify(visible.map(({ id, name, statement }) => ({ id, name, statement })))}\n\nEXISTING RELATED GROUPS:\n${JSON.stringify(groups.filter((group) => group.members.some((id) => visibleIds.has(id))).slice(0, 40))}\n\nSUBJECT PLAN (structure only; no understanding evidence):\n${JSON.stringify(record.tree ?? null)}\n\nTRANSCRIPT EVIDENCE:\n${passages.map((p) => p.text).join("\n\n")}`,
 		engine: options.engine, signal: options.signal, onStep: options.onStep, chatId: record.id,
 		maxTurns: LEARNING_MAP_MAX_TURNS, onProgress: options.onProgress,
 		extraTools: {

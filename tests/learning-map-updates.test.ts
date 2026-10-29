@@ -4,7 +4,8 @@ import { createFauxCore, fauxAssistantMessage, fauxToolCall, type ToolCall } fro
 import type { ChatRecord, GraphNode, ExtractionRunUsage } from "../src/core/contracts.ts";
 import type { ChatStore, GraphStore } from "../src/core/ports.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
-import { newThinkingMessage } from "../src/core/native-messages.ts";
+import { newGraphContextMessage, newThinkingMessage } from "../src/core/native-messages.ts";
+import { createConceptSessionRequest } from "../src/core/learning-session.ts";
 import { parseLearningContribution } from "../src/core/learning-graph-validation.ts";
 import { buildLearningGraphSnapshot, emptyLearningGraphState, mergeLearningContribution, patchLearningNode } from "../src/core/learning-graph.ts";
 import { abortExtraction, createExtractionPipeline } from "../src/agent/subagents/extraction.ts";
@@ -32,6 +33,33 @@ function assessment(messageIds: string[], state: "learning" | "comfortable" = "c
 }
 
 describe("learning-map evidence boundary", () => {
+	it("keeps generated launch context out of evidence and assesses later work against the selected planned identity", async () => {
+		const request = createConceptSessionRequest(node, "practice");
+		const marker = newGraphContextMessage([{ id: "n_old_growth", name: node.name, statement: node.statement }], [], {
+			nodeId: "n_old_growth", mode: "practice", launchPrompt: request.title,
+			progress: "comfortable", symbols: [{ notation: "γ", meaning: "Growth factor" }], prerequisites: [],
+		});
+		const chat = record([marker, learner("opening", request.title), teacher("t1", "Explain the amount after two periods."), learner("u1", "Each period multiplies by gamma, so the two-period factor is gamma squared.")]);
+		const passages = learningPassages(chat);
+		assert.deepEqual(passages.filter((passage) => passage.learnerEvidence).map((passage) => passage.id), ["u1"]);
+		assert.match(validateLearningSubmit(assessment(["opening"]), [node], passages)!, /actual learner/);
+		assert.match(validateLearningSubmit(assessment([marker.id]), [node], passages)!, /actual learner/);
+		const faux = createFauxCore({});
+		let modelPrompt = "";
+		faux.setResponses([(context) => {
+			modelPrompt = JSON.stringify(context.messages);
+			return fauxAssistantMessage([fauxToolCall("submit_learning_map", assessment(["u1"]) as unknown as ToolCall["arguments"])], { stopReason: "toolUse" });
+		}]);
+		const manyNodes = [...Array.from({ length: 125 }, (_, index) => ({ ...node, id: `n_other_${index}`, name: "Exponential growth", statement: `Unrelated statement ${index}` })), node];
+		const contribution = await runLearningMap({ record: chat, passages, nodes: manyNodes, idAliases: { n_old_growth: node.id }, groups: [], engine: { model: faux.getModel(), streamFn: faux.streamSimple }, onStep: () => undefined });
+		assert.match(modelPrompt, /SELECTED CONCEPT IDS/);
+		assert.match(modelPrompt, /n_growth/);
+		assert.match(modelPrompt, /Exponential growth has a constant proportional rate/, "the selected node must be included in the bounded concept list");
+		assert.doesNotMatch(modelPrompt, /n_old_growth|Recorded understanding|Growth factor/);
+		assert.equal(contribution.nodes[0]!.nodeId, node.id);
+		assert.deepEqual(contribution.nodes[0]!.progressEvidence![0]!.provenance, [{ chatId: chat.id, messageId: "u1" }]);
+	});
+
 	it("includes practice thinking and the problem statement, never the stored model solution", () => {
 		const problem = teacher("problem1", "");
 		if (problem.role === "assistant") problem.content = [{ type: "toolCall", id: "p1", name: "problem", arguments: { statement: "Find the growth after three periods", modelSolution: "MODEL SOLUTION" } }];

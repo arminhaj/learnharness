@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { ArrowUpRightIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
+import { ArrowUpRightIcon, BookOpenIcon, DumbbellIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { propositionSessionHref } from "@/src/core";
 import type { ProvenancePoint } from "@/src/core";
@@ -31,9 +31,33 @@ export interface LearningNodeSidebarProps {
 	onSelect: (id: string) => void;
 	onSave: (patch: LearningNodePatch) => Promise<void>;
 	onPrerequisiteChange: (patch: LearningPrerequisitePatch) => Promise<void>;
+	onStartSession?: (mode: "teach" | "practice") => Promise<void>;
+	sessionStarting?: "teach" | "practice" | null;
+	sessionError?: string | null;
 	sessions?: Record<string, string>;
 	fileSources?: Record<string, string>;
 	className?: string;
+}
+
+/** Shared by both graph views. Readiness guides the session without gating it;
+ * launching never changes the recorded understanding state. */
+export function LearningSessionActions({ onStart, starting = null, busy = false, dirty = false, onDiscardDraft, unmetPrerequisites = 0, error = null }: {
+	onStart: (mode: "teach" | "practice") => void;
+	starting?: "teach" | "practice" | null;
+	busy?: boolean;
+	dirty?: boolean;
+	onDiscardDraft?: () => void;
+	unmetPrerequisites?: number;
+	error?: string | null;
+}) {
+	const disabled = busy || starting !== null || dirty;
+	return <div className="mt-4 space-y-2" data-testid="learning-session-actions">
+		<button type="button" data-testid="learn-concept" disabled={disabled} onClick={() => onStart("teach")} className={cn(actionClass, "w-full border border-border bg-accent/60 text-foreground")}><BookOpenIcon aria-hidden="true" className="size-3.5" />{starting === "teach" ? "Starting teaching…" : "Learn this concept"}</button>
+		<button type="button" data-testid="test-concept" disabled={disabled} onClick={() => onStart("practice")} className={cn(actionClass, "w-full border border-border text-foreground")}><DumbbellIcon aria-hidden="true" className="size-3.5" />{starting === "practice" ? "Starting practice…" : "Test my understanding"}</button>
+		{unmetPrerequisites > 0 && <p className="text-xs leading-relaxed text-muted-foreground">The session will check prerequisite gaps first.</p>}
+		{dirty && <p className="text-xs leading-relaxed text-muted-foreground">Save or discard your edits before starting a session.{onDiscardDraft && <button type="button" onClick={onDiscardDraft} disabled={busy || starting !== null} className="ml-1 underline underline-offset-2 disabled:opacity-40">Discard unsaved edits</button>}</p>}
+		{error && <p role="alert" className="text-xs leading-relaxed text-destructive">{error}</p>}
+	</div>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -56,7 +80,7 @@ function displayDate(value: string | null): string {
 
 /** The parent keys this panel by node id; background assessments never replace
  * a dirty metadata draft. All writes finish before the panel reports success. */
-export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave, onPrerequisiteChange, sessions = {}, fileSources = {}, className }: LearningNodeSidebarProps) {
+export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave, onPrerequisiteChange, onStartSession, sessionStarting = null, sessionError = null, sessions = {}, fileSources = {}, className }: LearningNodeSidebarProps) {
 	const titleId = useId();
 	const closeRef = useRef<HTMLButtonElement>(null);
 	const [name, setName] = useState(node.name);
@@ -65,11 +89,16 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 	const [dirtyFields, setDirtyFields] = useState<LearningMetadataDirtyFields>({});
 	const dirty = Object.keys(dirtyFields).length > 0;
 	const [busy, setBusy] = useState(false);
+	const [localSessionStarting, setLocalSessionStarting] = useState<"teach" | "practice" | null>(null);
+	const startSessionRef = useRef(false);
+	const starting = sessionStarting ?? localSessionStarting;
+	const locked = busy || starting !== null;
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [adding, setAdding] = useState(false);
 	const [prerequisiteId, setPrerequisiteId] = useState("");
 	const [reason, setReason] = useState("");
+	const unsavedSessionEdits = dirty || (adding && Boolean(prerequisiteId || reason.trim()));
 	const nodes = new Map(learning.nodes.map((value) => [value.id, value]));
 	const prerequisites = learning.prerequisites.filter((edge) => edge.to === node.id);
 	const corrections = learning.prerequisiteCorrections.filter((edge) => edge.to === node.id);
@@ -91,13 +120,31 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 	}, [onClose]);
 
 	async function run(action: () => Promise<void>, success: string) {
-		if (busy) return;
+		if (locked) return;
 		setBusy(true);
 		setError(null);
 		setNotice(null);
 		try { await action(); setNotice(success); }
 		catch (failure) { setError(failure instanceof Error ? failure.message : "The update could not be saved. Please try again."); }
 		finally { setBusy(false); }
+	}
+	async function startSession(mode: "teach" | "practice") {
+		if (!onStartSession || locked || unsavedSessionEdits || startSessionRef.current) return;
+		startSessionRef.current = true;
+		setLocalSessionStarting(mode);
+		setError(null);
+		try { await onStartSession(mode); }
+		catch (failure) { setError(failure instanceof Error ? failure.message : "The session could not be started. Please try again."); }
+		finally { startSessionRef.current = false; setLocalSessionStarting(null); }
+	}
+	function discardSessionDraft() {
+		setName(node.name);
+		setTags(node.tags.join(", "));
+		setSymbols(node.symbols);
+		setDirtyFields({});
+		setAdding(false);
+		setPrerequisiteId("");
+		setReason("");
 	}
 	function editSymbol(index: number, patch: Partial<LearningSymbol>) {
 		setSymbols((current) => current.map((symbol, i) => i === index ? { ...symbol, ...patch } : symbol));
@@ -117,13 +164,14 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 					<div className="flex items-center gap-3">
 						<LearningProgressDot progress={node.progress} />
 						<label className="sr-only" htmlFor={`${titleId}-progress`}>Understanding</label>
-						<select id={`${titleId}-progress`} value={node.progress} disabled={busy} onChange={(event) => void run(() => onSave({ progress: event.target.value as LearningProgress }), "Understanding corrected.")} className={fieldClass}>
+						<select id={`${titleId}-progress`} value={node.progress} disabled={locked} onChange={(event) => void run(() => onSave({ progress: event.target.value as LearningProgress }), "Understanding corrected.")} className={fieldClass}>
 							{(["unassessed", "learning", "comfortable"] as const).map((progress) => <option key={progress} value={progress}>{LEARNING_PROGRESS_LABELS[progress]}</option>)}
 						</select>
 					</div>
 					<p className="mt-2 text-xs leading-relaxed text-muted-foreground">{node.progressOverride !== null ? "Your correction is active. Automatic assessments will not replace it." : node.progressEvidence.length ? "Automatically assessed from your learning evidence. You can correct this at any time." : "No understanding evidence yet. Encountering a concept alone does not establish understanding."}</p>
-					{node.progressOverride !== null && <button type="button" disabled={busy} onClick={() => void run(() => onSave({ progress: null }), "Following automatic assessments.")} className={cn(actionClass, "mt-1 -ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Use automatic · {LEARNING_PROGRESS_LABELS[node.automaticProgress]}</button>}
+					{node.progressOverride !== null && <button type="button" disabled={locked} onClick={() => void run(() => onSave({ progress: null }), "Following automatic assessments.")} className={cn(actionClass, "mt-1 -ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Use automatic · {LEARNING_PROGRESS_LABELS[node.automaticProgress]}</button>}
 					{node.progressEvidence.length > 0 && <details className="mt-3"><summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">Why this assessment?</summary><ol className="mt-2 space-y-3">{[...node.progressEvidence].reverse().slice(0, 5).map((evidence, index) => <li key={`${evidence.observedAt}-${index}`} className="border-l border-border pl-3"><p className="text-xs text-muted-foreground">{LEARNING_PROGRESS_LABELS[evidence.state]} · {displayDate(evidence.observedAt)}</p><p className="mt-1 font-prose text-sm leading-relaxed">{evidence.explanation}</p><SourceLinks provenance={evidence.provenance} sessions={sessions} fileSources={fileSources} /></li>)}</ol></details>}
+					{onStartSession && <LearningSessionActions onStart={(mode) => void startSession(mode)} starting={starting} busy={busy} dirty={unsavedSessionEdits} onDiscardDraft={discardSessionDraft} unmetPrerequisites={node.unmetPrerequisiteIds.length} error={sessionError} />}
 				</Section>
 				<Section title="Readiness & prerequisites">
 					<p className="font-prose text-sm leading-relaxed">{node.progress === "comfortable" ? "You are comfortable with this concept." : node.ready ? prerequisites.length ? "Ready to learn: all recorded prerequisites are comfortable." : "Ready to begin: no prerequisites recorded." : `${node.unmetPrerequisiteIds.length} ${node.unmetPrerequisiteIds.length === 1 ? "prerequisite needs" : "prerequisites need"} more understanding.`}</p>
@@ -137,40 +185,40 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 							<button type="button" onClick={() => onSelect(prerequisite.id)} className="flex min-h-8 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><LearningProgressDot progress={prerequisite.progress} />{prerequisite.name}<span className="sr-only">, {LEARNING_PROGRESS_LABELS[prerequisite.progress]}</span></button>
 							<p className="mt-1 font-prose text-sm leading-relaxed text-muted-foreground">{edge.explanation}</p>
 							<SourceLinks provenance={edge.provenance} sessions={sessions} fileSources={fileSources} />
-							<div className="mt-1 flex flex-wrap items-center justify-between gap-1"><span className="text-xs text-muted-foreground">{edge.origin === "manual" ? "Your connection" : "Automatic connection"}</span><button type="button" disabled={busy} aria-label={`Remove prerequisite ${prerequisite.name}`} onClick={() => void run(() => onPrerequisiteChange({ from: edge.from, to: edge.to, enabled: false }), "Prerequisite removed. Your correction is saved.")} className={cn(actionClass, "-mr-2 text-muted-foreground")}>Remove</button></div>
-							{correction && <button type="button" disabled={busy} onClick={() => void run(() => onPrerequisiteChange({ from: edge.from, to: edge.to, enabled: null }), "Following the automatic connection.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon className="size-3" aria-hidden="true" />Use automatic</button>}
+							<div className="mt-1 flex flex-wrap items-center justify-between gap-1"><span className="text-xs text-muted-foreground">{edge.origin === "manual" ? "Your connection" : "Automatic connection"}</span><button type="button" disabled={locked} aria-label={`Remove prerequisite ${prerequisite.name}`} onClick={() => void run(() => onPrerequisiteChange({ from: edge.from, to: edge.to, enabled: false }), "Prerequisite removed. Your correction is saved.")} className={cn(actionClass, "-mr-2 text-muted-foreground")}>Remove</button></div>
+							{correction && <button type="button" disabled={locked} onClick={() => void run(() => onPrerequisiteChange({ from: edge.from, to: edge.to, enabled: null }), "Following the automatic connection.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon className="size-3" aria-hidden="true" />Use automatic</button>}
 						</li>;
 					})}</ul>
-					{corrections.some((edge) => edge.enabled === false) && <details className="mt-3"><summary className="cursor-pointer text-xs text-muted-foreground">Removed prerequisites</summary>{corrections.filter((edge) => edge.enabled === false).map((edge) => <div key={edge.from} className="mt-2 flex items-center justify-between gap-2 text-xs"><span>{nodes.get(edge.from)?.name ?? edge.from}</span><button type="button" disabled={busy} className={actionClass} onClick={() => void run(() => onPrerequisiteChange({ ...edge, enabled: null }), "Following the automatic connection.")}>Use automatic</button></div>)}</details>}
+					{corrections.some((edge) => edge.enabled === false) && <details className="mt-3"><summary className="cursor-pointer text-xs text-muted-foreground">Removed prerequisites</summary>{corrections.filter((edge) => edge.enabled === false).map((edge) => <div key={edge.from} className="mt-2 flex items-center justify-between gap-2 text-xs"><span>{nodes.get(edge.from)?.name ?? edge.from}</span><button type="button" disabled={locked} className={actionClass} onClick={() => void run(() => onPrerequisiteChange({ ...edge, enabled: null }), "Following the automatic connection.")}>Use automatic</button></div>)}</details>}
 					{adding ? <form className="mt-3 space-y-2 rounded-md border border-border/60 p-3" onSubmit={(event) => { event.preventDefault(); if (prerequisiteId) void run(async () => { await onPrerequisiteChange({ from: prerequisiteId, to: node.id, enabled: true, explanation: reason.trim() || undefined }); setAdding(false); setPrerequisiteId(""); setReason(""); }, "Prerequisite added. Your correction is saved."); }}>
 						<label htmlFor={`${titleId}-prerequisite`} className="block text-xs text-muted-foreground">Learn first</label>
-						<select id={`${titleId}-prerequisite`} value={prerequisiteId} onChange={(event) => setPrerequisiteId(event.target.value)} className={fieldClass} required disabled={busy}><option value="">Choose a concept</option>{candidates.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}</select>
+						<select id={`${titleId}-prerequisite`} value={prerequisiteId} onChange={(event) => setPrerequisiteId(event.target.value)} className={fieldClass} required disabled={locked}><option value="">Choose a concept</option>{candidates.map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}</select>
 						<label htmlFor={`${titleId}-reason`} className="block text-xs text-muted-foreground">Why it helps (optional)</label>
-						<textarea id={`${titleId}-reason`} rows={2} value={reason} onChange={(event) => setReason(event.target.value)} className={fieldClass} disabled={busy} />
-						<div className="flex justify-end gap-1"><button type="button" disabled={busy} onClick={() => setAdding(false)} className={actionClass}>Cancel</button><button type="submit" disabled={busy || !prerequisiteId} className={cn(actionClass, "border border-border")}>Add prerequisite</button></div>
-					</form> : <button type="button" disabled={busy || candidates.length === 0} onClick={() => setAdding(true)} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add prerequisite</button>}
+						<textarea id={`${titleId}-reason`} rows={2} value={reason} onChange={(event) => setReason(event.target.value)} className={fieldClass} disabled={locked} />
+						<div className="flex justify-end gap-1"><button type="button" disabled={locked} onClick={() => setAdding(false)} className={actionClass}>Cancel</button><button type="submit" disabled={locked || !prerequisiteId} className={cn(actionClass, "border border-border")}>Add prerequisite</button></div>
+					</form> : <button type="button" disabled={locked || candidates.length === 0} onClick={() => setAdding(true)} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add prerequisite</button>}
 					{following.length > 0 && <div className="mt-3"><p className="text-xs text-muted-foreground">Helps unlock</p>{following.map((next) => <button type="button" key={next.id} onClick={() => onSelect(next.id)} className="mt-1 flex min-h-8 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />{next.name}<span className="text-xs text-muted-foreground">{next.ready && next.progress !== "comfortable" ? "Ready" : ""}</span></button>)}</div>}
 				</Section>
 				<form onSubmit={(event) => { event.preventDefault(); if (name.trim()) void run(async () => { await onSave(learningMetadataPatch({ name, tags, symbols }, dirtyFields)); setDirtyFields({}); }, "Node details saved."); }}>
 					<Section title="Name & tags">
 						<label htmlFor={`${titleId}-name`} className="mb-1 block text-xs text-muted-foreground">Name</label>
-						<input id={`${titleId}-name`} required maxLength={200} value={name} onChange={(event) => { setName(event.target.value); setDirtyFields((fields) => ({ ...fields, name: true })); }} className={fieldClass} disabled={busy} />
+						<input id={`${titleId}-name`} required maxLength={200} value={name} onChange={(event) => { setName(event.target.value); setDirtyFields((fields) => ({ ...fields, name: true })); }} className={fieldClass} disabled={locked} />
 						<label htmlFor={`${titleId}-tags`} className="mb-1 mt-3 block text-xs text-muted-foreground">Tags · separated by commas</label>
-						<input id={`${titleId}-tags`} value={tags} onChange={(event) => { setTags(event.target.value); setDirtyFields((fields) => ({ ...fields, tags: true })); }} placeholder="Mechanics, variational methods" className={fieldClass} disabled={busy} />
+						<input id={`${titleId}-tags`} value={tags} onChange={(event) => { setTags(event.target.value); setDirtyFields((fields) => ({ ...fields, tags: true })); }} placeholder="Mechanics, variational methods" className={fieldClass} disabled={locked} />
 					</Section>
 					<Section title="Introduced symbols">
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">Search by notation, meaning, or an alias such as γ, \gamma, or gamma.</p>
 						{symbols.length === 0 && <p className="text-xs text-muted-foreground">No symbols recorded.</p>}
 						<div className="space-y-3">{symbols.map((symbol, index) => <div key={index} className="space-y-2 rounded-md border border-border/60 p-3">
-							<div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Symbol {index + 1}</span><button type="button" aria-label={`Remove symbol ${symbol.notation || index + 1}`} disabled={busy} onClick={() => { setSymbols((current) => current.filter((_, i) => i !== index)); setDirtyFields((fields) => ({ ...fields, symbols: true })); }} className={cn(actionClass, "-mr-2 px-2")}><XIcon aria-hidden="true" className="size-3" /></button></div>
-							<label className="block text-xs text-muted-foreground">Notation<input aria-label={`Symbol ${index + 1} notation`} required value={symbol.notation} onChange={(event) => editSymbol(index, { notation: event.target.value })} placeholder="γ" className={cn(fieldClass, "mt-1")} disabled={busy} /></label>
-							<label className="block text-xs text-muted-foreground">Meaning<input aria-label={`Symbol ${index + 1} meaning`} required value={symbol.meaning} onChange={(event) => editSymbol(index, { meaning: event.target.value })} placeholder="Exponential growth factor" className={cn(fieldClass, "mt-1")} disabled={busy} /></label>
-							<label className="block text-xs text-muted-foreground">Aliases · separated by commas<input aria-label={`Symbol ${index + 1} aliases`} value={symbol.aliases.join(",")} onChange={(event) => editSymbol(index, { aliases: event.target.value.split(",") })} placeholder="\gamma, gamma" className={cn(fieldClass, "mt-1")} disabled={busy} /></label>
+							<div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Symbol {index + 1}</span><button type="button" aria-label={`Remove symbol ${symbol.notation || index + 1}`} disabled={locked} onClick={() => { setSymbols((current) => current.filter((_, i) => i !== index)); setDirtyFields((fields) => ({ ...fields, symbols: true })); }} className={cn(actionClass, "-mr-2 px-2")}><XIcon aria-hidden="true" className="size-3" /></button></div>
+							<label className="block text-xs text-muted-foreground">Notation<input aria-label={`Symbol ${index + 1} notation`} required value={symbol.notation} onChange={(event) => editSymbol(index, { notation: event.target.value })} placeholder="γ" className={cn(fieldClass, "mt-1")} disabled={locked} /></label>
+							<label className="block text-xs text-muted-foreground">Meaning<input aria-label={`Symbol ${index + 1} meaning`} required value={symbol.meaning} onChange={(event) => editSymbol(index, { meaning: event.target.value })} placeholder="Exponential growth factor" className={cn(fieldClass, "mt-1")} disabled={locked} /></label>
+							<label className="block text-xs text-muted-foreground">Aliases · separated by commas<input aria-label={`Symbol ${index + 1} aliases`} value={symbol.aliases.join(",")} onChange={(event) => editSymbol(index, { aliases: event.target.value.split(",") })} placeholder="\gamma, gamma" className={cn(fieldClass, "mt-1")} disabled={locked} /></label>
 							<SourceLinks provenance={symbol.provenance} sessions={sessions} fileSources={fileSources} />
 						</div>)}</div>
-						<button type="button" disabled={busy} onClick={() => { setSymbols((current) => [...current, { notation: "", meaning: "", aliases: [], provenance: [] }]); setDirtyFields((fields) => ({ ...fields, symbols: true })); }} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add symbol</button>
+						<button type="button" disabled={locked} onClick={() => { setSymbols((current) => [...current, { notation: "", meaning: "", aliases: [], provenance: [] }]); setDirtyFields((fields) => ({ ...fields, symbols: true })); }} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add symbol</button>
 					</Section>
-					<div className="flex items-center justify-between gap-2 pb-4"><button type="button" disabled={busy} onClick={() => void run(async () => { await onSave({ name: null, tags: null, symbols: null }); setDirtyFields({}); }, "Following automatic metadata.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Reset metadata</button><button type="submit" disabled={busy || !dirty || !name.trim()} className={cn(actionClass, "border border-border bg-accent/50")}>{busy ? "Saving…" : "Save details"}</button></div>
+					<div className="flex items-center justify-between gap-2 pb-4"><button type="button" disabled={locked} onClick={() => void run(async () => { await onSave({ name: null, tags: null, symbols: null }); setDirtyFields({}); }, "Following automatic metadata.")} className={cn(actionClass, "-ml-3 text-muted-foreground")}><RotateCcwIcon aria-hidden="true" className="size-3" />Reset metadata</button><button type="submit" disabled={locked || !dirty || !name.trim()} className={cn(actionClass, "border border-border bg-accent/50")}>{busy ? "Saving…" : "Save details"}</button></div>
 				</form>
 				<Section title="History & sources">
 					<dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-muted-foreground">Added to map</dt><dd>{displayDate(node.createdAt)}</dd><dt className="text-muted-foreground">First encountered</dt><dd>{displayDate(node.firstEncounteredAt)}</dd></dl>

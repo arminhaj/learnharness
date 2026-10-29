@@ -255,7 +255,7 @@ export interface GraphContextPick {
  *  to a user message by toLlmMessages like every marker); `details`
  *  feeds the transcript's collapsible GraphContextCard. No more seed
  *  text glued into the first prompt. */
-export function newGraphContextMessage(picks: readonly GraphContextPick[], chains: readonly string[]): LhMarkerMessage {
+export function newGraphContextMessage(picks: readonly GraphContextPick[], chains: readonly string[], learningContext?: import("./learning-session.ts").LearningSessionContext): LhMarkerMessage {
 	// IDS FIRST (owner round 9, 2026-10-05 — the mastery-trace contract):
 	// each proposition is introduced ONCE with its id, name, and statement;
 	// the problem tool's `target` field takes these ids (names normalize to
@@ -275,13 +275,21 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 	if (chains.length > 0) {
 		lines.push("", "Reasoning chains among them (premises → conclusion):", ...chains.map((c) => `- ${c}`));
 	}
+	if (learningContext) {
+		lines.push("", "Learning-map reference (context, not a demonstration of understanding):",
+			`Selected concept: [${learningContext.nodeId}]. Session goal: ${learningContext.mode === "practice" ? "test understanding" : "learn the concept"}.`,
+			`Recorded understanding: ${learningContext.progress}. Check current understanding through the learner's actual work.`,
+			"Symbols: " + (learningContext.symbols.map((symbol) => `${symbol.notation}: ${symbol.meaning}`).join("; ") || "None recorded."),
+			"Direct learning prerequisites:",
+			...(learningContext.prerequisites.length ? learningContext.prerequisites.map((node) => `- [${node.id}] ${node.name}: ${node.statement} (recorded understanding: ${node.progress})`) : ["None recorded."]));
+	}
 	return {
 		id: newMessageId(),
 		role: "custom",
 		customType: "graph-context",
 		content: lines.join("\n"),
 		display: true,
-		details: { propositions: picks, chains },
+		details: { propositions: picks, chains, ...(learningContext ? { learningContext } : {}) },
 		timestamp: Date.now(),
 	};
 }

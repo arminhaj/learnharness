@@ -12,6 +12,7 @@ import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import { reconstructRequestCause } from "../core/native-messages.ts";
+import { resolveLearningSessionTarget } from "../core/learning-session.ts";
 import { createJobRunner } from "../agent/subagents/runner.ts";
 import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
 import { learningGraphView, readLearningGraphState, saveLearningContribution } from "./learning-graph.ts";
@@ -451,7 +452,7 @@ export async function handleChatInput(
 						// WHOLE graph fresh per pose — targets validate against every
 						// proposition, not just the session's picks (pickless sessions
 						// and future graph-tools poses stay valid).
-						graphNodes: () => stores.graphStore.readNodes(),
+						resolveTargetId: (target) => resolveLearningSessionTarget(learningGraphView(), target),
 						// THE RARELY-NEEDED SET (owner round 10): research + pdf jobs
 						// (same runner/gating as the teacher's — research honestly
 						// absent when no engine is live) and the map readers behind

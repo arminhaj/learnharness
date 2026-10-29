@@ -1206,7 +1206,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 					setPhase(jobKey, "extracting", kind);
 					const snapshot = deps.learning!.snapshot();
 					return runLearningMap({
-						record, passages: batch, nodes: snapshot.nodes, groups: snapshot.groups,
+						record, passages: batch, nodes: snapshot.nodes, groups: snapshot.groups, idAliases: snapshot.idAliases,
 						engine, signal,
 						onStep: (usage, model) => recordStep(jobKey, "extractor", callUsage(usage), model),
 						onProgress: (modelProgress) => {

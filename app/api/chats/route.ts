@@ -1,7 +1,7 @@
-import { chainsForSelection, formatChainLine } from "@/src/core";
+import { chainsForSelection, createConceptSessionRequest, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
-import type { ChatListItem } from "@/src/core";
+import { compactionInFlight, createChat, isTurnRunning, learningGraphView, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import type { ChatListItem, LearningSessionContext } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
  *  question) + live liveness — a running turn marks the session busy
@@ -20,11 +20,33 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-	const body = (await req.json().catch(() => ({}))) as { title?: unknown; kind?: unknown; graphContext?: unknown };
+	const body = (await req.json().catch(() => ({}))) as { title?: unknown; kind?: unknown; graphContext?: unknown; learningContext?: unknown };
+	if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "Invalid session request" }, { status: 400 });
 	const title = typeof body.title === "string" ? body.title : "";
 	// Practice sessions (owner, 2026-10-04): kind "practice" marks the
 	// record — the practice agent + its tools from turn 1, no extraction.
 	const kind = body.kind === "practice" ? ("practice" as const) : undefined;
+	let learningContext: LearningSessionContext | undefined;
+	let learningPick: GraphContextPick | undefined;
+	if (body.learningContext !== undefined) {
+		const input = body.learningContext as { nodeId?: unknown } | null;
+		if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.nodeId !== "string" || !/^[A-Za-z0-9_.:-]+$/.test(input.nodeId)) {
+			return Response.json({ error: "learningContext requires a valid nodeId" }, { status: 400 });
+		}
+		const snapshot = learningGraphView();
+		const nodeId = snapshot.idAliases?.[input.nodeId] ?? input.nodeId;
+		const node = snapshot.nodes.find((candidate) => candidate.id === nodeId);
+		if (!node) return Response.json({ error: "This concept is no longer in the learning map" }, { status: 404 });
+		const prerequisiteIds = new Set(snapshot.prerequisites.filter((edge) => edge.to === node.id).map((edge) => edge.from));
+		learningPick = { id: node.id, name: node.name, statement: node.statement };
+		learningContext = {
+			nodeId: node.id, mode: kind ?? "teach",
+			launchPrompt: title || createConceptSessionRequest(node, kind ?? "teach").title,
+			progress: node.progress,
+			symbols: node.symbols.map(({ notation, meaning }) => ({ notation, meaning })),
+			prerequisites: snapshot.nodes.filter((candidate) => prerequisiteIds.has(candidate.id)).map(({ id, name, statement, progress }) => ({ id, name, statement, progress })),
+		};
+	}
 	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind);
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
@@ -47,7 +69,7 @@ export async function POST(req: Request) {
 	// The picks carry their own name/statement (what the learner saw at
 	// pick time); the chains derive from the CURRENT graph snapshot.
 	const rawPicks = (body.graphContext as { propositions?: unknown } | undefined)?.propositions;
-	const picks: GraphContextPick[] = Array.isArray(rawPicks)
+	const picks: GraphContextPick[] = learningPick ? [learningPick] : Array.isArray(rawPicks)
 		? rawPicks
 				.filter(
 						(p): p is GraphContextPick =>
@@ -65,7 +87,7 @@ export async function POST(req: Request) {
 		const chainLines = chainsForSelection(pickedNodes, stores.graphStore.readChains()).map((c) =>
 			formatChainLine(c, Object.fromEntries(byId)),
 		);
-		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
+		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines, learningContext)]);
 	}
 	return Response.json({ id: chat.id, title: chat.title });
 }

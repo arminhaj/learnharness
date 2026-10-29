@@ -4,7 +4,7 @@ import React from "react";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LearningNodeSidebar, learningMetadataPatch } from "../components/learning-node-sidebar.tsx";
+import { LearningNodeSidebar, LearningSessionActions, learningMetadataPatch } from "../components/learning-node-sidebar.tsx";
 import { LearningIceberg } from "../components/learning-iceberg.tsx";
 import type { LearningConcept, LearningGraphSnapshot } from "../src/core/contracts/learning-graph.ts";
 
@@ -68,6 +68,54 @@ describe("learning graph details", () => {
 		assert.match(html, /Source unavailable/);
 		assert.match(html, /Exponential growth factor/);
 		assert.doesNotMatch(html, /href="\/chat\/chat_1/);
+	});
+});
+
+describe("concept teaching and assessment actions", () => {
+	const button = (html: string, id: string) => html.match(new RegExp(`<button(?=[^>]*data-testid="${id}")[^>]*>`))?.[0] ?? assert.fail(`Missing ${id}`);
+	it("offers learning and testing for every understanding state without changing it", () => {
+		for (const progress of ["unassessed", "learning", "comfortable"] as const) {
+			const concept = { ...euler, progress };
+			const html = renderToStaticMarkup(<LearningNodeSidebar node={concept} learning={learning} {...actions} onStartSession={async () => {}} />);
+			assert.match(html, /Learn this concept/);
+			assert.match(html, /Test my understanding/);
+			assert.doesNotMatch(button(html, "learn-concept"), /disabled=""/);
+			assert.doesNotMatch(button(html, "test-concept"), /disabled=""/);
+			assert.match(html, new RegExp(`value="${progress}" selected=""`));
+			assert.equal(concept.progress, progress);
+		}
+	});
+	it("explains prerequisite checks while allowing both sessions", () => {
+		const concept = { ...euler, ready: false, unmetPrerequisiteIds: [calculus.id] };
+		const html = renderToStaticMarkup(<LearningNodeSidebar node={concept} learning={learning} {...actions} onStartSession={async () => {}} />);
+		assert.match(html, /The session will check prerequisite gaps first/);
+		assert.doesNotMatch(button(html, "learn-concept"), /disabled=""/);
+		assert.doesNotMatch(button(html, "test-concept"), /disabled=""/);
+	});
+	it("protects unsaved edits and pending metadata writes from navigation", () => {
+		for (const state of [{ dirty: true }, { busy: true }]) {
+			const html = renderToStaticMarkup(<LearningSessionActions onStart={() => {}} onDiscardDraft={() => {}} {...state} />);
+			assert.match(button(html, "learn-concept"), /disabled=""/);
+			assert.match(button(html, "test-concept"), /disabled=""/);
+			if ("dirty" in state) {
+				assert.match(html, /Save or discard your edits before starting a session/);
+				assert.match(html, /Discard unsaved edits/);
+			}
+		}
+	});
+	it("disables both launches and metadata edits while a session starts", () => {
+		const html = renderToStaticMarkup(<LearningNodeSidebar node={euler} learning={learning} {...actions} onStartSession={async () => {}} sessionStarting="practice" />);
+		assert.match(html, /Starting practice…/);
+		assert.match(button(html, "learn-concept"), /disabled=""/);
+		assert.match(button(html, "test-concept"), /disabled=""/);
+		assert.match(html, /<input(?=[^>]*maxLength="200")(?=[^>]*disabled="")[^>]*>/);
+	});
+	it("shows creation errors beside retryable actions and keeps legacy callers usable", () => {
+		const html = renderToStaticMarkup(<LearningNodeSidebar node={euler} learning={learning} {...actions} onStartSession={async () => {}} sessionError="Choose a teaching model first." />);
+		assert.match(html, /role="alert"[^>]*>Choose a teaching model first/);
+		assert.doesNotMatch(button(html, "learn-concept"), /disabled=""/);
+		const legacy = renderToStaticMarkup(<LearningNodeSidebar node={euler} learning={learning} {...actions} />);
+		assert.doesNotMatch(legacy, /data-testid="learning-session-actions"/);
 	});
 });
 
