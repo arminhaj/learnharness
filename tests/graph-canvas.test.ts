@@ -22,6 +22,7 @@ import {
 	wrapRegionLabel,
 	zoomRatioOf,
 	LABELS_FADE_RATIO,
+	GraphCanvasRenderer,
 } from "../components/graph-canvas.ts";
 import {
 	sanitizePhysicsTuning,
@@ -31,6 +32,35 @@ import {
 	REGION_BITMAP_OPTIONS,
 	REGION_BLUR_LADDER,
 } from "../src/core/render-settings.ts";
+
+test("theme repaint preserves graph data, camera, active drag and pending commit", () => {
+	const colors = { node: "#222222", edge: "#555555", label: "#444444", hoverText: "#111111", clusterLabelLightness: 35 };
+	const nodes = [{ id: "n1", x: 12, y: 34, label: "Node" }];
+	const data = { nodes, edges: [], clusters: [], colors: { ...colors, clusterLabelLightness: 78 }, fontFamily: "sans-serif" };
+	const world = { x: 100, y: 200, k: 2 };
+	const commitTimer = Symbol("pending position commit");
+	const sim = {};
+	let paints = 0;
+	// Exercise the real method against a live-state fixture without starting
+	// the DOM-bound renderer. Theme updates must touch only data.colors.
+	const state = {
+		data, world, commitTimer, sim, simActive: true, dragId: "n1", geoVersion: 7,
+		markDirty: () => { paints++; },
+	};
+	GraphCanvasRenderer.prototype.setColors.call(state as unknown as GraphCanvasRenderer, colors);
+	assert.equal(state.data, data);
+	assert.equal(state.data.nodes, nodes);
+	assert.deepEqual(nodes, [{ id: "n1", x: 12, y: 34, label: "Node" }]);
+	assert.equal(state.data.colors, colors);
+	assert.equal(state.data.colors.clusterLabelLightness, 35);
+	assert.equal(state.world, world);
+	assert.equal(state.commitTimer, commitTimer);
+	assert.equal(state.sim, sim);
+	assert.equal(state.simActive, true);
+	assert.equal(state.dragId, "n1");
+	assert.equal(state.geoVersion, 7);
+	assert.equal(paints, 1);
+});
 
 describe("zoomRatioOf (the sigma-compatible camera ratio)", () => {
 	test("1 at fit zoom, smaller when zoomed in, larger when zoomed out", () => {

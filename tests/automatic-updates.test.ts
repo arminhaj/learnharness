@@ -62,6 +62,9 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		restore() { this.minimized = false; }
 		focus() { this.focused = true; }
 		show() {}
+		isDestroyed() { return false; }
+		setBackgroundColor() {}
+		setTitleBarOverlay() {}
 		static getAllWindows() {
 			if (enumerationFails) throw new Error("window enumeration failed");
 			return windows;
@@ -80,6 +83,7 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 	});
 	const electron = {
 		app, BrowserWindow: FakeWindow,
+		nativeTheme: Object.assign(new EventEmitter(), { themeSource: "system", shouldUseDarkColors: true }),
 		Menu: { buildFromTemplate: (value: typeof menu) => value, setApplicationMenu: (value: typeof menu) => { menu = value; } },
 		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown) => unknown) => handles.set(channel, fn) },
 		session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },

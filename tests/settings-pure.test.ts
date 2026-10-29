@@ -1,7 +1,7 @@
 /**
  * The settings wave's pure layers (thin settings wave): the appearance →
  * CSS-variable mapping (the section must actually DO something), the
- * dark-curve background derivation, the agent section's compose helpers
+ * mode-aware background derivation, the agent section's compose helpers
  * (the replace-whole PUT discipline), and the keyboard overrides map.
  */
 
@@ -69,7 +69,31 @@ describe("derivedPalette — the dark curve keeps today's relationships", () => 
 	});
 });
 
+describe("derivedPalette — light surfaces", () => {
+	it("darkens surfaces and edges around a light background", () => {
+		const palette = derivedPalette("#fafafa", "light");
+		assert.equal(palette["--background"], "#fafafa");
+		assert.equal(palette["--card"], "#f2f2f2");
+		assert.equal(palette["--accent"], "#e4e4e4");
+		assert.equal(palette["--border"], "#cbcbcb");
+		assert.equal(palette["--primary-foreground"], "#fafafa");
+	});
+
+	it("expands short hex and clamps subtraction at zero", () => {
+		assert.equal(derivedPalette("#abc", "light")["--card"], "#a2b3c4");
+		assert.equal(derivedPalette("#101010", "light")["--border"], "#000000");
+	});
+});
+
 describe("appearanceVars — the mapping the provider applies", () => {
+	it("uses the effective system mode for custom backgrounds", () => {
+		const appearance = resolveAppearance({ mode: "system", background: "#d0d0d0" });
+		assert.equal(appearance.mode, "system", "retain the preference, not the resolved OS mode");
+		assert.equal(appearanceVars(appearance, "light")["--card"], "#c8c8c8");
+		assert.equal(appearanceVars(appearance, "dark")["--card"], "#d8d8d8");
+		assert.equal(appearanceVars(resolveAppearance({ mode: "light", background: "#d0d0d0" }))["--card"], "#c8c8c8");
+	});
+
 	it("factory appearance: only the always-applied tokens move", () => {
 		const vars = appearanceVars(resolveAppearance(undefined));
 		assert.equal(vars["--lh-prose-size"], "16px");

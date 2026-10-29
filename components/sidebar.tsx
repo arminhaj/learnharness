@@ -66,6 +66,8 @@ declare global {
 			openSubscriptionBrowser?: (action: string) => Promise<void>;
 			chatgpt?: ChatGPTControlBridge;
 			subscriptions?: NativeSubscriptionControlBridge;
+			/** Synchronize native window chrome after appearance settings load/save. */
+			setAppearance?: (appearance: { mode: "light" | "dark" | "system"; background: string | null }) => void;
 			expandWindow: () => void;
 			/** The zoom truth (owner round 7): subscribes to "lh:zoom" pushes; returns unsubscribe. */
 			onZoom?: (cb: (factor: number) => void) => () => void;
