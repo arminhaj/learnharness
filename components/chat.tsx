@@ -911,6 +911,9 @@ export function Chat({
 	// The live plan popup (wave 4): opened by any transcript plan block, the
 	// top-bar plan chip, and the dock band's marginalia.
 	const [planOpen, setPlanOpen] = useState(false);
+	// A branch's plan uses the same session viewport as the main plan. The
+	// transcript supplies its own messages; the main lesson plan stays intact.
+	const [explorationPlan, setExplorationPlan] = useState<{ chatId: string; messages: LhViewMessage[] } | null>(null);
 	// Real plan presence — gates the marginalia's clickable flank. A JSX
 	// element is always truthy; gating on the node alone mounted a phantom
 	// (invisible, clickable) button in the bottom-right whenever a question
@@ -1300,8 +1303,9 @@ export function Chat({
 			canReopen={!busy && !compacting && !explorations.active && !explorations.draftSourceId}
 			initialPrompt={explorations.opening?.id === child.id ? explorations.opening.text : undefined}
 			onInitialDelivered={explorations.openingDelivered}
-			onToggle={() => explorations.toggle(child.id)}
-			onClose={() => { void finishDictation().then(() => explorations.change(child, "close")).then(closed => { if (closed) restoreLessonPlace(); }); }}
+			onToggle={() => { if (explorations.isExpanded(child)) setExplorationPlan(null); explorations.toggle(child.id); }}
+			onClose={() => { void finishDictation().then(() => explorations.change(child, "close")).then(closed => { if (closed) { setExplorationPlan(null); restoreLessonPlace(); } }); }}
+			onOpenPlan={branchMessages => setExplorationPlan({ chatId: child.id, messages: branchMessages })}
 			onReopen={() => { rememberLessonPlace(); void explorations.change(child, "reopen"); }} />)}
 	</>;
 
@@ -1843,7 +1847,8 @@ export function Chat({
 						onClose={() => setFigureFocus(null)}
 					/>
 				)}
-				{planOpen && <PlanPopup messages={messages} onClose={() => setPlanOpen(false)} />}
+				{planOpen && !explorationPlan && <PlanPopup messages={messages} onClose={() => setPlanOpen(false)} />}
+				{explorationPlan && <PlanPopup messages={explorationPlan.messages} onClose={() => setExplorationPlan(null)} />}
 				<AbortTurnDialog mode={abortAsk} onClose={() => setAbortAsk(null)} onConfirm={confirmAbort} busy={busy} />
 				</div>
 			</div>

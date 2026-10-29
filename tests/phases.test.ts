@@ -229,3 +229,31 @@ test("phaseAt3 + phaseAt3Lh: a tagged explain CALL is the plan→teach seam too"
 		"the two folds agree on the explain mechanic",
 	);
 });
+
+test("exploration branches start at planning and reach teaching without a probe assessment", () => {
+	assert.equal(phaseAt3([], undefined, "plan"), "plan");
+	assert.equal(phaseAt3Lh([], undefined, "plan"), "plan");
+	for (const tool of ["quiz", "explain"] as const) {
+		const views: LhViewMessage[] = [
+			user("Why does this happen?"),
+			assistantTool("plan_init", "output-available", PLAN_OK),
+			{ id: `branch-${tool}`, role: "assistant", parts: [{ type: `tool-${tool}`, input: { nodeId: "branch-step" } } as never] },
+		];
+		const native: LhMessage[] = [
+			{ id: "branch-question", role: "user", content: "Why does this happen?", timestamp: 1 },
+			toolResult("plan_init"),
+			{
+				...assistantQuizCall({}),
+				content: [{ type: "toolCall", id: `call_${tool}`, name: tool, arguments: { nodeId: "branch-step" } }],
+			} as LhMessage,
+		];
+		assert.deepEqual(phaseTimeline(views, "plan"), ["plan", "plan", "teach"]);
+		for (let index = 0; index < views.length; index++) {
+			const expected = index < 2 ? "plan" : "teach";
+			assert.equal(phaseAt3(views, index, "plan"), expected);
+			assert.equal(phaseAt3Lh(native, index, "plan"), expected);
+		}
+		assert.equal(phaseAt3(views), "probe", "ordinary lessons still require their own concluded probe");
+		assert.equal(phaseAt3Lh(native), "probe");
+	}
+});

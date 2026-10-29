@@ -5,8 +5,11 @@ import assert from "node:assert/strict";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { createInlineExploration, changeInlineExploration, explorationErrorMessage, InlineExploration, useInlineExplorations, type ExplorationRecord } from "../components/inline-exploration.tsx";
+import { planBlocksFor } from "../src/core/plan-blocks.ts";
+import { latestTree } from "../components/plan-block.tsx";
+import type { LhViewMessage } from "../src/core/view.ts";
 import { QuestionDock } from "../components/question-dock.tsx";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
@@ -198,5 +201,171 @@ describe("exploration request races", () => {
 			await render("Why does this happen?");
 			assert.equal(inputs.length, 1, "rerendering does not retry the failed opening automatically");
 		});
+	});
+});
+
+
+function teachingBranch(tool = "quiz", type = "check"): ExplorationRecord {
+	return { ...chat, exploration: { ...chat.exploration, status: "active" }, messages: [
+		{ id: "child_user", role: "user", content: [{ type: "text", text: "Help me understand schemas." }], timestamp: 1 },
+		{ ...fauxAssistantMessage([fauxText("A schema describes a table's structure."), fauxToolCall(tool, {
+			question: "What does a schema describe?", type, nodeId: "schema",
+			...(tool === "quiz" ? { options: [{ label: "Table structure" }, { label: "A particular row" }], correctAnswer: "Table structure", explanation: "It describes the structure." } : { correctAnswer: "The table structure." }),
+		}, { id: "child_check" })], { stopReason: "toolUse" }), id: "child_teacher" },
+	] };
+}
+
+function renderBranch(root: ReturnType<typeof createRoot>, record: ExplorationRecord, expanded = true, onClose = () => {}) {
+	return act(async () => root.render(<ServerEventsProvider connect={quietEvents}>
+		<InlineExploration chat={record} expanded={expanded} changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={onClose} onReopen={() => {}} />
+	</ServerEventsProvider>));
+}
+
+function mockBranchRequests(record: ExplorationRecord, inputs: Array<{ chatId: string; input: { type: string; toolCallId?: string } }> = []) {
+	globalThis.fetch = (async (url: string, init?: RequestInit) => {
+		if (url.startsWith("/api/jobs")) return Response.json({ jobs: [] });
+		if (url === "/api/chat") {
+			inputs.push(JSON.parse(String(init?.body)));
+			return Response.json({ error: "Offline for this test." }, { status: 503 });
+		}
+		return Response.json(record);
+	}) as typeof fetch;
+}
+
+describe("exploration teaching controls", () => {
+	it("reveals child checks after teaching and preserves the exact selected answer across returning and reopening", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const record = teachingBranch();
+			const inputs: Array<{ chatId: string; input: { type: string; toolCallId?: string } }> = [];
+			mockBranchRequests(record, inputs);
+			await renderBranch(root, record);
+			assert.ok(host.textContent?.includes("A schema describes a table's structure."));
+			assert.ok(host.querySelector('[data-testid="teach-check-reveal"]'));
+			assert.ok(host.querySelector('[data-testid="reading-thinking-field"]'));
+			await act(async () => (host.querySelector('[data-testid="teach-check-reveal"]') as HTMLElement).click());
+			const choice = [...host.querySelectorAll<HTMLElement>('[role="radio"]')].find(element => element.textContent?.includes("Table structure"))!;
+			assert.ok(choice);
+			await act(async () => choice.click());
+			assert.equal(choice.getAttribute("aria-checked"), "true");
+			const field = host.querySelector('[data-testid="thinking-field"] textarea');
+			await renderBranch(root, { ...record, exploration: { ...record.exploration, status: "closed" } }, false);
+			const enter = new window.Event("keydown", { bubbles: true, cancelable: true });
+			Object.defineProperty(enter, "key", { value: "Enter" });
+			await act(async () => window.dispatchEvent(enter));
+			assert.equal(inputs.length, 0, "a returned child cannot consume the main lesson's keyboard input");
+			await renderBranch(root, record);
+			assert.equal(host.querySelector('[data-testid="thinking-field"] textarea'), field, "return did not remount the child answer field");
+			assert.equal(choice.getAttribute("aria-checked"), "true");
+			assert.equal(host.querySelector('[data-testid="teach-check-reveal"]'), null, "the opened check stays open");
+			await act(async () => host.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
+			assert.equal(inputs.length, 1);
+			assert.equal(inputs[0]?.chatId, "child");
+			assert.equal(inputs[0]?.input.type, "answer");
+			assert.equal(inputs[0]?.input.toolCallId, "child_check");
+			assert.ok(host.querySelector('[role="radio"][aria-checked="true"]'), "offline submission restores the selected answer");
+		});
+	});
+
+	it("opens predictions immediately and uses the same reveal for free-response checks", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const prediction = teachingBranch("explain", "predict");
+			mockBranchRequests(prediction);
+			await renderBranch(root, prediction);
+			assert.equal(host.querySelector('[data-testid="teach-check-reveal"]'), null);
+			assert.ok(host.querySelector('[data-testid="answer-field"]'));
+		});
+		await withExplorationDOM(async (host, root) => {
+			const check = teachingBranch("explain");
+			mockBranchRequests(check);
+			await renderBranch(root, check);
+			assert.ok(host.querySelector('[data-testid="teach-check-reveal"]'));
+			await act(async () => (host.querySelector('[data-testid="teach-check-reveal"]') as HTMLElement).click());
+			assert.ok(host.querySelector('[data-testid="answer-field"]'));
+		});
+	});
+
+	it("dismisses a branch question through the child's silent route", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const record = teachingBranch("ask_user_question");
+			const calls: Array<{ url: string; body: unknown }> = [];
+			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				if (init?.method === "POST") { calls.push({ url, body: JSON.parse(String(init.body)) }); return Response.json({ ok: true }); }
+				return Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : record);
+			}) as typeof fetch;
+			await renderBranch(root, record);
+			await act(async () => [...host.querySelectorAll<HTMLElement>("button")].find(button => button.textContent === "Dismiss question")!.click());
+			await act(async () => (document.querySelector('[data-testid="abort-turn-confirm"]') as HTMLElement).click());
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0]?.url, "/api/chats/child/dismiss");
+			assert.equal((calls[0]?.body as { input: { toolCallId: string } }).input.toolCallId, "child_check");
+			assert.match(host.textContent ?? "", /dismissed|skipped/i);
+		});
+	});
+
+	it("opens the child's plan through the page overlay callback, outside the inline transcript", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const tree = { nodes: [{ id: "schema", title: "Schema structure" }], edges: [], version: 1 };
+			const record: ExplorationRecord = { ...teachingBranch(), messages: [
+				{ ...fauxAssistantMessage([fauxText("Here is this exploration's plan."), fauxToolCall("plan_init", tree, { id: "child_plan" })]), id: "child_plan_message" },
+				{ id: "child_plan_result", role: "toolResult", toolCallId: "child_plan", toolName: "plan_init", details: { ok: true, tree },
+					content: [{ type: "text", text: "ok" }], isError: false, timestamp: 2 },
+			] };
+			record.messages.push(...planBlocksFor([], record.messages, tree, record.messages));
+			mockBranchRequests(record);
+			let received: LhViewMessage[] | undefined;
+			await act(async () => root.render(<ServerEventsProvider connect={quietEvents}>
+				<InlineExploration chat={record} expanded changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} onOpenPlan={messages => { received = messages; }} />
+			</ServerEventsProvider>));
+			const block = host.querySelector('[data-testid="plan-block-full"]') as HTMLElement;
+			assert.ok(block);
+			await act(async () => block.click());
+			assert.ok(received);
+			assert.equal(latestTree(received)?.nodes[0]?.title, "Schema structure");
+			assert.equal(host.querySelector('[data-testid="plan-popup"]'), null, "the inline scroller never owns the popup geometry");
+		});
+	});
+
+	it("keeps artifact preferences scoped to the child record", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const record: ExplorationRecord = { ...chat, exploration: { ...chat.exploration, status: "active" }, messages: [
+				{ id: "child_demo", role: "custom", customType: "subagent-steer", content: "Delivery", display: true, timestamp: 1,
+					details: { kind: "demo", result: { title: "Schema demo", html: "<p>Schema</p>" } } },
+			] };
+			const writes: string[] = [];
+			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				if (init?.method === "POST") writes.push(url);
+				return Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : record);
+			}) as typeof fetch;
+			await renderBranch(root, record);
+			await act(async () => (host.querySelector('[aria-label="Invert demo brightness"]') as HTMLElement).click());
+			assert.deepEqual(writes, ["/api/chats/child/artifact-ui"]);
+		});
+	});
+
+	it("shows a compaction pause and blocks return while the child history is compacting", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const record = teachingBranch();
+			globalThis.fetch = (async (url: string) => Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : { ...record, compacting: true })) as typeof fetch;
+			await renderBranch(root, record);
+			assert.match(host.textContent ?? "", /Compacting this exploration/);
+			const returnButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Return to lesson"));
+			assert.equal(returnButton?.disabled, true);
+			assert.match(host.textContent ?? "", /compacting session/);
+		});
+	});
+
+	it("renders research and demo deliveries without exposing the worker's internal delivery text", () => {
+		const record: ExplorationRecord = { ...chat, messages: [
+			{ id: "research_result", role: "custom", customType: "subagent-steer", content: "PRIVATE_DELIVERY_GLUE", display: true, timestamp: 1,
+				details: { kind: "research", result: { brief: "Schema findings.", sources: [] } } },
+			{ id: "demo_result", role: "custom", customType: "subagent-steer", content: "PRIVATE_DEMO_NOTES", display: true, timestamp: 2,
+				details: { kind: "demo", result: { title: "Schema demo", html: "<p>Interactive schema</p>" } } },
+		] };
+		const html = renderToStaticMarkup(<ServerEventsProvider connect={quietEvents}><InlineExploration chat={record} expanded changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} /></ServerEventsProvider>);
+		assert.match(html, /research-complete-badge/);
+		assert.match(html, /Schema findings/);
+		assert.match(html, /demo-card/);
+		assert.match(html, /Schema demo/);
+		assert.doesNotMatch(html, /PRIVATE_DELIVERY_GLUE|PRIVATE_DEMO_NOTES/);
 	});
 });

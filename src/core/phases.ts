@@ -32,6 +32,8 @@
  * at the assistant message carrying the first nodeId-tagged quiz CALL.
  * Both are strictly sequential; the two derivations agree on every settled
  * record (a call's part projects into the same view boundary).
+ * Exploration branches explicitly start at plan: they reuse the established
+ * lesson context and do not manufacture a probe_done assessment.
  *
  * Pure: only browser-safe core helpers — safe on server, client, and tests.
  */
@@ -60,8 +62,8 @@ function taggedNodeId(input: unknown): boolean {
 }
 
 /** The phase at `upToIndex` (inclusive; default: the last message). */
-export function phaseAt3(messages: readonly PhaseMessage[], upToIndex?: number): Phase3 {
-	let phase: Phase3 = "probe";
+export function phaseAt3(messages: readonly PhaseMessage[], upToIndex?: number, initialPhase: Phase3 = "probe"): Phase3 {
+	let phase = initialPhase;
 	const last = Math.min(upToIndex ?? messages.length - 1, messages.length - 1);
 	for (let i = 0; i <= last; i++) {
 		phase = advance(phase, messages[i]?.parts);
@@ -144,9 +146,9 @@ export function teachStepIndex(
  * 0..i each time (quadratic); this is the same derivation, linear.
  * out[i] === phaseAt3(messages, i) for every i.
  */
-export function phaseTimeline(messages: readonly PhaseMessage[]): Phase3[] {
+export function phaseTimeline(messages: readonly PhaseMessage[], initialPhase: Phase3 = "probe"): Phase3[] {
 	const out: Phase3[] = [];
-	let phase: Phase3 = "probe";
+	let phase = initialPhase;
 	for (let i = 0; i < messages.length; i++) {
 		phase = advance(phase, messages[i]?.parts);
 		out.push(phase);
@@ -163,8 +165,8 @@ import { probeDoneResultIds, type LhMessage } from "./native-messages.ts";
  *  toolResult; plan→teach at the assistant message carrying the first
  *  nodeId-tagged quiz CALL (mirrors the view fold — same seam, native
  *  shape). */
-export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number): Phase3 {
-	let phase: Phase3 = "probe";
+export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number, initialPhase: Phase3 = "probe"): Phase3 {
+	let phase = initialPhase;
 	const last = Math.min(upToIndex ?? messages.length - 1, messages.length - 1);
 	const concluded = probeDoneResultIds(messages.slice(0, last + 1));
 	for (let i = 0; i <= last; i++) {

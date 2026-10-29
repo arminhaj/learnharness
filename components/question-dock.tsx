@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ChevronRightIcon, PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
+import { useDictationActive } from "@/components/dictation-state";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
@@ -379,23 +380,42 @@ function QuestionDockForm({
 		qd.mode === "text"
 			? text.trim().length > 0
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
+	const dictationActive = useDictationActive();
+	const canFinishSpokenAnswer = qd.mode === "text" && dictationClaim && dictationActive;
+	const submissionStateRef = useRef({ paused, compactionRunning, dictationClaim });
+	submissionStateRef.current = { paused, compactionRunning, dictationClaim };
+	const finishingSubmissionRef = useRef(false);
+	const mountedRef = useRef(true);
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => { mountedRef.current = false; };
+	}, []);
 
 	const submit = () => {
-		if (!canSubmit || compactionRunning || paused) return;
+		if (compactionRunning || paused || finishingSubmissionRef.current) return;
+		const recording = isDictationActive();
+		// A voice-only free response is still buffered until finish(). Only
+		// the current target may finish it; select questions still need a choice.
+		if ((!canSubmit && !(qd.mode === "text" && dictationClaim && recording)) || (recording && !dictationClaim)) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
 		 * build the answer — the spoken reasoning is never lost to a
 		 * forgotten stop. The field values below come from the REF mirrors
 		 * because the flush lands via setState after an await. */
-		if (!isDictationActive()) {
+		if (!recording) {
 			doSubmit();
 			return;
 		}
-		void finishDictation().then(doSubmit);
+		finishingSubmissionRef.current = true;
+		void finishDictation().then(() => doSubmit(true)).finally(() => { finishingSubmissionRef.current = false; });
 	};
-	const doSubmit = () => {
-		if (!canSubmit || paused) return;
+	const doSubmit = (requireDictationClaim = false) => {
+		const latest = submissionStateRef.current;
+		if (!mountedRef.current || latest.paused || latest.compactionRunning || (requireDictationClaim && !latest.dictationClaim)) return;
+		// State in the pre-finish closure can still be empty. Validate the ref
+		// updated by the transcript flush, and never submit an empty recording.
+		if (qd.mode === "text" ? !answerTextRef.current.trim() : !canSubmit) return;
 		const req: AnswerRequest = {
 			dontKnow: sel.dontKnow,
 			values: [...sel.selected].map((i) => qd.options[i]!.value),
@@ -925,7 +945,7 @@ function QuestionDockForm({
 						</span>
 						<Button
 							type="submit"
-							disabled={!canSubmit || compactionRunning}
+							disabled={(!canSubmit && !canFinishSpokenAnswer) || compactionRunning || paused}
 							className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
 						>
 							Submit answer

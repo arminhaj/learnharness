@@ -82,6 +82,11 @@ export function composeInstructions(kind: AgentKind, switches?: Record<string, b
 		.join("\n\n---\n\n");
 }
 
+/** The same teacher method and user overrides, with the branch boundary last. */
+export function composeExplorationInstructions(switches?: Record<string, boolean>): string {
+	return `${composeInstructions("teacher", switches)}\n\n---\n\n${EXPLORATION_INSTRUCTIONS}`;
+}
+
 // The switch-free source composition, cached per kind (module-load once).
 // With promptSwitches provided, baseAgentOptions composes FRESH per turn —
 // an override file written while its switch is ON must flip the next
@@ -337,12 +342,19 @@ export function createPracticeAgent(ctx: PracticeToolContext, opts: AgentBuildOp
 	return baseAgentOptions("practice", opts, Object.values(tools));
 }
 
-/** A plain conversational tutor; no tools can mutate the lesson's plan or
- * answer its pending question. The separate record is the isolation boundary. */
-export function createExplorationAgent(opts: AgentBuildOptions = {}) {
-	// The base factory may add Claude's output-only send_to_user adapter.
-	// Caller-supplied registries must not reintroduce lesson-mutating tools.
-	return baseAgentOptions("teacher", { ...opts, tools: undefined }, [], EXPLORATION_INSTRUCTIONS);
+/** A teacher whose plan, questions and jobs are bound to the child record.
+ * No prober or synthetic probe_done is needed to enter this lesson. */
+export function createExplorationAgent(ctx: TeacherToolContext, opts: AgentBuildOptions = {}) {
+	const tools = createTeacherTools(ctx, opts.toolToggles);
+	// Keep the normal plan implementation, but remove the tool's probe and
+	// minimum-size assumptions for a question-sized lesson branch.
+	if (tools.plan_init) tools.plan_init = {
+		...tools.plan_init,
+		description: "Write or rewrite this exploration's own minimal plan map. Start from the supplied lesson context; no initial probe is needed. " +
+			"Use a mermaid graph block with permanent lowercase node slugs and prerequisite --> edges. A single node is enough for a narrow question. " +
+			"Present the plan before teaching; every quiz or explain check names one of its node ids. Rewrite when the learner's understanding requires it.",
+	};
+	return baseAgentOptions("teacher", { ...opts, tools: undefined }, Object.values(tools), composeExplorationInstructions(opts.promptSwitches));
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;

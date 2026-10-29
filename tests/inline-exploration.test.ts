@@ -8,6 +8,9 @@ import { createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, fauxToolC
 import type { ChatRecord } from "../src/core/contracts.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import type { PiEngine } from "../src/agent/models.ts";
+import type { ChatInput } from "../src/core/input-events.ts";
+import type { EnabledTools } from "../src/core/pending.ts";
+import type { QuestionData } from "../src/core/question-core.ts";
 
 assert.equal(process.env.NODE_ENV, "test", "Run with NODE_ENV=test; these tests never call a real provider.");
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "lh-inline-exploration-"));
@@ -20,11 +23,12 @@ const { chatStore } = await import("../src/store/chats.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
 const { createExploration, listExplorations, updateExploration } = await import("../src/server/explorations.ts");
 const { handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
-const { createExplorationAgent } = await import("../src/agent/teacher-agent.ts");
+const { createExplorationAgent, composeInstructions } = await import("../src/agent/teacher-agent.ts");
+const { promptOverrides } = await import("../src/store/prompt-overrides.ts");
 const { beginTurn, endTurn, isTurnRunning } = await import("../src/server/turn-liveness.ts");
 const { runningTurn } = await import("../src/server/turn-runs.ts");
 const { danglingQuestionOf, newUserMessage } = await import("../src/core/native-messages.ts");
-const { dismissedAnswer } = await import("../src/core/question-core.ts");
+const { buildAnswer, dismissedAnswer, normalizeOptions, resolveCorrect } = await import("../src/core/question-core.ts");
 const { compactionInFlight, ensureCompacted } = await import("../src/server/compaction.ts");
 const explorationRoute = await import("../app/api/chats/[id]/explorations/route.ts");
 const explorationActionRoute = await import("../app/api/chats/[id]/explorations/[explorationId]/route.ts");
@@ -73,16 +77,27 @@ function open(chatId: string, sourceId: string, topic = "How does a database cha
 	return created(createExploration(chatId, { sourceMessageId: sourceId, topic }));
 }
 
-function post(chatId: string, text: string): Request {
+function inputPost(chatId: string, input: ChatInput): Request {
 	return new Request("http://test/api/chat", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ chatId, input: { type: "text", text } }),
+		body: JSON.stringify({ chatId, input }),
 	});
 }
 
-async function send(engine: PiEngine, chatId: string, text: string): Promise<Response> {
-	const response = await handleChatRequest(post(chatId, text), (opts) => createExplorationAgent({ ...opts, engine }));
+function post(chatId: string, text: string): Request {
+	return inputPost(chatId, { type: "text", text });
+}
+
+function explorationContext(chatId: string) {
+	return { chatId, chatStore, jobStore, spawn: () => assert.fail("These scripted lessons must not start a background job") };
+}
+
+async function sendInput(engine: PiEngine, chatId: string, input: ChatInput, toolToggles?: EnabledTools): Promise<Response> {
+	const response = await handleChatRequest(inputPost(chatId, input), (opts) => {
+		assert.equal(opts.teaching, true, "an exploration enters the teacher from its first turn, without probe_done");
+		return createExplorationAgent(explorationContext(chatId), { ...opts, engine, ...(toolToggles ? { toolToggles } : {}) });
+	});
 	if (response.status === 200) {
 		const running = runningTurn(chatId);
 		if (running) await new Response(running.subscribe()).text();
@@ -90,15 +105,52 @@ async function send(engine: PiEngine, chatId: string, text: string): Promise<Res
 	return response;
 }
 
+async function send(engine: PiEngine, chatId: string, text: string): Promise<Response> {
+	return sendInput(engine, chatId, { type: "text", text });
+}
+
 describe("inline exploration lifecycle", () => {
-	it("exposes only Claude's output adapter, with no tools that can mutate lesson state", () => {
-		for (const [provider, id, expectedTools] of [
-			["anthropic", "claude-opus-5-5", ["send_to_user"]],
-			["openai", "gpt-4o-mini", []],
+	it("inherits the teaching method and tools, without restarting the probe", () => {
+		for (const [provider, id, hasOutputAdapter] of [
+			["anthropic", "claude-opus-5-5", true],
+			["openai", "gpt-4o-mini", false],
 		] as const) {
+			const { chat, sourceId } = lesson();
+			const child = open(chat.id, sourceId);
 			const faux = createFauxCore({ provider, models: [{ id }] });
-			const agent = createExplorationAgent({ engine: { model: faux.getModel(), streamFn: faux.streamSimple } });
-			assert.deepEqual(agent.state.tools.map((tool) => tool.name), expectedTools);
+			const agent = createExplorationAgent(explorationContext(child.id), { engine: { model: faux.getModel(), streamFn: faux.streamSimple } });
+			const tools = agent.state.tools.map((tool) => tool.name);
+			assert.ok(tools.includes("plan_init") && tools.includes("quiz") && tools.includes("ask_user_question"));
+			assert.equal(tools.includes("send_to_user"), hasOutputAdapter);
+			assert.equal(tools.some((name) => ["probe", "recall", "probe_done", "problem", "conclude"].includes(name)), false);
+			assert.ok(agent.state.systemPrompt.includes(composeInstructions("teacher")), "the same teaching instructions govern the branch");
+			assert.match(agent.state.systemPrompt, /one reasoning step at a time/);
+			const filtered = createExplorationAgent(explorationContext(child.id), {
+				engine: { model: faux.getModel(), streamFn: faux.streamSimple }, toolToggles: { plan_init: false },
+			});
+			assert.equal(filtered.state.tools.some(tool => tool.name === "plan_init"), false,
+				"a persisted tool filter stays honored without crashing the branch factory");
+		}
+	});
+
+	it("honors enabled teaching prompt overrides on each reconstructed exploration turn", () => {
+		const { chat, sourceId } = lesson();
+		const child = open(chat.id, sourceId);
+		const faux = createFauxCore({});
+		const engine: PiEngine = { model: faux.getModel(), streamFn: faux.streamSimple };
+		const segment = "teacher/20-teaching.md";
+		try {
+			promptOverrides.writeOverride(segment, "CUSTOM BRANCH TEACHING FIRST");
+			const first = createExplorationAgent(explorationContext(child.id), { engine, promptSwitches: { [segment]: true } });
+			assert.match(first.state.systemPrompt, /CUSTOM BRANCH TEACHING FIRST/);
+			promptOverrides.writeOverride(segment, "CUSTOM BRANCH TEACHING UPDATED");
+			const second = createExplorationAgent(explorationContext(child.id), { engine, promptSwitches: { [segment]: true } });
+			assert.match(second.state.systemPrompt, /CUSTOM BRANCH TEACHING UPDATED/);
+			assert.doesNotMatch(second.state.systemPrompt, /CUSTOM BRANCH TEACHING FIRST/);
+			const disabled = createExplorationAgent(explorationContext(child.id), { engine, promptSwitches: {} });
+			assert.doesNotMatch(disabled.state.systemPrompt, /CUSTOM BRANCH TEACHING/);
+		} finally {
+			promptOverrides.deleteOverride(segment);
 		}
 	});
 
@@ -312,9 +364,8 @@ describe("inline exploration lifecycle", () => {
 			},
 		]);
 		const engine: PiEngine = { model: faux.getModel(), streamFn: faux.streamSimple };
-		const agent = createExplorationAgent({ engine, messages: child.messages });
-		assert.equal(agent.state.tools.some((tool) => /^(plan_|probe_done|quiz$|explain$|problem$|conclude$)/.test(tool.name)), false,
-			"an exploration cannot advance a plan or grade the parent's question");
+		const agent = createExplorationAgent(explorationContext(child.id), { engine, messages: child.messages });
+		assert.equal(agent.state.tools.some((tool) => /^(probe|recall|probe_done|problem|conclude)$/.test(tool.name)), false);
 		assert.equal((await send(engine, child.id, "What is a schema?")).status, 200);
 		assert.equal((await send(engine, child.id, "What happens to existing rows?")).status, 200);
 		assert.equal(contexts.length, 2);
@@ -327,6 +378,108 @@ describe("inline exploration lifecycle", () => {
 		assert.match(JSON.stringify(chatStore.getChat(child.id)?.messages), /new required column/);
 		assert.equal(chatStore.getChat(child.id)?.exploration?.status, "closed");
 	});
+
+	for (const mechanic of ["quiz", "explain"] as const) {
+		it(`teaches a child lesson with ${mechanic} checks, preserving its progress and the parent's pending question`, async () => {
+			const { chat, sourceId } = lesson();
+			const parentFile = path.join(process.env.LH_DATA_DIR!, "chats", `${chat.id}.json`);
+			const parentBytes = fs.readFileSync(parentFile, "utf8");
+			const parentPending = danglingQuestionOf(chat.messages);
+			assert.ok(parentPending);
+			const child = open(chat.id, sourceId);
+			const firstId = `branch_first_${child.id}`;
+			const secondId = `branch_second_${child.id}`;
+			const invalidId = `branch_invalid_${child.id}`;
+			const options = [{ label: "The table's structure" }, { label: "The stored row values" }];
+			const check = {
+				type: "check", nodeId: "schema", question: "What is the schema of a table?",
+				correctAnswer: "The table's structure",
+				...(mechanic === "quiz" ? { options, explanation: "The schema defines columns and their types." } : {}),
+			};
+			const nextCheck = { ...check, nodeId: "existing-rows", question: "Why does a new column affect existing rows?" };
+			const contexts: string[] = [];
+			const faux = createFauxCore({});
+			faux.setResponses([
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage([fauxToolCall("plan_init", {
+						mermaid: "graph TD\n  schema[Table structure] --> existing-rows[Existing rows]",
+					})], { stopReason: "toolUse" });
+				},
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage([fauxText("We'll start with a table's structure, then use it to understand existing rows. Shall we begin?")]);
+				},
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					// A parent node must never become a valid child check merely
+					// because it exists in the paused lesson's map.
+					return fauxAssistantMessage([fauxToolCall(mechanic, { ...check, nodeId: "migrations" }, { id: invalidId })], { stopReason: "toolUse" });
+				},
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage([
+						fauxText("A table's schema is its structure: the columns and the kinds of values each column accepts."),
+						fauxToolCall(mechanic, check, { id: firstId }),
+					], { stopReason: "toolUse" });
+				},
+				(context) => {
+					contexts.push(JSON.stringify(context.messages));
+					return fauxAssistantMessage([
+						fauxText("Every existing row follows that structure, so adding a column raises the question of what belongs in it for those rows."),
+						fauxToolCall(mechanic, nextCheck, { id: secondId }),
+					], { stopReason: "toolUse" });
+				},
+			]);
+			const engine: PiEngine = { model: faux.getModel(), streamFn: faux.streamSimple };
+			const toolToggles = mechanic === "explain" ? { explain: true } : { explain: false };
+			assert.equal((await sendInput(engine, child.id, { type: "text", text: child.exploration!.topic }, toolToggles)).status, 200);
+			assert.deepEqual(chatStore.getChat(child.id)!.tree?.nodes.map(node => node.id), ["schema", "existing-rows"]);
+			assert.equal(contexts.length, 2, "presenting the branch plan completes its turn before teaching");
+			assert.equal(danglingQuestionOf(chatStore.getChat(child.id)!.messages), null);
+
+			assert.equal((await sendInput(engine, child.id, { type: "text", text: "Let's begin." }, toolToggles)).status, 200);
+			const firstStep = chatStore.getChat(child.id)!;
+			const failed = firstStep.messages.find(message => message.role === "toolResult" && message.toolCallId === invalidId);
+			assert.ok(failed?.role === "toolResult" && failed.isError, "the parent-only node is rejected and repaired within the turn");
+			const childPending = danglingQuestionOf(firstStep.messages);
+			assert.equal(childPending?.tool, mechanic);
+			assert.equal(childPending?.toolCallId, firstId);
+			assert.equal(contexts.length, 4, "a valid check stops the run until the learner answers");
+			assert.equal(firstStep.messages.some(message => message.role === "assistant" && message.content.some(block => block.type === "toolCall" && ["probe", "recall", "probe_done"].includes(block.name))), false);
+
+			created(updateExploration(chat.id, child.id, "close"));
+			const returnedChild = chatStore.getChat(child.id)!;
+			assert.deepEqual(danglingQuestionOf(returnedChild.messages), childPending);
+			assert.deepEqual(chatStore.getChat(chat.id), chat);
+			assert.deepEqual(danglingQuestionOf(chatStore.getChat(chat.id)!.messages), parentPending);
+			created(updateExploration(chat.id, child.id, "reopen"));
+			assert.deepEqual(chatStore.getChat(child.id)!.tree, firstStep.tree);
+			assert.deepEqual(danglingQuestionOf(chatStore.getChat(child.id)!.messages), childPending);
+
+			const normalized = normalizeOptions(options);
+			const qd: QuestionData = {
+				id: firstId, kind: mechanic, questionType: "check", question: check.question,
+				mode: mechanic === "quiz" ? "single-select" : "text", options: mechanic === "quiz" ? normalized : [],
+				...(mechanic === "quiz"
+					? { correctIndices: resolveCorrect(check.correctAnswer, normalized).indices }
+					: { committedAnswer: check.correctAnswer }),
+				createdAt: new Date().toISOString(),
+			};
+			const answer = buildAnswer(qd, mechanic === "quiz" ? { values: [check.correctAnswer] } : { text: check.correctAnswer }, mechanic);
+			const noAgent = () => { throw new Error("A mismatched or paused answer must not construct an agent"); };
+			assert.equal((await handleChatRequest(inputPost(child.id, { type: "answer", toolCallId: parentPending.toolCallId, answer }), noAgent)).status, 400);
+			assert.equal((await handleChatRequest(inputPost(chat.id, { type: "answer", toolCallId: parentPending.toolCallId, answer }), noAgent)).status, 409);
+			assert.equal((await sendInput(engine, child.id, { type: "answer", toolCallId: firstId, answer }, toolToggles)).status, 200);
+			const continued = chatStore.getChat(child.id)!;
+			assert.equal(danglingQuestionOf(continued.messages)?.toolCallId, secondId);
+			assert.equal(contexts.length, 5, "answering advances only the branch to its next step");
+			assert.ok(continued.messages.some(message => message.role === "toolResult" && message.toolCallId === firstId && !message.isError));
+			assert.doesNotMatch(contexts.join("\n"), /SECRET_QUIZ_ANSWER|SECRET_QUIZ_EXPLANATION|SECRET_INTERNAL_THINKING/);
+			created(updateExploration(chat.id, child.id, "close"));
+			assert.equal(fs.readFileSync(parentFile, "utf8"), parentBytes, "the main lesson remains byte-for-byte unchanged");
+		});
+	}
 });
 
 describe("inline exploration HTTP routes", () => {

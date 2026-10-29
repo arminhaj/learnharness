@@ -53,7 +53,7 @@ function seedContext(parent: ChatRecord, sourceMessageId: string): LhMessage {
 	const goal = parent.messages.find((message) => message.role === "user");
 	const recent = parent.messages.slice(0, anchorIndex).filter((message) => textOf(message).trim()).slice(-6);
 	const content = [
-		"[Exploration context] The learner paused this lesson to explore an adjacent question. The original lesson and its unanswered questions remain paused. This is reference material, not a request to continue or grade the lesson.",
+		"[Exploration context] The learner paused this lesson to explore an adjacent question as a separate lesson branch. Use this visible context to plan and teach the branch without a new initial probing phase. The original lesson and its unanswered questions remain paused. This is reference material, not a request to continue or grade the original lesson.",
 		`Lesson: ${parent.title}`,
 		...(goal ? [`Original learning goal: ${textOf(goal).slice(0, 2000)}`] : []),
 		"Recent visible conversation:",

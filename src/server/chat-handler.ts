@@ -48,7 +48,7 @@ import { applyParkedDismissal } from "./dismissal-park.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
 import { hasProbeDone, danglingQuestionOf } from "../core/native-messages.ts";
-import { composeInstructions } from "../agent/teacher-agent.ts";
+import { composeExplorationInstructions, composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
 import { emit } from "../core/events.ts";
@@ -64,7 +64,6 @@ import {
 import { steerDelivered } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
 import { explorationPauseReason } from "./explorations.ts";
-import { EXPLORATION_INSTRUCTIONS } from "../agent/exploration-instructions.ts";
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -285,7 +284,7 @@ export async function handleChatInput(
 				effective.compaction?.thresholdTokens,
 				catalogContextLimits().get(modelIdForCompaction),
 			),
-			systemPromptTokens: Math.ceil((record.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(record.kind === "practice" ? "practice" : "teacher")).length / 4),
+			systemPromptTokens: Math.ceil((record.exploration ? composeExplorationInstructions(effective.agent.prompts) : composeInstructions(record.kind === "practice" ? "practice" : "teacher", effective.agent.prompts)).length / 4),
 		},
 		chatId,
 	);
@@ -410,7 +409,7 @@ export async function handleChatInput(
 	// the session is still probing: build the PROBER (quiz/ask + probe_done).
 	// Both share this whole composition (write-ahead persist, liveness,
 	// steers, usage, extraction) — only the agent differs.
-	const teaching = hasProbeDone(agentMessages);
+	const teaching = !!record.exploration || hasProbeDone(agentMessages);
 	// BYOK (owner, 2026-09-22): the conversation chain was resolved by the
 	// turn gate above (chat.model override → strong slot → refused) — the
 	// engine build is pure from here; thinking levels clamp natively.
@@ -463,8 +462,6 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
-		: record.exploration
-			? createExplorationAgent(agentOpts)
 		: record.kind === "practice"
 			? createPracticeAgent(
 					{
@@ -490,7 +487,7 @@ export async function handleChatInput(
 					agentOpts,
 				)
 			: teaching
-			? createTeacherAgent(
+			? (record.exploration ? createExplorationAgent : createTeacherAgent)(
 					{
 						chatId,
 						chatStore: stores.chatStore,
@@ -665,7 +662,7 @@ export async function handleChatInput(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil((freshRecord.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher")).length / 4),
+							systemPromptTokens: Math.ceil((freshRecord.exploration ? composeExplorationInstructions(fresh.agent.prompts) : composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher", fresh.agent.prompts)).length / 4),
 						};
 					}, chatId);
 			},
