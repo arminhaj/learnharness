@@ -1,6 +1,8 @@
 # All-features preview
 
-`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, and the subject-aware learning-map work.
+`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, subject-aware learning maps, learning history, and the code snippet workbench.
+
+The node graph overhaul is merged into `main`. Learning history, the code snippet workbench, and the chemistry interface retain their own experimental branches; completed commits from those branches are integrated here. The chemistry branch currently has no completed feature commits in this preview.
 
 ## What to try
 
@@ -10,6 +12,8 @@
 - In Iceberg, change **Subject**. Concepts, study groups, progress counts, unlocks, and search results stay within that subject.
 - In a **teaching session**, choose **Explore this** beneath a completed tutor explanation. Follow the tangent, then choose **Return to lesson** to resume the original question and draft. Inline explorations are not available in practice sessions.
 - After answering, inspect automatic understanding updates and their source links. Evidence from an inline exploration should open the exact passage inside its parent lesson. Reading an explanation alone does not mark a concept understood.
+- Open **Learning history** in the sidebar, or select a passage in a teaching session and choose **Mark this moment**. See [learning history](learning-history.md) for analysis, speech cleanup, and source attribution.
+- Choose **Write code** in a supported input, or open `/code-demo` and `/code-demo/api` to try C++ exercises, Vim controls, completion, and F1 diagnostics. See [code workspaces](code-workspaces.md) for compiler and local execution requirements.
 
 ## Desktop launch
 
