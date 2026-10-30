@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon, Code2Icon, ExternalLinkIcon, LoaderCircleIcon, PlayIcon, RefreshCwIcon, SaveIcon, XIcon } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Button } from "@/components/ui/button";
-import type { CodeRunResult, CodeWorkspaceView } from "@/src/core";
+import { parseCompilerDiagnostics, type CodeRunResult, type CodeWorkspaceView } from "@/src/core";
 
 type Operation = "load" | "save" | "check" | "open";
 type Editor = "vscode" | "cursor" | "default";
@@ -90,6 +90,11 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 	const editorId = useId();
 	const dirty = workspace !== null && source !== workspace.source;
 	const locked = disabled || busy !== null;
+	const diagnostics = useMemo(() => {
+		const result = workspace?.lastRun;
+		if (!workspace || !result || result.source !== source || result.revision !== workspace.revision) return [];
+		return parseCompilerDiagnostics(`${result.stdout}\n${result.stderr}`, workspace.filename);
+	}, [workspace, source]);
 
 	const request = useCallback(async (action: Operation, fields: Record<string, unknown> = {}, signal?: AbortSignal): Promise<CodeWorkspaceView> => {
 		const response = await fetch("/api/code-workspaces", {
@@ -191,7 +196,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 			</div>
 
 			{workspace ? (
-				<CodeEditor value={source} onChange={setSource} language={workspace.language} disabled={locked} onSubmit={() => void perform("check", Boolean(onSubmit))} ariaLabel="Solution code" />
+				<CodeEditor value={source} onChange={setSource} language={workspace.language} diagnostics={diagnostics} disabled={locked} onSubmit={() => void perform("check", Boolean(onSubmit))} ariaLabel="Solution code" />
 			) : (
 				<div className="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-border/70 bg-background/60 text-sm text-muted-foreground">
 					{busy && <LoaderCircleIcon aria-hidden className="size-4 animate-spin" />}{busy ? "Preparing starter files…" : "Workspace not loaded."}
@@ -225,8 +230,9 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 				</div>
 			</div>
 			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
+			<p className="text-[11px] leading-relaxed text-muted-foreground">Compiler errors from the latest check are underlined; hover for an explanation. Check again after editing for updated feedback.</p>
 			{workspace?.path && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Workspace file</summary><code className="mt-1 block select-all break-all rounded bg-muted/50 px-2 py-1.5">{workspace.path}</code></details>}
-			{workspace?.lastRun && <CodeCheckResults result={workspace.lastRun} stale={workspace.lastRun.source !== source} />}
+			{workspace?.lastRun && <CodeCheckResults result={workspace.lastRun} stale={workspace.lastRun.source !== source || workspace.lastRun.revision !== workspace.revision} />}
 			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see compiler and test results.</p>}
 		</div>
 	);

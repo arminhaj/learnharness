@@ -19,8 +19,12 @@ Object.assign(document, { getSelection: () => null, hasFocus: () => false });
 const { CodeEditor } = await import("../components/code-editor.tsx");
 const { EditorView } = await import("@codemirror/view");
 const { getCM } = await import("@replit/codemirror-vim");
+const { completionStatus, currentCompletions } = await import("@codemirror/autocomplete");
+const { forEachDiagnostic } = await import("@codemirror/lint");
+const { API_DEMO_CODE_CONTEXT } = await import("../src/core/api-code-completion.ts");
+type Assistance = Pick<import("../components/code-editor.tsx").CodeEditorProps, "completionContext" | "diagnostics">;
 
-async function fixture(initialValue = "alpha beta\ngamma", initiallyDisabled = false) {
+async function fixture(initialValue = "alpha beta\ngamma", initiallyDisabled = false, assistance: Assistance = {}) {
 	const host = document.createElement("div");
 	document.body.append(host);
 	const root = createRoot(host);
@@ -30,10 +34,10 @@ async function fixture(initialValue = "alpha beta\ngamma", initiallyDisabled = f
 	let documentKeys = 0;
 	const onDocumentKey = () => { documentKeys++; };
 	document.addEventListener("keydown", onDocumentKey);
-	const render = async (disabled: boolean) => {
+	const render = async (disabled: boolean, nextAssistance = assistance) => {
 		await act(async () => root.render(
 			<div onKeyDown={() => { ancestorKeys++; }}>
-				<CodeEditor value={initialValue} onChange={value => changes.push(value)} onSubmit={() => { submissions++; }} disabled={disabled} />
+				<CodeEditor value={initialValue} onChange={value => changes.push(value)} onSubmit={() => { submissions++; }} disabled={disabled} {...nextAssistance} />
 				<button type="button" data-testid="outside-editor">Outside editor</button>
 			</div>,
 		));
@@ -133,5 +137,115 @@ test("a disabled editor rejects Vim edits and submission, then responds again wh
 		assert.equal(f.view.state.doc.toString(), "lpha beta");
 		await f.press("Enter", { ctrlKey: true });
 		assert.equal(f.counts().submissions, 1);
+	} finally { await f.dispose(); }
+});
+
+async function requestSuggestions(f: Awaited<ReturnType<typeof fixture>>) {
+	await f.press(" ", { ctrlKey: true });
+	await act(async () => { await new Promise(resolve => setTimeout(resolve, 180)); });
+	assert.equal(completionStatus(f.view.state), "active");
+}
+
+test("exercise suggestions accept with Tab in Vim Insert mode and keep submit isolated", async () => {
+	const f = await fixture("library.fi", false, { completionContext: API_DEMO_CODE_CONTEXT });
+	try {
+		await f.press("A");
+		assert.equal(f.cm.state.vim?.insertMode, true);
+		await requestSuggestions(f);
+		assert.deepEqual(currentCompletions(f.view.state).map(option => option.label), ["find_book"]);
+		await f.press("Tab");
+		assert.equal(f.view.state.doc.toString(), "library.find_book(book_id)");
+		assert.equal(f.cm.state.vim?.insertMode, true);
+		assert.deepEqual(f.counts(), { submissions: 0, ancestorKeys: 0, documentKeys: 0 });
+		await f.press("Enter", { metaKey: true });
+		assert.equal(f.counts().submissions, 1);
+	} finally { await f.dispose(); }
+});
+
+test("Escape dismisses suggestions and exits Insert; Normal-mode keys do not open suggestions", async () => {
+	const f = await fixture("library.", false, { completionContext: API_DEMO_CODE_CONTEXT });
+	try {
+		await f.press("A");
+		await requestSuggestions(f);
+		await f.press("Escape");
+		assert.equal(completionStatus(f.view.state), null);
+		assert.equal(f.cm.state.vim?.insertMode, false);
+		await f.press(" ", { ctrlKey: true });
+		assert.equal(completionStatus(f.view.state), null);
+		assert.equal(f.view.state.doc.toString(), "library.");
+	} finally { await f.dispose(); }
+});
+
+test("completion metadata updates preserve the document, selection, and Vim mode", async () => {
+	const f = await fixture("library.");
+	try {
+		await f.press("A");
+		const selection = f.view.state.selection.main.head;
+		await f.render(false, { completionContext: API_DEMO_CODE_CONTEXT });
+		assert.equal(f.view.state.doc.toString(), "library.");
+		assert.equal(f.view.state.selection.main.head, selection);
+		assert.equal(f.cm.state.vim?.insertMode, true);
+		await requestSuggestions(f);
+		assert.ok(currentCompletions(f.view.state).some(option => option.label === "borrow"));
+	} finally { await f.dispose(); }
+});
+
+test("known API mistakes get squiggles that disappear when corrected", async () => {
+	const f = await fixture("void f() { borrow(book_id); }", false, { completionContext: API_DEMO_CODE_CONTEXT });
+	try {
+		const messages: string[] = [];
+		forEachDiagnostic(f.view.state, diagnostic => messages.push(diagnostic.message));
+		assert.ok(messages.some(message => message.includes("library.borrow")));
+		assert.ok(f.host.querySelector(".cm-lintRange-error"));
+		await act(async () => f.view.dispatch({ changes: { from: 11, insert: "library." } }));
+		const remaining: string[] = [];
+		forEachDiagnostic(f.view.state, diagnostic => remaining.push(diagnostic.message));
+		assert.deepEqual(remaining, []);
+	} finally { await f.dispose(); }
+});
+
+test("compiler diagnostics disappear on the first edit and can refresh without resetting source", async () => {
+	const source = "int main() { bad(); }";
+	const f = await fixture(source, false, { diagnostics: [{ line: 1, column: 14, severity: "error", message: "Unknown function", source: "compiler" }] });
+	try {
+		let count = 0;
+		forEachDiagnostic(f.view.state, () => count++);
+		assert.equal(count, 1);
+		await act(async () => f.view.dispatch({ changes: { from: 0, insert: " " } }));
+		count = 0;
+		forEachDiagnostic(f.view.state, () => count++);
+		assert.equal(count, 0, "old compiler positions are not shown against an edited answer");
+		await f.render(false, { diagnostics: [{ line: 1, column: 14, severity: "error", message: "Old snapshot" }] });
+		assert.equal(f.view.state.doc.toString(), ` ${source}`);
+		forEachDiagnostic(f.view.state, () => count++);
+		assert.equal(count, 0);
+	} finally { await f.dispose(); }
+});
+
+test("locking the editor closes completion choices and blocks new suggestions", async () => {
+	const f = await fixture("library.fi", false, { completionContext: API_DEMO_CODE_CONTEXT });
+	try {
+		await f.press("A");
+		await requestSuggestions(f);
+		await f.render(true);
+		assert.equal(completionStatus(f.view.state), null);
+		await f.press(" ", { ctrlKey: true });
+		await f.press("Tab");
+		assert.equal(completionStatus(f.view.state), null);
+		assert.equal(f.view.state.doc.toString(), "library.fi");
+	} finally { await f.dispose(); }
+});
+
+test("qualified API suggestions rank before unqualified words copied from the draft", async () => {
+	const f = await fixture("void borrow_book();\n// borrowed\nborr", false, { completionContext: API_DEMO_CODE_CONTEXT });
+	try {
+		await f.press("G");
+		await f.press("A");
+		await requestSuggestions(f);
+		const options = currentCompletions(f.view.state).map(option => option.label);
+		assert.ok(options.includes("library.borrow"));
+		assert.ok(options.includes("borrowed"));
+		assert.ok(options.indexOf("library.borrow") < options.indexOf("borrowed"));
+		assert.ok(options.indexOf("BorrowResult::borrowed") < options.indexOf("borrow_book"));
 	} finally { await f.dispose(); }
 });

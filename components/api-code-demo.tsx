@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { BookOpenIcon, CheckIcon, ChevronDownIcon, ExternalLinkIcon, FileCodeIcon, FilesIcon, FlaskConicalIcon, LoaderCircleIcon, PlayIcon, RefreshCwIcon, SaveIcon, TerminalIcon, XIcon } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { API_DEMO_SCENARIOS, API_DEMO_TESTS, type ApiDemoFile, type ApiDemoRun, type ApiDemoWorkspace, type CodeRunResult } from "@/src/core";
+import { API_DEMO_CODE_CONTEXT, API_DEMO_SCENARIOS, API_DEMO_TESTS, parseCompilerDiagnostics, type ApiDemoFile, type ApiDemoRun, type ApiDemoWorkspace, type CodeRunResult } from "@/src/core";
 
 type Action = "load" | "save" | "run" | "check" | "open";
 type Editor = "vscode" | "cursor" | "default";
@@ -48,6 +48,16 @@ export function ApiCodeDemo() {
 	const dirty = workspace !== null && source !== workspace.source;
 	const locked = busy !== null;
 	const canExecute = !locked && workspace !== null && incoming === null;
+	const diagnostics = useMemo(() => {
+		const run = workspace?.lastRun;
+		const check = workspace?.lastCheck;
+		const result = run && (!check || Date.parse(run.createdAt) > Date.parse(check.createdAt)) ? run : check;
+		if (!workspace || !result || result.source !== source || result.revision !== workspace.revision) return [];
+		const output = "compilerStderr" in result
+			? `${result.compilerStdout}\n${result.compilerStderr}`
+			: `${result.stdout}\n${result.stderr}`;
+		return parseCompilerDiagnostics(output, "solution.cpp");
+	}, [workspace, source]);
 
 	const request = useCallback(async (action: Action, fields: Record<string, unknown> = {}, signal?: AbortSignal): Promise<ApiDemoWorkspace> => {
 		const response = await fetch("/api/code-api-demo", {
@@ -125,9 +135,11 @@ export function ApiCodeDemo() {
 							<Button type="button" size="xs" variant="ghost" disabled={locked} onClick={() => void perform("load")}><RefreshCwIcon />Reload saved file</Button>
 						</div>
 					</div>
-					{workspace ? <CodeEditor value={source} onChange={setSource} language="cpp" disabled={locked} onSubmit={() => void perform("check")} ariaLabel="API exercise solution" />
+					{workspace ? <CodeEditor value={source} onChange={setSource} language="cpp" completionContext={API_DEMO_CODE_CONTEXT} diagnostics={diagnostics} disabled={locked} onSubmit={() => void perform("check")} ariaLabel="API exercise solution" />
 						: <div className="flex min-h-48 items-center justify-center gap-2 rounded-lg border border-border/70 bg-background/60 text-sm text-muted-foreground">{locked && <LoaderCircleIcon className="size-4 animate-spin" />}{locked ? "Preparing the API and starter files…" : "Workspace not loaded."}</div>}
 					<p className="mt-2 text-[11px] text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter checks the exercise.</p>
+					<p className="mt-1 text-[11px] text-muted-foreground">API suggestions: Ctrl+Space · Tab accepts (Insert mode).</p>
+					<p className="mt-1 text-[11px] text-muted-foreground">Errors are underlined; hover for an explanation. Run or check for full compiler feedback.</p>
 					<div className="mt-3 flex flex-wrap items-center gap-2">
 						<label htmlFor={`${ids}-editor`} className="sr-only">External editor</label>
 						<select id={`${ids}-editor`} value={editor} onChange={event => setEditor(event.target.value as Editor)} disabled={locked} className="h-8 rounded-md border border-border bg-background px-2 text-xs disabled:opacity-50"><option value="vscode">VS Code</option><option value="cursor">Cursor</option><option value="default">Default editor</option></select>
@@ -189,11 +201,11 @@ function ApiReference() {
 	return <section aria-label="Library API reference" className="rounded-xl border border-border bg-card p-4">
 		<div className="mb-4 flex items-center gap-2"><BookOpenIcon className="size-4 text-muted-foreground" /><h2 className="text-sm font-medium">API reference</h2></div>
 		<div className="space-y-4 text-xs leading-relaxed">
-			<div><code className="font-medium">find_book(book_id)</code><p className="mt-1 text-muted-foreground">Returns <code>std::optional&lt;Book&gt;</code>. A missing book returns <code>std::nullopt</code>; it does not create a loan.</p></div>
-			<div className="rounded-md bg-background/60 p-2.5"><code className="block text-[11px]">Book</code><p className="mt-1 text-[11px] text-muted-foreground">id: string<br />title: string<br />available_copies: int</p></div>
-			<div><code className="font-medium">borrow(book_id)</code><p className="mt-1 text-muted-foreground">Returns <code>true</code> when a copy is borrowed: available copies decrease by one and loans increase by one. Returns <code>false</code> for a missing book or no stock.</p></div>
+			<div><code className="font-medium">library.find_book(book_id)</code><p className="mt-1 text-muted-foreground">Returns <code>std::optional&lt;Book&gt;</code>. A missing book returns <code>std::nullopt</code>; looking up a book does not create a loan. This call may throw.</p></div>
+			<div className="rounded-md bg-background/60 p-2.5"><code className="block text-[11px]">Book</code><p className="mt-1 text-[11px] text-muted-foreground">id: std::string<br />title: std::string<br />available_copies: int</p></div>
+			<div><code className="font-medium">library.borrow(book_id)</code><p className="mt-1 text-muted-foreground">Returns <code>true</code> when a copy is borrowed: available copies decrease by one and loans increase by one. Returns <code>false</code> for a missing book or no stock; <code>false</code> does not distinguish those cases. This call may throw.</p></div>
 			<div className="border-t border-border/70 pt-3"><code className="font-medium">ServiceUnavailable</code><p className="mt-1 text-muted-foreground">Both methods throw this exception when the service is offline. Handle it and return <code>BorrowResult::offline</code>.</p></div>
-			<div className="border-t border-border/70 pt-3"><p className="mb-2 font-medium">Return a BorrowResult</p><dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5"><dt><code>borrowed</code></dt><dd className="text-muted-foreground">A loan was created.</dd><dt><code>unavailable</code></dt><dd className="text-muted-foreground">No copy can be borrowed.</dd><dt><code>not_found</code></dt><dd className="text-muted-foreground">The book does not exist.</dd><dt><code>offline</code></dt><dd className="text-muted-foreground">The service cannot respond.</dd></dl></div>
+			<div className="border-t border-border/70 pt-3"><p className="mb-2 font-medium">Return a BorrowResult</p><dl className="space-y-2"><div><dt><code>BorrowResult::borrowed</code></dt><dd className="text-muted-foreground">A loan was created.</dd></div><div><dt><code>BorrowResult::unavailable</code></dt><dd className="text-muted-foreground">No copy can be borrowed.</dd></div><div><dt><code>BorrowResult::not_found</code></dt><dd className="text-muted-foreground">The book does not exist.</dd></div><div><dt><code>BorrowResult::offline</code></dt><dd className="text-muted-foreground">The service cannot respond.</dd></div></dl><p className="mt-2 text-muted-foreground">Use <code>::</code> for these enum values. End each return statement with <code>;</code>.</p></div>
 			<p className="border-t border-border/70 pt-3 text-[11px] text-muted-foreground">The simulator knows one book: <code>dune</code>. The driver prints your return value, loan count, and remaining copies.</p>
 		</div>
 	</section>;
