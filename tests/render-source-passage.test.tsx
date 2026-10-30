@@ -4,6 +4,8 @@ import React from "react";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { historySourceHref } from "../components/learning-history.tsx";
+import type { LearningHistorySnapshot } from "../src/core/learning-history.ts";
 import { SourcePassage } from "../components/source-passage.tsx";
 import { propositionSessionHref, messageIdFromHash } from "../src/core/session-navigation.ts";
 
@@ -21,5 +23,15 @@ describe("learner evidence passage anchors", () => {
 	it("does not create an empty anchor for legacy rows without IDs", () => {
 		const html = renderToStaticMarkup(<SourcePassage>Legacy answer</SourcePassage>);
 		assert.doesNotMatch(html, /id="/);
+	});
+});
+
+
+describe("selected moment source links", () => {
+	it("retains the exact marker and native anchor, including inline exploration ownership", () => {
+		const data = { sessions: [{ id: "child", parentId: "lesson" }] } as LearningHistorySnapshot;
+		assert.equal(historySourceHref(data, "lesson", "m1", "lesson/m1/range"), "/chat/lesson?moment=lesson%2Fm1%2Frange#message-m1");
+		assert.equal(historySourceHref(data, "child", "m2", "child/m2/range"), "/chat/lesson?exploration=child&moment=child%2Fm2%2Frange#message-m2");
+		assert.equal(historySourceHref(data, "lesson", "m1"), "/chat/lesson#message-m1");
 	});
 });

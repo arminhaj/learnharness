@@ -27,8 +27,22 @@ const episodeSchema = historyEpisodeInputSchema.extend({ id: text, chatId: text,
 export type HistoryEpisode = z.infer<typeof episodeSchema>;
 export const momentKinds = ["clicked", "unsure", "assumption"] as const;
 export const momentLabels = { clicked: "This clicked", unsure: "Still unsure", assumption: "My assumption" } as const;
+/** Rendered-text offsets, never a second stored copy of rough dictation. */
+export const momentSelectionSchema = z.object({
+	blockId: text.max(512), start: z.number().int().min(0).max(2_000_000), end: z.number().int().min(1).max(2_000_000),
+	fingerprint: z.string().regex(/^[a-f0-9]{16}$/),
+}).strict().refine(value => value.end > value.start && value.end - value.start <= 16000, "Select up to 16,000 characters within one passage.");
+export type MomentSelection = z.infer<typeof momentSelectionSchema>;
+
+/** A change detector for display anchors, not a security/authentication hash. */
+export function momentTextFingerprint(value: string): string {
+	let hash = 0xcbf29ce484222325n;
+	for (let i = 0; i < value.length; i++) hash = BigInt.asUintN(64, (hash ^ BigInt(value.charCodeAt(i))) * 0x100000001b3n);
+	return hash.toString(16).padStart(16, "0");
+}
 export const momentSchema = z.object({
 	id: text, chatId: text, messageId: text, kind: z.enum(momentKinds), note: z.string().max(4000),
+	selection: momentSelectionSchema.optional(),
 	/** Explicit human input; extraction has no write path to this collection. */
 	origin: z.literal("learner"), surface: z.enum(["session", "history"]),
 	createdAt: text, updatedAt: text, messageAt: text,
@@ -153,7 +167,7 @@ export function historyReplayGroups(snapshot: LearningHistorySnapshot) {
 }
 
 export const historyMutationSchema = z.discriminatedUnion("action", [
-	z.object({ action: z.literal("mark"), chatId: text, messageId: text, kind: z.enum(momentKinds).nullable(), note: z.string().max(4000).default(""), surface: z.enum(["session", "history"]) }).strict(),
+	z.object({ action: z.literal("mark"), chatId: text, messageId: text, momentId: text.optional(), selection: momentSelectionSchema.optional(), kind: z.enum(momentKinds).nullable(), note: z.string().max(4000).default(""), surface: z.enum(["session", "history"]) }).strict(),
 	z.object({ action: z.literal("correct"), episodeId: text, text: z.string().max(8000) }).strict(),
 	z.object({ action: z.literal("wording"), chatId: text, passageId: text, text: text.max(16000) }).strict(),
 	z.object({ action: z.literal("strategy"), key: text, saved: z.boolean() }).strict(),

@@ -14,7 +14,9 @@ History passages are labeled as edited speech, not verbatim quotations. Learners
 
 ## Explicit moments
 
-Teaching and inline exploration passages offer **Mark this moment** with This clicked, Still unsure and My assumption, plus an optional note. Only explicit learner actions create markers. Each records both its source-message time and the actual time the learner marked it. Backfill cannot manufacture retrospective learner signals. Markers save without a model connection and can be changed or removed.
+Select text in a teaching session or inline exploration, then choose **Mark this moment** → **This clicked** (or Still unsure / My assumption), with an optional note. Saved passages stay highlighted; clicking a highlight or its saved-marker button reopens the annotation. Learning history links return to that exact passage. A message can contain several separately editable markers; existing whole-message markers remain usable. Only explicit learner actions create markers. Each records both its source-message time and the actual time the learner marked it. Backfill cannot manufacture retrospective learner signals. Markers save without a model connection and can be changed or removed.
+
+Selection anchors store a stable source block, visible-text offsets and a content fingerprint, not another copy of raw dictated wording. Controls, draft fields, hidden math copies and nested explorations are excluded from offsets. If the source text changes, the marker remains saved but the UI refuses to highlight a different phrase. Analysis uses cleaned message context; rendered selection offsets are not treated as positions in cleaned speech.
 
 ## Persistence and runtime
 
@@ -30,4 +32,4 @@ The queue is in-process for the app's existing single-server deployment. Restart
 
 ## Verification
 
-`tests/learning-history.test.ts` exercises old-history recovery, exclusions, long dictation, coherence-agent retries, evidence validation, resumability, corrections, concurrent markers, cancellation, deletion and cross-session replay. Browser checks use an isolated data directory and scripted analysis fixtures, including saving a strategy, replay hide/reveal, source navigation, interpretation correction and marking a session moment. Real teaching data and provider credentials are not needed for those checks.
+`tests/learning-history.test.ts` exercises old-history recovery, exclusions, long dictation, coherence-agent retries, evidence validation, resumability, corrections, concurrent markers, cancellation, deletion and cross-session replay. Browser checks use an isolated data directory and scripted analysis fixtures, including saving a strategy, replay hide/reveal, source navigation, interpretation correction and marking a session moment. `tests/learning-moment-dom.test.ts` checks selection boundaries, repeated text, formatting, scope isolation and changed-source rejection. Marker service tests cover multiple selections, duplicate prevention, edits and removal. Browser verification also covers selecting a phrase, adding a note without submitting an answer, reloading a persistent highlight, and returning from history to the selected passage. Real teaching data and provider credentials are not needed for those checks.

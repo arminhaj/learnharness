@@ -5,6 +5,7 @@ import { useStickToBottomContext, type StickToBottomContext } from "use-stick-to
 import { messageAnchorId, messageIdFromHash } from "@/src/core";
 
 export type SessionScrollContext = Pick<StickToBottomContext, "scrollRef" | "stopScroll">;
+export const LEARNING_MOMENT_JUMP = "lh:learning-moment-jump";
 
 /** Scroll only the session's own containers (including tall question/code
  * areas), never sidebar/chrome. Inner containers move first, then the main
@@ -92,6 +93,17 @@ export function SessionMessageNavigation() {
 	}, [jump]);
 
 	useEffect(() => {
+		const onMoment = (event: Event) => {
+			const range = (event as CustomEvent<{ range?: Range }>).detail?.range;
+			const { scrollRef, stopScroll } = contextRef.current;
+			const main = scrollRef.current;
+			if (!range || !main?.contains(range.startContainer)) return;
+			event.preventDefault(); stopScroll(); clearFlash();
+			scrollSessionTarget(range, main, { scrollRef, stopScroll });
+			const messageId = messageIdFromHash(window.location.hash);
+			const target = messageId ? document.getElementById(messageAnchorId(messageId)) : null;
+			if (target) lastJump.current = { hash: window.location.hash, target };
+		};
 		const onHash = () => {
 			lastJump.current = null;
 			clearFlash();
@@ -99,11 +111,13 @@ export function SessionMessageNavigation() {
 		};
 		window.addEventListener("hashchange", onHash);
 		window.addEventListener("popstate", onHash);
+		window.addEventListener(LEARNING_MOMENT_JUMP, onMoment);
 		// Cleanup removes LISTENERS ONLY: never clearFlash/lastJump here — a
 	// dep-churned re-run must not strip a live flash (see the note above).
 		return () => {
 			window.removeEventListener("hashchange", onHash);
 			window.removeEventListener("popstate", onHash);
+			window.removeEventListener(LEARNING_MOMENT_JUMP, onMoment);
 		};
 	}, [jump, clearFlash]);
 	return null;

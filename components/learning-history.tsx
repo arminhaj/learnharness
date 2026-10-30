@@ -14,8 +14,11 @@ const labelClass = "font-ui text-xs uppercase tracking-wider text-muted-foregrou
 const empty: LearningHistorySnapshot = { enabled: false, sessions: [], passages: {}, episodes: [], moments: [], corrections: {}, savedStrategies: [], status: { running: false, completed: 0, total: 0 } };
 const date = (stamp: string) => new Date(stamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 
-export function historySourceHref(data: LearningHistorySnapshot, chatId: string, messageId: string) {
-	return propositionSessionHref({ provenance: [{ chatId, messageId, subjectId: data.sessions.find(s => s.id === chatId)?.parentId }] }, chatId);
+export function historySourceHref(data: LearningHistorySnapshot, chatId: string, messageId: string, momentId?: string) {
+	const href = propositionSessionHref({ provenance: [{ chatId, messageId, subjectId: data.sessions.find(s => s.id === chatId)?.parentId }] }, chatId);
+	if (!momentId) return href;
+	const [path, hash] = href.split("#");
+	return `${path}${path!.includes("?") ? "&" : "?"}moment=${encodeURIComponent(momentId)}${hash ? `#${hash}` : ""}`;
 }
 
 /** Wording is explicitly coherence-edited speech, never presented as a
@@ -97,7 +100,7 @@ export function LearningHistoryPage() {
 				{!loaded && !error && <p role="status">Loading history…</p>}
 				{loaded && !data.sessions.length && <p className="font-prose text-lg">Your teaching sessions will appear here. You can mark meaningful moments as you learn.</p>}
 				<section role="tabpanel" id="history-panel-timeline" aria-labelledby="history-tab-timeline" hidden={tab !== "timeline"}>
-					{filtered.moments.length > 0 && <details open={!episodes.length} className="mb-6 rounded-lg border p-4"><summary className="text-sm">Moments you marked · {filtered.moments.length}</summary><div className="mt-3 space-y-4">{filtered.moments.map(m => <div key={m.id} className="border-l-2 pl-3"><span className="text-sm">{momentLabels[m.kind]}</span><p className="mt-1 text-xs text-muted-foreground">{titleFor(m.chatId)} · marked by you {date(m.createdAt)} · {m.surface === "session" ? "in the session" : "while reviewing history"}</p>{m.note && <p className="mt-2 whitespace-pre-wrap font-prose text-base">{m.note}</p>}<Link className="mt-2 inline-block text-xs underline" href={historySourceHref(data, m.chatId, m.messageId)}>Go to marked moment</Link></div>)}</div></details>}
+					{filtered.moments.length > 0 && <details open={!episodes.length} className="mb-6 rounded-lg border p-4"><summary className="text-sm">Moments you marked · {filtered.moments.length}</summary><div className="mt-3 space-y-4">{filtered.moments.map(m => <div key={m.id} className="border-l-2 pl-3"><span className="text-sm">{momentLabels[m.kind]}</span><p className="mt-1 text-xs text-muted-foreground">{titleFor(m.chatId)} · marked by you {date(m.createdAt)} · {m.surface === "session" ? "in the session" : "while reviewing history"}</p>{m.note && <p className="mt-2 whitespace-pre-wrap font-prose text-base">{m.note}</p>}<Link className="mt-2 inline-block text-xs underline" href={historySourceHref(data, m.chatId, m.messageId, m.id)}>{m.selection ? "Go to highlighted passage" : "Go to marked moment"}</Link></div>)}</div></details>}
 					{event ? <div className="grid gap-6 md:grid-cols-[12rem_minmax(0,1fr)]"><div className="space-y-2">{episodes.map(e => <button type="button" key={e.id} aria-pressed={e.id === event.id} onClick={() => { setSelected(e.id); setSourceOpen(false); setCorrecting(false); }} className={`w-full rounded-lg border p-3 text-left ${e.id === event.id ? "border-border bg-card" : "border-transparent hover:bg-accent"}`}><span className="text-xs text-muted-foreground">{date(e.observedAt)}</span><span className="mt-2 block font-prose text-lg">{e.title}</span></button>)}</div><article>
 						<p className={labelClass}>Suggested from conversation history</p><h2 className="mt-2 font-title text-2xl">{event.title}</h2><p className="mt-2 text-xs text-muted-foreground">{titleFor(event.chatId)} · {event.topic}</p>
 						{speech(event.chatId, event.beforeId, "Your earlier explanation")}

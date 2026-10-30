@@ -121,6 +121,35 @@ describe("learning history persistence and backfill", () => {
 		service.mutate({ action: "mark", chatId: chat.id, messageId: "help", kind: null, surface: "session" });
 		assert.equal(service.momentsFor(chat.id).length, 0);
 	});
+	it("keeps distinct selected passages within one message, deduplicates the same selection, and edits only the chosen annotation", () => {
+		const { chat, historyStore, service } = fixture({ engine: () => undefined });
+		const selection = { blockId: "help-t0", start: 0, end: 8, fingerprint: "0123456789abcdef" };
+		const mark = (anchor = selection) => service.mutate({ action: "mark", chatId: chat.id, messageId: "help", selection: anchor, kind: "clicked", surface: "session" });
+		mark(); mark();
+		assert.equal(service.momentsFor(chat.id).length, 1, "one marker per exact selected range");
+		const first = service.momentsFor(chat.id)[0]!;
+		mark({ ...selection, start: 12, end: 20 });
+		assert.equal(service.momentsFor(chat.id).length, 2);
+		service.mutate({ action: "mark", chatId: chat.id, messageId: "help", momentId: first.id, kind: "unsure", note: "I need to revisit this phrase.", surface: "session" });
+		const changed = historyStore.read().moments[first.id]!;
+		assert.equal(changed.createdAt, first.createdAt); assert.deepEqual(changed.selection, selection);
+		assert.equal(changed.kind, "unsure");
+		assert.doesNotMatch(JSON.stringify(changed), /puck|friction/, "only position metadata is stored, not a second copy of speech");
+		service.mutate({ action: "mark", chatId: chat.id, messageId: "help", momentId: first.id, kind: null, surface: "session" });
+		assert.equal(service.momentsFor(chat.id).length, 1);
+		assert.equal(service.momentsFor(chat.id)[0]!.selection!.start, 12);
+	});
+	it("rejects malformed selection coordinates and cross-message marker edits while retaining old whole-message markers", () => {
+		const { chat, service } = fixture({ engine: () => undefined });
+		const base = { action: "mark", chatId: chat.id, messageId: "help", kind: "clicked", surface: "session" };
+		const bad = { blockId: "help-t0", start: 20, end: 10, fingerprint: "0123456789abcdef" };
+		assert.throws(() => service.mutate({ ...base, selection: bad }), /Invalid/);
+		assert.throws(() => service.mutate({ ...base, selection: { ...bad, start: 0, end: 16001 } }), /Invalid/);
+		const marker = service.mutate(base).moments[0]!;
+		assert.equal(marker.selection, undefined);
+		assert.throws(() => service.mutate({ ...base, messageId: "after", momentId: marker.id, note: "Wrong target" }), /not found/);
+		assert.equal(service.momentsFor(chat.id)[0]!.note, "");
+	});
 	it("cleans only new speech and retains saved strategies and interpretation corrections", async () => {
 		const { chat, calls, service } = fixture();
 		service.refresh(chat.id); await service.idle();

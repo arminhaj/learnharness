@@ -158,10 +158,13 @@ export function createLearningHistoryService(deps: Dependencies) {
 			const chat = deps.chatStore.getChat(value.chatId), m = chat?.messages.find(m => m.id === value.messageId);
 			if (!chat || !m || !historyInputPassages(chat).some(p => p.messageId === m.id)) throw new HistoryRequestError("This conversation passage is not available yet.", 404);
 			write(state => {
-				const id = `${value.chatId}/${value.messageId}`;
+				const existing = value.momentId ? state.moments[value.momentId] : undefined;
+				if (value.momentId && (!existing || existing.chatId !== value.chatId || existing.messageId !== value.messageId)) throw new HistoryRequestError("Marked passage not found.", 404);
+				const selection = existing?.selection ?? value.selection;
+				const id = existing?.id ?? `${value.chatId}/${value.messageId}${selection ? `/${hash(selection).slice(0, 24)}` : ""}`;
 				if (value.kind === null) { delete state.moments[id]; return; }
 				const now = new Date().toISOString();
-				state.moments[id] = { id, chatId: chat.id, messageId: m.id, kind: value.kind, note: value.note, origin: "learner", surface: value.surface, createdAt: state.moments[id]?.createdAt ?? now, updatedAt: now, messageAt: Number.isFinite(m.timestamp) ? new Date(m.timestamp).toISOString() : chat.updatedAt };
+				state.moments[id] = { id, chatId: chat.id, messageId: m.id, ...(selection ? { selection } : {}), kind: value.kind, note: value.note, origin: "learner", surface: value.surface, createdAt: state.moments[id]?.createdAt ?? now, updatedAt: now, messageAt: Number.isFinite(m.timestamp) ? new Date(m.timestamp).toISOString() : chat.updatedAt };
 			});
 		} else if (value.action === "correct") {
 			if (!snapshot().episodes.some(e => e.id === value.episodeId)) throw new HistoryRequestError("Episode not found.", 404);

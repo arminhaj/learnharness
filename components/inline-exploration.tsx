@@ -398,7 +398,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 						{message.parts.map((part, index) => {
 							if (part.type === "text") {
 								const id = textPartMessageId(part.id);
-								return <div key={part.id || index} id={id && firstParts.get(id) === part.id ? messageAnchorId(id) : undefined}>{message.role === "user" ? <p className="whitespace-pre-wrap">{part.text}</p> : <MessageResponse>{part.text}</MessageResponse>}{message.role !== "user" && id && firstParts.get(id) === part.id && <MarkLearningMoment messageId={id} />}</div>;
+								return <div key={part.id || index} id={id && firstParts.get(id) === part.id ? messageAnchorId(id) : undefined} data-source-message-id={message.role !== "user" ? id ?? undefined : undefined} data-source-part-id={part.id}>{message.role === "user" ? <p className="whitespace-pre-wrap">{part.text}</p> : <MessageResponse>{part.text}</MessageResponse>}{message.role !== "user" && id && firstParts.get(id) === part.id && <MarkLearningMoment messageId={id} />}</div>;
 							}
 							if (part.type === "reasoning") return <Reasoning key={index} isStreaming={localBusy}><ReasoningTrigger /><ReasoningContent>{part.text ?? ""}</ReasoningContent></Reasoning>;
 							if (part.type === "data-plan-block") return <PlanBlock key={index} data={part.data as PlanBlockData} onOpen={() => onOpenPlan?.(messages)} />;
