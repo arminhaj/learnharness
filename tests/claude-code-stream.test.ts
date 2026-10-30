@@ -756,7 +756,7 @@ test("native refusal continuation clears withheld content and intents, preservin
 	const refused = toToolUseMessage([{ id: "toolu_withheld", name: "read", arguments: {} }]);
 	refused[0] = streamEvent({ type: "message_start", message: { usage: { input_tokens: 7, output_tokens: 1 } } });
 	refused.splice(-2, 2,
-		streamEvent({ type: "message_delta", delta: { stop_reason: "refusal" }, usage: { output_tokens: 3 } }),
+		streamEvent({ type: "message_delta", delta: { stop_reason: "refusal", stop_details: { category: "reasoning_extraction" } }, usage: { output_tokens: 3 } }),
 		streamEvent({ type: "message_stop" }));
 	// A native CLI continuation, with no additional prompt sent by LearnHarness.
 	const { events, calls } = await runScenario(t, [...refused, ...readFixtureLines("text.jsonl")]);
@@ -766,6 +766,7 @@ test("native refusal continuation clears withheld content and intents, preservin
 		assert.equal(last.message.usage.input, 2 + 7);
 		assert.equal(last.message.usage.output, 5 + 3);
 		assert.equal(last.message.usage.totalTokens, 624);
+		assert.deepEqual((last.message as { providerRefusal?: unknown }).providerRefusal, { provider: "claude-code", category: "reasoning_extraction" });
 		assert.equal(last.message.content.some(b => b.type === "toolCall"), false);
 	}
 	assert.equal(calls.length, 1);

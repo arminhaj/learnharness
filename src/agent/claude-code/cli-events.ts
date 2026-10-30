@@ -11,7 +11,7 @@ export type CliEvent =
 	| { type: "thinkingDelta"; index: number; thinking: string }
 	| { type: "toolInputDelta"; index: number; partialJson: string }
 	| { type: "blockStop"; index: number }
-	| { type: "messageDelta"; stopReason: string | null; usage: CliUsage }
+	| { type: "messageDelta"; stopReason: string | null; usage: CliUsage; refusalCategory?: string }
 	| { type: "messageStop" }
 	| { type: "assistantError"; error: string; text: string }
 	| { type: "resultError"; text: string }
@@ -33,6 +33,7 @@ type RawDelta = {
 	thinking?: string;
 	partial_json?: string;
 	stop_reason?: string | null;
+	stop_details?: { category?: string };
 };
 
 type RawStreamEvent = {
@@ -130,7 +131,8 @@ function parseStreamEvent(event: RawStreamEvent): CliEvent | null {
 
 		case "message_delta": {
 			const stopReason = event.delta?.stop_reason ?? null;
-			return { type: "messageDelta", stopReason, usage: toUsage(event.usage ?? {}) };
+			const category = event.delta?.stop_details?.category;
+			return { type: "messageDelta", stopReason, usage: toUsage(event.usage ?? {}), ...(stopReason === "refusal" && typeof category === "string" ? { refusalCategory: category } : {}) };
 		}
 
 		case "message_stop":

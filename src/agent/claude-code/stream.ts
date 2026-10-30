@@ -139,7 +139,7 @@ function getAssistantErrorMessage(error: string, text: string): string {
 }
 
 class ClaudeTurn {
-	private readonly output: AssistantMessage & Pick<LhMessage, "cliContextWindow">;
+	private readonly output: AssistantMessage & Pick<LhMessage, "cliContextWindow" | "providerRefusal">;
 	private readonly contentIndexes = new Map<number, number>();
 	private readonly partialJson = new Map<number, string>();
 	private readonly toolBlocks = new Map<number, ToolCall>();
@@ -213,6 +213,7 @@ class ClaudeTurn {
 
 			case "messageDelta":
 				this.updateUsage(event.usage);
+				if (event.stopReason === "refusal") this.output.providerRefusal = { provider: "claude-code", ...(event.refusalCategory ? { category: event.refusalCategory } : {}) };
 				if (event.stopReason) this.setStopReason(event.stopReason);
 				return;
 

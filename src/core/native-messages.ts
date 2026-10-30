@@ -98,6 +98,9 @@ export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | Lh
 	/** CLI-reported effective context budget, not a catalog model maximum.
 	 * App-only metadata: never transmitted as provider/model message content. */
 	cliContextWindow?: number;
+	/** Provider-reported refusal during this response, even if the CLI
+	 * subsequently returned a normal explanation. Never model input. */
+	providerRefusal?: { provider: string; category?: string };
 };
 
 /** Latest response only: never borrow an older process/model's window when
@@ -660,7 +663,7 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			continue;
 		}
 		// Strip app-only id/CLI context metadata: the wire carries the native shape only.
-		const { id: _id, cliContextWindow: _cliContextWindow, ...native } = m as LhMessage;
+		const { id: _id, cliContextWindow: _cliContextWindow, providerRefusal: _providerRefusal, ...native } = m as LhMessage;
 		out.push(native as Message);
 		// Repair unanswered calls from completed generations, not calls in
 		// failed generations. Pi filters error/aborted assistants itself;

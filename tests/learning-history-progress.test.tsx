@@ -3,7 +3,7 @@ import React from "react";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HistoryRunProgress } from "../components/learning-history.tsx";
+import { HistoryRunProgress, HistorySpeech } from "../components/learning-history.tsx";
 import { historyErrorMessage, type HistoryRunStatus } from "../src/core/learning-history.ts";
 
 const status: HistoryRunStatus = { running: true, total: 16, completed: 2, succeeded: 0, failed: 2, cancelled: 0, skipped: 0, stage: "finding" };
@@ -25,4 +25,11 @@ test("provider handoff errors and refusals have distinct plain-language explanat
 	assert.match(historyErrorMessage("claude CLI moved on without admitting its harness tool calls"), /handoff/);
 	assert.match(historyErrorMessage("The model refused to complete the request"), /declined/);
 	assert.match(historyErrorMessage("API Error: Opus 5.5's safeguards flagged this message"), /declined/);
+});
+
+test("history distinguishes unchanged tutor context, edited learner speech and user corrections", () => {
+	const passage = { id: "p", messageId: "m", role: "tutor" as const, text: "Visible tutor explanation.", unclear: [], observedAt: "2026-10-29", fingerprint: "fixture", substantive: false };
+	assert.match(renderToStaticMarkup(<HistorySpeech title="Context" passage={{ ...passage, wording: "original" }} />), /original tutor text/);
+	assert.match(renderToStaticMarkup(<HistorySpeech title="Earlier" passage={{ ...passage, role: "learner" }} />), /coherence-edited speech/);
+	assert.match(renderToStaticMarkup(<HistorySpeech title="Earlier" passage={{ ...passage, wording: "corrected" }} />), /wording corrected by you/);
 });

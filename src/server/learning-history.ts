@@ -38,7 +38,7 @@ export function createLearningHistoryService(deps: Dependencies) {
 	const signature = (id: string, state = deps.historyStore.read(), sourceInputs = inputs(id)) => hash([VERSION, sourceInputs, Object.values(state.moments).filter(m => m.chatId === id), Object.entries(state.textCorrections).filter(([key]) => key.startsWith(`${id}/`))]);
 	function effectivePassage(chatId: string, passage: HistoryPassage, state: LearningHistoryState) {
 		const edit = state.textCorrections[historyPassageKey(chatId, passage.id)];
-		return edit?.fingerprint === passage.fingerprint ? { ...passage, text: edit.text, unclear: [] } : passage;
+		return edit?.fingerprint === passage.fingerprint ? { ...passage, text: edit.text, unclear: [], wording: "corrected" as const } : passage;
 	}
 	function currentSource(id: string, state: LearningHistoryState, sourceInputs = inputs(id)): HistorySource {
 		const stored = state.sources[id] ?? emptyHistorySource();

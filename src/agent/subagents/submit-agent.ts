@@ -17,6 +17,7 @@ import { runSubagent } from "./pi-run.ts";
 import { healToolRecord } from "../tools/heal.ts";
 import { healEncodedArguments } from "../../core/argument-heal.ts";
 import type { ModelStreamProgress } from "../../core/extraction-progress.ts";
+import type { LhMessage } from "../../core/native-messages.ts";
 
 // ── the weak-model string-heal (owner, 2026-09-28; moved here from
 // extraction.ts with the digest-aware redesign, 2026-09-30 — the heal
@@ -131,7 +132,13 @@ export async function runSubmitAgent<T>(opts: {
 			shouldStop: (_message, toolResults) => toolResults.some((r) => r.toolName === opts.toolName && !r.isError),
 		},
 	);
-	void result;
-	if (!submitted) throw new Error(opts.neverSubmitted);
+	if (!submitted) {
+		// A CLI may explain a refusal in an ordinary end_turn response. Keep
+		// its structured refusal signal rather than mislabeling it as missing
+		// data; do not persist the reply, which may repeat private source text.
+		const refusal = result.newMessages.map(m => (m as LhMessage).providerRefusal).find(Boolean);
+		if (refusal) throw new Error(`The model refused to complete the request${refusal.category ? ` (${refusal.category})` : ""}. No result was submitted.`);
+		throw new Error(opts.neverSubmitted);
+	}
 	return submitted;
 }

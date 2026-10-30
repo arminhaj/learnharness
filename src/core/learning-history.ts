@@ -8,11 +8,13 @@ const text = z.string().trim().min(1);
 export const historyPassageSchema = z.object({
 	id: text, messageId: text, role: z.enum(["learner", "tutor"]),
 	text, unclear: z.array(z.string()), observedAt: text, fingerprint: text,
+	/** Absent on legacy entries, which all passed through the editor. */
+	wording: z.enum(["coherence-edited", "original", "corrected"]).optional(),
 	/** A choice alone is not a learner explanation. */
 	substantive: z.boolean(),
 }).strict();
 export type HistoryPassage = z.infer<typeof historyPassageSchema>;
-export interface HistoryInput extends Omit<HistoryPassage, "fingerprint" | "unclear"> {}
+export interface HistoryInput extends Omit<HistoryPassage, "fingerprint" | "unclear" | "wording"> {}
 
 export const historyEpisodeInputSchema = z.object({
 	topicKey: text, topic: text, title: text,

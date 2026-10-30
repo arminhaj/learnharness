@@ -31,15 +31,14 @@ export function historySourceHref(data: LearningHistorySnapshot, chatId: string,
 	return `${path}${path!.includes("?") ? "&" : "?"}moment=${encodeURIComponent(momentId)}${hash ? `#${hash}` : ""}`;
 }
 
-/** Wording is explicitly coherence-edited speech, never presented as a
- * verbatim quote. Unresolved dictation stays visible and user-correctable. */
+/** Distinguish edited learner speech from unchanged visible tutor context. */
 export function HistorySpeech({ passage, title, href, onCorrect }: { passage?: HistoryPassage; title: string; href?: string; onCorrect?: (text: string) => Promise<void> }) {
 	const [editing, setEditing] = useState(false), [text, setText] = useState(""), [saving, setSaving] = useState(false), [error, setError] = useState<string | null>(null);
 	return <section className={`my-4 rounded-lg border p-4 ${passage ? "" : "border-dashed"}`}>
 		<p className={labelClass}>{title}</p>
 		{passage ? <>
 			<p className="mt-2 whitespace-pre-wrap font-prose text-xl">{passage.text}</p>
-			<p className="mt-3 text-xs text-muted-foreground">{date(passage.observedAt)} · coherence-edited speech</p>
+			<p className="mt-3 text-xs text-muted-foreground">{date(passage.observedAt)} · {passage.wording === "original" ? "original tutor text" : passage.wording === "corrected" ? "wording corrected by you" : "coherence-edited speech"}</p>
 			{passage.unclear.length > 0 && <p className="mt-2 font-prose text-sm">Unclear dictation: {passage.unclear.join("; ")}</p>}
 			<div className="mt-3 flex flex-wrap gap-3">{href && <Link className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" href={href}>Go to source moment <ArrowUpRightIcon className="size-3" /></Link>}{onCorrect && <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => { setText(passage.text); setEditing(!editing); }}>Correct wording</button>}</div>
 			{editing && <form className="mt-3" onSubmit={async e => { e.preventDefault(); setSaving(true); setError(null); try { await onCorrect?.(text); setEditing(false); } catch (error) { setError(error instanceof Error ? error.message : "Could not save this wording."); } finally { setSaving(false); } }}><label className="text-xs">Your wording<textarea className="mt-2 w-full rounded-md border bg-background p-3 font-prose text-lg" value={text} onChange={e => setText(e.target.value)} rows={4} required maxLength={16000} /></label><button className={actionClass} disabled={saving || !text.trim()}>Save wording</button>{error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}</form>}

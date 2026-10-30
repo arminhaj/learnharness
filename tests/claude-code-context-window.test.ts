@@ -74,6 +74,9 @@ test("per-session metadata survives JSON persistence, never borrows older report
 	assert.deepEqual(window, { model: "claude-code:opus", tokens: 200000 });
 	assert(!("cliContextWindow" in toLlmMessages(asAgentMessages([first]))[0]!));
 	assert.equal(first.cliContextWindow, 200000, "provider projection never mutates the stored report");
+	first.providerRefusal = { provider: "claude-code", category: "reasoning_extraction" };
+	assert(!("providerRefusal" in toLlmMessages(asAgentMessages([first]))[0]!));
+	assert.equal(first.providerRefusal.category, "reasoning_extraction");
 	const catalog = new Map([["anthropic:fixture", 100000], ["claude-code:opus", 1000000]]);
 	assert.equal(contextLimitForModel("claude-code:opus", catalog, window), 200000);
 	assert.equal(contextLimitForModel("claude-code:sonnet", catalog, window), null);
