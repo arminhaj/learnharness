@@ -30,6 +30,16 @@ export interface RingConformation {
 	torsions: number[];
 	/** Relative to the fixed atom order; these are not absolute up/down labels. */
 	chairBasin?: "positive" | "negative";
+	/** Complete small-group summary for one validated cyclohexane chair.
+	 * Omitted if any group or orientation is unsupported. These orientations
+	 * can change on a chair flip; they do not describe cis/trans configuration. */
+	substituents?: {
+		/** Zero-based SDF indices, not course or IUPAC position numbers. */
+		atomIndex: number;
+		substituentAtomIndex: number;
+		label: string;
+		orientation: "axial" | "equatorial";
+	}[];
 }
 
 export interface MoleculeConformer {
