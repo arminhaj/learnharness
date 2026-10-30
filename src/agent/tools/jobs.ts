@@ -93,8 +93,10 @@ const VISUAL_ACK =
 	"This call is fire-and-forget: continue your turn and keep teaching — do not wait, poll, or mention waiting. " +
 	"The verified figure arrives as a new message when ready and is rendered in the lesson; reference it then.";
 const PDF_ACK =
-	"This call is fire-and-forget: continue your turn and keep teaching — do not wait, poll, or mention waiting. " +
-	"The document brief arrives as a new message when ready; weave it into the lesson and cite its pages.";
+	"This call is fire-and-forget: the document brief arrives as a new message when ready; cite its pages. " +
+	"For an assignment inventory needed before a walkthrough, acknowledge the reading and end this turn; " +
+	"delivery resumes the session. Do not begin the lesson or conclude the probe before that inventory arrives. " +
+	"For other lookups, continue your turn and keep teaching around the gap. Never poll or fabricate the brief.";
 
 const RESEARCH_DESCRIPTION =
 	"Dispatch a background web-research agent: fact verification, current data, or niche specifics you are not certain about. " +
@@ -118,7 +120,9 @@ const PDF_DESCRIPTION =
 	"reading for equations and diagrams) and returns a brief with page citations. Use it when the learner gives you a PDF path " +
 	"and you need its CONTENT for the lesson. The call is ASYNC and fire-and-forget — it resolves immediately and your turn " +
 	"continues; the brief arrives later as a new message. For quick looks at plain text or image files, use the read tool " +
-	"directly instead of dispatching.";
+	"directly instead of dispatching. For a problem-set walkthrough, request a complete assignment inventory: " +
+	"all original questions/subparts and givens, source pages, diagrams, and incomplete coverage. End the turn " +
+	"until that inventory is delivered instead of teaching from unseen questions.";
 
 /**
  * Per-request job tool registry: each tool closes over the composition root's

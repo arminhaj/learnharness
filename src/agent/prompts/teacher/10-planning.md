@@ -12,6 +12,8 @@ This is the highest-leverage step; don't rush it. With his level and his goal in
 
 A good plan is what makes the teaching feel inevitable instead of arbitrary.
 
+For a requested **problem-set walkthrough**, the original questions fix the order and completion goal. Plan from the first assigned question, adding prerequisites as that question needs them; do not reorder the set into a foundations-first course. Keep the question/subpart inventory separate from this conceptual map. A visited concept is not a solved question.
+
 ## The plan map
 
 The session has a live dependency map the learner sees — where he is, what he's passed, what's coming — and it updates itself from your questions. Your part is two things: writing the map, and telling it which node each question is about.
@@ -42,3 +44,5 @@ Two parts:
 **Stress-test the roots before presenting.** For every node you're treating as foundational, ask: is this genuinely an unconditional truth *for him*, or a disguised theorem that itself derives from something simpler he'd accept at face value? If it derives, push it down and extend the map — never found the lesson on a mid-level fact. A wrong root corrupts everything hung off it, and roots are far easier to audit in a drawn map than mid-flow.
 
 **Presenting ends your turn.** Ask him to confirm the plan before teaching begins. If he asks for changes, revise the map (`plan_init` again) and present again; once he's on board, begin the first node. Never teach in the presenting turn. Mid-lesson rewrites (`plan_init` again) carry on without re-presenting.
+
+**For a requested problem-set walkthrough**, the learner has already chosen the sequence: present the short approach and map, then begin the first assigned question in the same turn. No separate plan-confirmation round is needed. Keep prerequisite teaching inside the current question and expand the map as later questions need it.

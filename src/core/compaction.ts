@@ -380,6 +380,11 @@ export function buildCompactionPrompt(input: {
 }): string {
 	const planSection =
 		input.planTreeText ?? "No plan tree exists in this session (nothing was persisted).";
+	const assignmentContext = input.kind === "practice" ? "" : `
+
+If this is a problem-set walkthrough, preserve its assignment record within this section: the requested scope and source order; each set's exact title/filename and path; page references; EVERY question and subpart's original identifier, statement, givens, constraints, and necessary diagram information; and the status of each (remaining, in progress, completed). Retain completed solution working, final results and checks, partial attempts and unresolved errors, skipped/blocked items with their reasons, and the exact next unfinished part. Preserve existing message/source references when available, but do not replace the usable working with references alone or just "done". Carry prior-summary entries forward unless later evidence changes them; do not drop completed or untouched questions. Record incomplete source coverage explicitly.
+
+Keep original assigned questions distinct from generated examples and prerequisite checks. A finished, checked guided solution counts as completed without a separate unaided repeat; an example, visited concept, or presented but unchecked solution does not. Never infer completion, fill unreadable source gaps, or silently promote partial work to completed. Preserve an explicit learner change of scope/order. If no walkthrough is present, do not invent an assignment record.`;
 	return `You are compacting the earlier part of a tutoring session — writing the summary your future self will read INSTEAD of that transcript. Everything before the cut is replaced by what you write; everything after stays verbatim. The learner's transcript below labels the learner as [LEARNER], the tutoring agent as [TUTOR], tool traffic as [RESULT …]/[SYSTEM NOTE].
 
 Write the summary with EXACTLY these sections, in this order:
@@ -388,7 +393,7 @@ Write the summary with EXACTLY these sections, in this order:
 The most detailed picture you can give of what this learner knows and how that EVOLVED across the session: what they answered and how well (quiz outcomes, correct reasoning, mistakes), their stated or displayed confidence, misconceptions that surfaced, which were corrected and which still stand. This section carries the most weight — future teaching decisions hang on it.
 
 ## The teaching arc
-How the session progressed: what was covered and in what order, which explanations landed and which didn't, how the learner responded, where the momentum went. Include probe-phase findings if present.
+How the session progressed: what was covered and in what order, which explanations landed and which didn't, how the learner responded, where the momentum went. Include probe-phase findings if present.${assignmentContext}
 
 ## The plan dependency tree
 Reproduce the session's current plan tree verbatim from the structure below — do not drop nodes, edges, or statuses.

@@ -54,7 +54,11 @@ export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<a
 			description:
 				"Conclude the probing phase and hand off to the teaching phase. Call this ONCE, when the probe is " +
 				"complete: every strand the lesson depends on is bracketed (a floor he reliably gets right AND a " +
-				"ceiling where it runs out), and his learning goal is concrete. The input IS the learner assessment — " +
+				"ceiling where it runs out), and his learning goal is concrete. For a requested problem-set walkthrough, " +
+				"instead hand off after reading and inventorying the set: assess only the first question's starting " +
+				"strands, explicitly marking unmeasured understanding unknown; no whole-set bracketing is needed. " +
+				"Carry the source references, full question/subpart inventory, progress, working, and next question " +
+				"in the assessment summary. The input IS the learner assessment — " +
 				"one strand per dependency the lesson will rest on, with your read of where his edge sits on it " +
 				"(floor, ceiling, misconceptions, what to build from). It streams to the learner live and becomes " +
 				"the handoff artifact the teacher plans from. Refused while a question is still open, and after " +
