@@ -722,6 +722,10 @@ function SessionsSidebar() {
 				</div>
 
 				<div className="mx-3 mb-2 flex items-center gap-2">
+					<Link href="/history" className={cn("flex min-h-9 w-full items-center rounded-md px-2 py-1.5 text-xs uppercase tracking-wider hover:bg-accent", pathname === "/history" ? "bg-accent text-foreground" : "text-muted-foreground")}>Learning history</Link>
+				</div>
+
+				<div className="mx-3 mb-2 flex items-center gap-2">
 					<span className="text-xs uppercase tracking-widest text-muted-foreground/70">Sessions</span>
 					<Hint label="Search sessions" action="sessions-search" side="bottom">
 					<span className="relative flex-1">

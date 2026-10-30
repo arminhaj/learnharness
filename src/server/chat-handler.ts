@@ -48,6 +48,7 @@ import { beginTurn, endTurn } from "./turn-liveness.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
+import { updateLearningHistoryAfterTurn } from "./learning-history.ts";
 import { hasProbeDone, danglingQuestionOf } from "../core/native-messages.ts";
 import { composeExplorationInstructions, composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
@@ -621,6 +622,7 @@ export async function handleChatInput(
 				// subsequent fetch reads the dismissal already in the record
 				// (the same ordering law as persistTurn itself).
 				applyParkedDismissal(stores.chatStore, chatId);
+				updateLearningHistoryAfterTurn(chatId);
 				// LAST: a poller that sees not-in-flight must read an already-persisted
 				// record — endTurn only after persistTurn has done its job.
 				endTurn(chatId);

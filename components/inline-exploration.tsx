@@ -2,6 +2,7 @@
 
 import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDownIcon, ChevronRightIcon, CornerUpLeftIcon, CompassIcon } from "lucide-react";
+import { LearningMomentsProvider, MarkLearningMoment } from "@/components/learning-moments";
 import { ChatActionsContext } from "@/components/chat";
 import { JobsContext } from "@/components/jobs-context";
 import { QuestionDock } from "@/components/question-dock";
@@ -384,6 +385,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 		<ChatActionsContext.Provider value={{ chatId: chat.id, syncFromServer: sync,
 			sendText: value => { if (active && !busy && !compacting) void send({ type: "text", text: value }); },
 			openSetup: () => parentActions?.openSetup() }}>
+		<LearningMomentsProvider chatId={chat.id} busy={busy}>
 		<JobsContext.Provider value={jobs}>
 		<div className="border-t border-primary/15 px-4 pb-3">
 			<div data-testid="exploration-transcript" className="space-y-3 py-3">
@@ -396,7 +398,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 						{message.parts.map((part, index) => {
 							if (part.type === "text") {
 								const id = textPartMessageId(part.id);
-								return <div key={part.id || index} id={id && firstParts.get(id) === part.id ? messageAnchorId(id) : undefined}>{message.role === "user" ? <p className="whitespace-pre-wrap">{part.text}</p> : <MessageResponse>{part.text}</MessageResponse>}</div>;
+								return <div key={part.id || index} id={id && firstParts.get(id) === part.id ? messageAnchorId(id) : undefined}>{message.role === "user" ? <p className="whitespace-pre-wrap">{part.text}</p> : <MessageResponse>{part.text}</MessageResponse>}{message.role !== "user" && id && firstParts.get(id) === part.id && <MarkLearningMoment messageId={id} />}</div>;
 							}
 							if (part.type === "reasoning") return <Reasoning key={index} isStreaming={localBusy}><ReasoningTrigger /><ReasoningContent>{part.text ?? ""}</ReasoningContent></Reasoning>;
 							if (part.type === "data-plan-block") return <PlanBlock key={index} data={part.data as PlanBlockData} onOpen={() => onOpenPlan?.(messages)} />;
@@ -438,6 +440,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 		</div>
 		<AbortTurnDialog mode={active ? abortAsk : null} onClose={() => setAbortAsk(null)} onConfirm={confirmAbort} busy={busy} />
 		</JobsContext.Provider>
+		</LearningMomentsProvider>
 		</ChatActionsContext.Provider>
 	);
 }

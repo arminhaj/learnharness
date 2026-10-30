@@ -56,6 +56,7 @@ import { ArrowRightIcon, DumbbellIcon, WaypointsIcon } from "lucide-react";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { SessionFind } from "@/components/session-find";
+import { LearningMomentsProvider, MarkLearningMoment } from "@/components/learning-moments";
 import { SourcePassage } from "@/components/source-passage";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { PracticeDock } from "@/components/practice-dock";
@@ -1329,6 +1330,7 @@ export function Chat({
 				openSetup: () => setSetupOpen(true),
 			}}
 		>
+		<LearningMomentsProvider chatId={chatId} busy={busy}>
 		<SessionMermaidContext.Provider
 			value={{
 				openMermaid: setMermaidFocus,
@@ -1629,6 +1631,7 @@ export function Chat({
 														return (
 															<div key={part.id || pi} id={anchor} data-source-message-id={sourceId ?? undefined} className="lh-source-passage">
 																<MessageResponse>{part.text}</MessageResponse>
+																{anchor && sourceId && <MarkLearningMoment messageId={sourceId} />}
 																{kind === "teach" && sourceId && sourceTextParts.get(sourceId) === part.id && renderSourceExplorations(sourceId)}
 															</div>
 														);
@@ -1879,6 +1882,7 @@ export function Chat({
 				// the learner sends it themselves.
 			}}
 		/>
+		</LearningMomentsProvider>
 		</ChatActionsContext.Provider>
 	);
 }

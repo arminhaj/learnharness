@@ -21,6 +21,7 @@ export * from "./chains.ts";
 export * from "./learning-graph.ts";
 export * from "./learning-subjects.ts";
 export * from "./learning-session.ts";
+export * from "./learning-history.ts";
 export * from "./extraction-progress.ts";
 export * from "./render-settings.ts";
 

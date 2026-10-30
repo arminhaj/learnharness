@@ -115,6 +115,8 @@ export interface ExtractionStageUsage {
  *  failure, because money was spent either way; `stats` is present only
  *  when the merger actually ran. */
 export interface ExtractionRunUsage {
+	/** Separate background feature; shares the existing cost accounting. */
+	purpose?: "learning-history";
 	/** The run's registry startedAt (ms) — the idempotency key. */
 	startedAt: number;
 	at: string;

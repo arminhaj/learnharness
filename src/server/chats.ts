@@ -7,6 +7,7 @@ import { graphRevision } from "./graph.ts";
 import { deleteLearningSessionMetadata, learningGraphView, readLearningGraphState } from "./learning-graph.ts";
 import { getGraph } from "../core/graph.ts";
 import { stores } from "./stores.ts";
+import { learningHistory } from "./learning-history.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
 import { discardChatDeliveries } from "./jobs.ts";
@@ -173,6 +174,7 @@ export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): P
 	// for a repeat rather than an unreachable embedded exploration.
 	for (const id of [...targets].reverse()) {
 		if (stores.chatStore.deleteChat(id)) {
+			learningHistory.removeSource(id);
 			discardChatDeliveries(id);
 			clearTurnFailure(id);
 		}
