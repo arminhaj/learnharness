@@ -32,6 +32,9 @@ const { POST } = await import("../app/api/chats/route.ts");
 const { initialPromptOwed } = await import("../components/chat.tsx");
 const { chatStore } = await import("../src/store/chats.ts");
 const { graphStore } = await import("../src/store/graph.ts");
+const learning = await import("../src/server/learning-graph.ts");
+const { createConceptSessionRequest } = await import("../src/core/learning-session.ts");
+const { learningPassages } = await import("../src/agent/subagents/learning-map.ts");
 
 after(() => {
 	fs.rmSync(TMP_DATA, { recursive: true, force: true });
@@ -106,6 +109,46 @@ describe("initialPromptOwed", () => {
 // ── the route (picks ride the creation) ─────────────────────────────────────
 
 describe("POST /api/chats — graphContext becomes message[0]", () => {
+	it("rejects invalid or deleted learning targets before creating a session", async () => {
+		const before = chatStore.listChats().length;
+		for (const [learningContext, status] of [[null, 400], [{ nodeId: "bad id" }, 400], [{ nodeId: "n_missing" }, 404]] as const) {
+			const res = await POST(new Request("http://test/api/chats", { method: "POST", body: JSON.stringify({ title: "Teach me", learningContext }) }));
+			assert.equal(res.status, status);
+		}
+		assert.equal(chatStore.listChats().length, before);
+	});
+
+	it("starts teaching and practice from a planned concept with effective metadata outside learner evidence", async () => {
+		const date = "2026-10-20T12:00:00.000Z";
+		const planned = { id: "n_future_launch", name: "Growth", statement: "Growth is proportional to the current amount.", aliases: [], createdAt: date, provenance: [] };
+		const prerequisite = { ...planned, id: "n_launch_foundation", name: "Ratios", statement: "A ratio compares quantities." };
+		graphStore.appendNode(prerequisite);
+		learning.saveLearningContribution({ sourceId: "launch_source", updatedAt: date, futureNodes: [planned], nodes: [],
+			prerequisites: [{ from: prerequisite.id, to: planned.id, explanation: "Proportional change uses ratios", provenance: [] }], groups: [] });
+		learning.updateLearningNode(planned.id, { name: "My growth concept", progress: "learning", symbols: [{ notation: "γ", meaning: "Growth factor", aliases: [], provenance: [] }] });
+		const selected = learning.learningGraphView().nodes.find((node) => node.id === planned.id)!;
+		for (const mode of ["teach", "practice"] as const) {
+			const request = createConceptSessionRequest(selected, mode);
+			assert.equal(request.kind, mode === "practice" ? "practice" : undefined);
+			assert.doesNotMatch(request.title, /proportional|Growth factor|Recorded understanding/);
+			const res = await POST(new Request("http://test/api/chats", { method: "POST", body: JSON.stringify(request) }));
+			assert.equal(res.status, 200);
+			const { id } = await res.json() as { id: string };
+			const saved = chatStore.getChat(id)!;
+			assert.equal(saved.kind, request.kind);
+			const marker = saved.messages[0]!;
+			assert.equal(marker.role, "custom");
+			if (marker.role !== "custom") assert.fail("expected graph context");
+			const details = marker.details as { propositions: typeof PICKS; learningContext: import("../src/core/learning-session.ts").LearningSessionContext };
+			assert.deepEqual(details.propositions, [{ id: selected.id, name: selected.name, statement: selected.statement }]);
+			assert.equal(details.learningContext.progress, "learning");
+			assert.deepEqual(details.learningContext.symbols, [{ notation: "γ", meaning: "Growth factor" }]);
+			assert.deepEqual(details.learningContext.prerequisites.map((node) => node.id), [prerequisite.id]);
+			assert.deepEqual(learningPassages({ ...saved, messages: [...saved.messages, { id: "opening", role: "user", content: request.title, timestamp: Date.parse(date) }] }), []);
+		}
+		assert.equal(graphStore.readNodes().some((node) => node.id === planned.id), false, "launching does not invent encountered evidence");
+	});
+
 	it("writes the marker before any user message; chains derive from the live graph", async () => {
 		// Seed the map: two picked nodes joined by one chain.
 		const node = (id: string, name: string, statement: string) => ({

@@ -52,7 +52,7 @@ export interface LhViewPart extends Record<string, unknown> {
 	text?: string;
 	state?: string;
 	toolCallId?: string;
-	/** Native location, retained across display grouping (client-only). */
+	/** Native call location, or result id once answered so learning evidence can link to the answer. */
 	sourceMessageId?: string;
 	sourceContentIndex?: number;
 	input?: unknown;
@@ -100,7 +100,8 @@ function textPart(text: string): LhViewPart {
 }
 
 /** The result a tool part should show, from a native toolResult. */
-function applyResult(part: LhViewPart, result: ToolResultMessage): void {
+function applyResult(part: LhViewPart, result: ToolResultMessage & { id?: string }): void {
+	if (result.id) part.sourceMessageId = result.id;
 	if (result.isError) {
 		part.state = "output-error";
 		part.rawInput = part.input;

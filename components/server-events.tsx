@@ -24,7 +24,7 @@
  * React glue is an adapter seam like lh:turn-state (untested by
  * precedent, components/session.ts).
  */
-import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { SERVER_EVENT_TYPES, type ServerEventType, type ServerEvents } from "@/src/core";
 
 /** The minimal source surface the provider consumes — EventSource behind
@@ -32,6 +32,7 @@ import { SERVER_EVENT_TYPES, type ServerEventType, type ServerEvents } from "@/s
 export interface NotifySource {
 	close(): void;
 	onOpen(cb: () => void): void;
+	onError?(cb: () => void): void;
 	onEvent(name: string, cb: (data: string) => void): void;
 }
 
@@ -41,6 +42,9 @@ export function openEventsChannel(): NotifySource {
 		close: () => es.close(),
 		onOpen: (cb) => {
 			es.onopen = () => cb();
+		},
+		onError: (cb) => {
+			es.onerror = () => cb();
 		},
 		onEvent: (name, cb) => {
 			es.addEventListener(name, (ev) => cb((ev as MessageEvent).data));
@@ -52,10 +56,29 @@ export function openEventsChannel(): NotifySource {
  *  errors are isolated per the bus's law (one bad consumer never breaks
  *  the window), and dispatch iterates a snapshot (an unsubscribe during
  *  dispatch is safe). */
+export type ServerConnectionStatus = "connecting" | "connected" | "reconnecting" | "unknown";
+
 export function createNotifyHub() {
 	const byType = new Map<string, Set<(data: never) => void>>();
 	const resyncs = new Set<() => void>();
+	const connectionListeners = new Set<() => void>();
+	let connectionStatus: ServerConnectionStatus = "connecting";
+	const setConnectionStatus = (next: ServerConnectionStatus) => {
+		if (connectionStatus === next) return;
+		connectionStatus = next;
+		for (const listener of [...connectionListeners]) {
+			try { listener(); }
+			catch (err) { console.error("[events] connection handler failed:", err); }
+		}
+	};
 	return {
+		connectionStatus: () => connectionStatus,
+		onConnectionChange(cb: () => void) {
+			connectionListeners.add(cb);
+			return () => { connectionListeners.delete(cb); };
+		},
+		fireError() { setConnectionStatus("reconnecting"); },
+		fireConnecting() { setConnectionStatus("connecting"); },
 		subscribe<K extends ServerEventType>(type: K, cb: (payload: ServerEvents[K]) => void) {
 			const set = byType.get(type) ?? new Set<(data: never) => void>();
 			byType.set(type, set);
@@ -93,6 +116,7 @@ export function createNotifyHub() {
 			}
 		},
 		fireOpen() {
+			setConnectionStatus("connected");
 			for (const cb of [...resyncs]) {
 				try {
 					cb();
@@ -107,9 +131,12 @@ export function createNotifyHub() {
 /** Wire one source into a hub — the provider's ENTIRE effect body, factored
  *  out so the wiring is testable without React. Returns the disconnect. */
 export function wireSource(source: NotifySource, hub: ReturnType<typeof createNotifyHub>): () => void {
-	for (const name of SERVER_EVENT_TYPES) source.onEvent(name, (raw) => hub.dispatch(name, raw));
-	source.onOpen(() => hub.fireOpen());
-	return () => source.close();
+	let connected = true;
+	hub.fireConnecting();
+	for (const name of SERVER_EVENT_TYPES) source.onEvent(name, (raw) => { if (connected) hub.dispatch(name, raw); });
+	source.onOpen(() => { if (connected) hub.fireOpen(); });
+	source.onError?.(() => { if (connected) hub.fireError(); });
+	return () => { connected = false; source.close(); };
 }
 
 // ── the React glue ──────────────────────────────────────────────────────────
@@ -118,6 +145,20 @@ const EventsContext = createContext<ReturnType<typeof createNotifyHub> | null>(n
 
 /** Transport adapters may also be mounted in isolation with an injected bridge. */
 export function useNotifyHub() { return useContext(EventsContext); }
+
+const unknownConnection = () => "unknown" as const;
+const noConnectionSubscription = () => () => {};
+
+/** Connection health is separate from model activity: an open events
+ * channel says the server is reachable, not that the model is responding. */
+export function useServerConnectionStatus(): ServerConnectionStatus {
+	const hub = useContext(EventsContext);
+	return useSyncExternalStore(
+		hub?.onConnectionChange ?? noConnectionSubscription,
+		hub?.connectionStatus ?? unknownConnection,
+		unknownConnection,
+	);
+}
 
 export function ServerEventsProvider({ children, connect }: { children: ReactNode; connect?: () => NotifySource }) {
 	const hub = useMemo(() => createNotifyHub(), []);

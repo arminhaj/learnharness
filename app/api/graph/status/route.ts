@@ -27,6 +27,7 @@ export async function GET() {
 			(run.part ? ` · ${run.part.i}/${run.part.n}` : ""),
 		phase: run.phase,
 		startedAt: run.startedAt,
+		progress: run.progress,
 		// Live per-stage usage (the money channel): model + per-step CallUsage,
 		// accumulated as steps bill. Cost and context-window folds are the
 		// consumer's (core/prices.ts helpers — nothing stores dollars).

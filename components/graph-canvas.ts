@@ -71,6 +71,7 @@ import {
 	type GraphRenderSettings,
 	type LayoutNode,
 	type Position,
+	type LearningProgress,
 } from "@/src/core";
 
 export type { GraphRenderSettings };
@@ -83,6 +84,27 @@ export interface CanvasNode {
 	x: number;
 	y: number;
 	label: string;
+	progress?: LearningProgress;
+	ready?: boolean;
+}
+
+/** Presentation edits must not touch the live positions or pending drag. */
+export function applyNodePresentation(nodes: CanvasNode[], updates: ReadonlyMap<string, Pick<CanvasNode, "label" | "progress" | "ready">>): void {
+	for (const node of nodes) {
+		const update = updates.get(node.id);
+		if (update) Object.assign(node, { label: update.label, progress: update.progress, ready: update.ready });
+	}
+}
+
+/** Names, assessments, and saved coordinates are deliberately excluded. */
+export function canvasTopologyKey(data: Pick<CanvasData, "nodes" | "edges" | "clusters" | "logicalEdges" | "impLinks">): string {
+	return JSON.stringify([
+		data.nodes.map((n) => n.id).sort(),
+		data.edges.map((e) => [e.from, e.to]).sort(),
+		(data.logicalEdges ?? []).map((e) => [e.from, e.to]).sort(),
+		data.impLinks ?? [],
+		data.clusters.map((c) => [c.id, [...c.members].sort()]).sort(),
+	]);
 }
 
 /** One directed edge of the DERIVED view (chains-primary, 2026-09-30):
@@ -581,6 +603,9 @@ export class GraphCanvasRenderer {
 	private worldBBox: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
 
 	private data: CanvasData | null = null;
+	private pendingData: CanvasData | null = null;
+	private topologyKey = "";
+	private selectedId: string | null = null;
 	/** id -> node for the current data (avoids O(n^2) scans). */
 	private nodeById = new Map<string, CanvasNode>();
 	private settings: GraphRenderSettings | null = null;
@@ -751,6 +776,28 @@ export class GraphCanvasRenderer {
 	// ── Public API ──
 
 	setData(data: CanvasData): void {
+		const topology = canvasTopologyKey(data);
+		if (this.data && topology === this.topologyKey) {
+			this.data.colors = data.colors;
+			this.data.fontFamily = data.fontFamily;
+			this.setNodePresentation(new Map(data.nodes.map((n) => [n.id, n])));
+			this.setClusterLabels(new Map(data.clusters.map((c) => [c.id, c.label])));
+			return;
+		}
+		// A background update must not sever a pointer-captured gesture.
+		if (this.dragId) { this.pendingData = data; return; }
+		// Topology updates need a new simulation, but a drag that has just
+		// settled still owns unsaved coordinates. Flush them before replacing it.
+		if (this.data && this.simMoved) {
+			this.callbacks.onCommit(Object.fromEntries(this.data.nodes.map((node) => [node.id, { x: node.x, y: node.y }])));
+		}
+		// New concepts/links may arrive during a drag. Keep existing live
+		// positions; only genuinely new concepts consume the server seed.
+		for (const n of data.nodes) {
+			const previous = this.nodeById.get(n.id);
+			if (previous) { n.x = previous.x; n.y = previous.y; }
+		}
+		this.topologyKey = topology;
 		this.data = data;
 		this.nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 		let minX = Infinity;
@@ -786,8 +833,24 @@ export class GraphCanvasRenderer {
 
 	/** Theme changes repaint without resetting positions, physics or commits. */
 	setColors(colors: CanvasColors): void {
+		// A topology update may be waiting for the current drag to finish.
+		// Its later application must retain the latest appearance too.
+		if (this.pendingData) this.pendingData.colors = colors;
 		if (!this.data) return;
 		this.data.colors = colors;
+		this.markDirty();
+	}
+
+	setNodePresentation(updates: ReadonlyMap<string, Pick<CanvasNode, "label" | "progress" | "ready">>): void {
+		if (!this.data) return;
+		applyNodePresentation(this.data.nodes, updates);
+		// Re-wrap labels without rebuilding the simulation or its timers.
+		this.geoVersion++;
+		this.markDirty();
+	}
+
+	setSelected(id: string | null): void {
+		this.selectedId = id;
 		this.markDirty();
 	}
 
@@ -879,6 +942,10 @@ export class GraphCanvasRenderer {
 	 *  first-ever open; afterwards the caller-persisted camera wins). */
 	fit(): void {
 		if (!this.data || this.data.nodes.length === 0 || !this.worldBBox) return;
+		// Drag/physics may have moved nodes since setData. Fit the live map.
+		const xs = this.data.nodes.map((node) => node.x);
+		const ys = this.data.nodes.map((node) => node.y);
+		this.worldBBox = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
 		const w = this.canvas.clientWidth;
 		const h = this.canvas.clientHeight;
 		if (w < 10 || h < 10) return; // layout not ready yet; the ResizeObserver retries
@@ -1025,6 +1092,11 @@ export class GraphCanvasRenderer {
 			} else {
 				// Never heated: a plain click on the node.
 				this.callbacks.onSelect(id, this.eventPos(e));
+			}
+			if (this.pendingData) {
+				const next = this.pendingData;
+				this.pendingData = null;
+				this.setData(next);
 			}
 			return;
 		}
@@ -1669,9 +1741,33 @@ export class GraphCanvasRenderer {
 			ctx.fill(this.headsPath);
 		}
 
-		// 4. Nodes: one cached Path2D, one fill.
-		ctx.fillStyle = data.colors.node;
-		ctx.fill(this.nodesPath);
+		// 4. Understanding uses dot fill as well as color, so status is
+		// legible without color. Readiness is a separate, outer dashed ring.
+		for (const n of data.nodes) {
+			if (isImpNodeId(n.id) || (this.visible && !this.visible.has(n.id))) continue;
+			const color = n.progress === "comfortable" ? "#709b83" : n.progress === "learning" ? "#b58b55" : data.colors.node;
+			ctx.strokeStyle = color;
+			ctx.fillStyle = color;
+			ctx.lineWidth = Math.max(1 / k, nodeR * 0.22);
+			ctx.beginPath();
+			ctx.arc(n.x, n.y, nodeR, 0, Math.PI * 2);
+			if (!n.progress || n.progress === "comfortable") ctx.fill();
+			else {
+				ctx.stroke();
+				if (n.progress === "learning") {
+					ctx.beginPath(); ctx.arc(n.x, n.y, nodeR * 0.4, 0, Math.PI * 2); ctx.fill();
+				}
+			}
+			if (n.ready && n.progress !== "comfortable") {
+				ctx.save(); ctx.setLineDash([2 / k, 3 / k]); ctx.globalAlpha = 0.65;
+				ctx.beginPath(); ctx.arc(n.x, n.y, nodeR + 3 / k, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+			}
+			if (n.id === this.selectedId) {
+				ctx.strokeStyle = data.colors.hoverText;
+				ctx.lineWidth = 1.5 / k;
+				ctx.beginPath(); ctx.arc(n.x, n.y, nodeR + 6 / k, 0, Math.PI * 2); ctx.stroke();
+			}
+		}
 
 		// 6. Node labels — one global gate, faded together. World-scaled
 		// with the graph (they grow as you zoom in, Obsidian-style).

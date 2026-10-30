@@ -1,10 +1,6 @@
-import * as fs from "node:fs";
-import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
-import { graphSnapshot } from "../core/graph.ts";
-import { birthSessionPartition } from "../core/session-clusters.ts";
 import {
 	deleteNodeTraces,
 	type NodeDeletionStats,
@@ -12,6 +8,10 @@ import {
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
 import { callCost } from "./pricing.ts";
+import { effectiveGraphView, deleteLearningNodeMetadata, readLearningGraphState } from "./learning-graph.ts";
+import { resolveLearningNodeId } from "../core/learning-graph.ts";
+import { graphRevision } from "./graph-revision.ts";
+export { graphRevision } from "./graph-revision.ts";
 
 /**
  * Server-side graph entry for the home view (GET /api/graph). A PURE READ:
@@ -20,7 +20,7 @@ import { callCost } from "./pricing.ts";
  * reflects whatever the pipeline has merged so far.
  */
 export function graphView(): GraphSnapshot {
-	return graphSnapshot(stores);
+	return effectiveGraphView();
 }
 
 /** The graph view's cost surface (GET /api/graph/costs — the 2026-09 cost
@@ -43,31 +43,6 @@ export function graphCosts(): GraphCostSummary {
 		.filter((s) => s.extractions?.length)
 		.map((s) => ({ filePath: s.filePath, extractions: s.extractions! }));
 	return graphCostSummary({ chats, sources }, callCost);
-}
-
-/** The graph's version stamp (session-deletion wave 6): the max mtime
- * across every graph data file — ledgers, positions. Moves on ANY
- * graph write (merge append, settle, or a deletion's atomic rewrite),
- * never moves on reads, and needs no bookkeeping of its own: the fs
- * IS the counter. Consumers poll it (the activity feed
- *  carries it; the DELETE response returns it) to know clusters/layout
- *  must refetch — the "graph changed underneath me" signal. */
-export function graphRevision(): number {
-	let revision = 0;
-	for (const file of [
-		LEDGER_FILES.nodes,
-		LEDGER_FILES.chains,
-		LEDGER_FILES.sessions,
-		LEDGER_FILES.coverage,
-		POSITIONS_FILE,
-	]) {
-		try {
-			revision = Math.max(revision, fs.statSync(file).mtimeMs);
-		} catch {
-			/* absent — nothing has ever written it */
-		}
-	}
-	return revision;
 }
 
 // ─── single-node deletion (node interlude, owner-locked full-death) ──────────
@@ -112,10 +87,14 @@ export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
 	}
 	// THE SYNC BLOCK — no awaits below (the doc above): the gate and the
 	// rewrite are one atomic stretch of the event loop.
-	const stats = deleteNodeTraces(stores.graphStore, nodeId);
+	const learningState = readLearningGraphState();
+	nodeId = resolveLearningNodeId(learningState, nodeId);
+	const learningExists = effectiveGraphView(learningState).learning!.nodes.some((node) => node.id === nodeId);
+	const stats = deleteNodeTraces(stores.graphStore, nodeId) ?? (learningExists ? { chainsRemoved: 0 } : null);
 	if (stats === null) {
 		return { ok: false, status: 404, code: "not_found", error: "No such node" };
 	}
+	deleteLearningNodeMetadata(nodeId, learningExists, learningState);
 	return { ok: true, stats, graphRevision: graphRevision() };
 }
 

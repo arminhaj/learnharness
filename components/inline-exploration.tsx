@@ -6,6 +6,7 @@ import { Composer } from "@/components/composer";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { useChatSession } from "@/components/session";
+import { SourcePassage } from "@/components/source-passage";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
 import { endsInFailedTurn, firstSourceTextParts, messageAnchorId, textPartMessageId, type ChatRecord } from "@/src/core";
@@ -298,7 +299,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 	return (
 		<div className="border-t border-primary/15 px-4 pb-3">
 			<div data-testid="exploration-transcript" className="space-y-3 py-3">
-				{messages.map(message => <div key={message.id} className={message.role === "user" ? "border-l-2 border-muted-foreground/30 pl-3 text-sm" : "text-sm"}>
+				{messages.map(message => <SourcePassage key={message.id} messageId={message.role === "user" ? message.id : undefined} className={message.role === "user" ? "border-l-2 border-muted-foreground/30 pl-3 text-sm" : "text-sm"}>
 					{message.role === "user" && message.parts.some(part => part.type === "text") && <div className="text-xs font-medium uppercase text-muted-foreground">You</div>}
 					{message.parts.map((part, index) => {
 						if (part.type === "text") {
@@ -308,7 +309,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 						if (part.type === "reasoning") return <Reasoning key={index} isStreaming={localBusy}><ReasoningTrigger /><ReasoningContent>{part.text ?? ""}</ReasoningContent></Reasoning>;
 						return null;
 					})}
-				</div>)}
+				</SourcePassage>)}
 				{busy && <div role="status" className="text-xs text-muted-foreground">Exploring…</div>}
 				{error && <p role="alert" className="text-sm text-destructive">{explorationErrorMessage(error.message)}</p>}
 				{transportError && <p role="alert" className="text-sm text-destructive">{transportError} <button type="button" className="underline" onClick={() => { void sync(); }}>Retry</button></p>}

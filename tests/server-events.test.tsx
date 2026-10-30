@@ -15,9 +15,11 @@ import { createNotifyHub, wireSource, type NotifySource } from "../components/se
 function fakeSource() {
 	const events = new Map<string, Set<(data: string) => void>>();
 	const opens = new Set<() => void>();
+	const errors = new Set<() => void>();
 	const src: NotifySource & {
 		push(name: string, payload: unknown): void;
 		open(): void;
+		error(): void;
 		closed: boolean;
 	} = {
 		closed: false,
@@ -27,6 +29,7 @@ function fakeSource() {
 		onOpen(cb) {
 			opens.add(cb);
 		},
+		onError(cb) { errors.add(cb); },
 		onEvent(name, cb) {
 			const set = events.get(name) ?? new Set();
 			events.set(name, set);
@@ -38,11 +41,35 @@ function fakeSource() {
 		open() {
 			for (const cb of opens) cb();
 		},
+		error() { for (const cb of errors) cb(); },
 	};
 	return src;
 }
 
 describe("notify hub + wireSource (the client channel wiring)", () => {
+	it("distinguishes server disconnection from model silence and heals on reconnect", () => {
+		const hub = createNotifyHub();
+		const source = fakeSource();
+		const states: string[] = [];
+		const unsubscribe = hub.onConnectionChange(() => states.push(hub.connectionStatus()));
+		const disconnect = wireSource(source, hub);
+		assert.equal(hub.connectionStatus(), "connecting");
+		source.open();
+		source.push("activity-changed", {});
+		assert.equal(hub.connectionStatus(), "connected");
+		source.error();
+		source.error();
+		assert.equal(hub.connectionStatus(), "reconnecting");
+		source.open();
+		assert.deepEqual(states, ["connected", "reconnecting", "connected"]);
+		disconnect();
+		source.error();
+		assert.equal(hub.connectionStatus(), "connected", "a closed source cannot overwrite its replacement's state");
+		unsubscribe();
+		hub.fireError();
+		assert.equal(states.length, 3);
+	});
+
 	it("a named frame dispatches to the right subscriber with the parsed payload", () => {
 		const hub = createNotifyHub();
 		const src = fakeSource();

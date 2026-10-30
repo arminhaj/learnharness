@@ -5,10 +5,12 @@ import assert from "node:assert/strict";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
+import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { createInlineExploration, changeInlineExploration, explorationErrorMessage, InlineExploration, useInlineExplorations, type ExplorationRecord } from "../components/inline-exploration.tsx";
 import { QuestionDock } from "../components/question-dock.tsx";
 import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
+import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
 
 const chat: ExplorationRecord = {
 	id: "child", title: "Why does this happen?", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", messages: [],
@@ -51,6 +53,23 @@ describe("inline exploration transport", () => {
 });
 
 describe("inline exploration archive", () => {
+	it("anchors learner evidence and teacher passages to exact native messages inside the parent lesson", () => {
+		const learnerId = "child_learner";
+		const teacherId = "child_teacher";
+		const record: ExplorationRecord = { ...chat, messages: [
+			{ id: learnerId, role: "user", content: [{ type: "text", text: "My explanation." }, { type: "text", text: "My supporting reasoning." }], timestamp: 1 },
+			{ ...fauxAssistantMessage([fauxText("A useful follow-up."), fauxText("Another paragraph.")]), id: teacherId },
+		] };
+		const html = renderToStaticMarkup(<ServerEventsProvider connect={quietEvents}><InlineExploration chat={record} expanded changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} /></ServerEventsProvider>);
+		for (const messageId of [learnerId, teacherId]) {
+			const href = propositionSessionHref({ provenance: [{ chatId: record.id, subjectId: record.exploration.parentChatId, messageId }] }, record.id);
+			assert.equal(href, `/chat/lesson?exploration=child#message-${messageId}`);
+			assert.equal(messageIdFromHash(href.slice(href.indexOf("#"))), messageId);
+			assert.equal(html.split(`id="message-${messageId}"`).length - 1, 1, "exactly one target for each native message, even with multiple text parts");
+		}
+		assert.match(html, /My explanation/);
+		assert.match(html, /My supporting reasoning/);
+	});
 	it("keeps a returned exploration as a collapsed block rather than navigating to another chat", () => {
 		const html = renderToStaticMarkup(<InlineExploration chat={chat} expanded={false} changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} />);
 		assert.match(html, /data-exploration-id="child"/);

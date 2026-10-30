@@ -79,6 +79,10 @@ export const SOURCES_FILE = path.join(PATHS.graph, "sources.json");
  *  {x,y} resting positions from the incremental settle (core/layout.ts).
  *  Carries an updatedAt stamp for future live-physics conflict handling. */
 export const POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
+/** Curriculum metadata and human corrections; independent versioned sidecar. */
+export const LEARNING_GRAPH_FILE = path.join(PATHS.graph, "learning.json");
+/** Curriculum layout is independent of the reasoning extractor's settle. */
+export const LEARNING_POSITIONS_FILE = path.join(PATHS.graph, "learning-positions.json");
 
 /**
  * Graph render settings (the settings-panel controls): one small JSON blob,
