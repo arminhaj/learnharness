@@ -2,12 +2,12 @@
 
 import { useEffect, useRef } from "react";
 import { Compartment, EditorState, Prec, type Text } from "@codemirror/state";
-import { EditorView, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
+import { EditorView, activateHover, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { cpp } from "@codemirror/lang-cpp";
 import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completeAnyWord, completionStatus, moveCompletionSelection, startCompletion } from "@codemirror/autocomplete";
-import { linter, lintKeymap, setDiagnostics, setDiagnosticsEffect, type Diagnostic } from "@codemirror/lint";
+import { forEachDiagnostic, linter, lintKeymap, setDiagnostics, setDiagnosticsEffect, type Diagnostic } from "@codemirror/lint";
 import { tags } from "@lezer/highlight";
 import { getCM, vim } from "@replit/codemirror-vim";
 import { cn } from "@/lib/utils";
@@ -37,6 +37,19 @@ function completionExtension(context?: ExerciseCodeContext) {
 	return autocompletion({
 		defaultKeymap: false,
 		override: [completion => !completion.state.readOnly && completion.view && getCM(completion.view)?.state.vim?.insertMode ? source(completion) : null],
+	});
+}
+
+function focusNextDiagnostic(editor: EditorView) {
+	const positions: number[] = [];
+	forEachDiagnostic(editor.state, (_diagnostic, from) => positions.push(from));
+	const position = positions.find(from => from > editor.state.selection.main.head) ?? positions[0];
+	if (position === undefined) return;
+	// A collapsed cursor preserves Vim's mode; selecting the diagnostic's full
+	// range would unexpectedly switch Normal mode into Visual mode.
+	editor.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+	activateHover(editor, position, 1, {
+		until: transaction => transaction.docChanged || transaction.newSelection.main.head !== position,
 	});
 }
 
@@ -116,6 +129,13 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 					// Handle completion before Vim consumes Insert-mode keys. Escape
 					// closes suggestions and still reaches Vim to enter Normal mode.
 					Prec.highest(EditorView.domEventHandlers({ keydown: (event, editor) => {
+						if (event.key === "F1" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+							closeCompletion(editor);
+							focusNextDiagnostic(editor);
+							// Consume F1 even without diagnostics so browser help does not
+							// take focus away from the code input.
+							return true;
+						}
 						if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
 							event.stopPropagation();
 							if (!callbacks.current.disabled) callbacks.current.onSubmit?.();

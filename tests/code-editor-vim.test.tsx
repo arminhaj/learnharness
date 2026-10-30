@@ -249,3 +249,43 @@ test("qualified API suggestions rank before unqualified words copied from the dr
 		assert.ok(options.indexOf("BorrowResult::borrowed") < options.indexOf("borrow_book"));
 	} finally { await f.dispose(); }
 });
+
+test("F1 focuses successive diagnostics, shows their explanations, and wraps without editing", async () => {
+	const source = "bad();\nwrong();";
+	const f = await fixture(source, false, { diagnostics: [
+		{ line: 1, column: 1, endColumn: 4, severity: "error", message: "First problem" },
+		{ line: 2, column: 1, endColumn: 6, severity: "warning", message: "Second problem" },
+	] });
+	try {
+		await act(async () => f.view.dispatch({ selection: { anchor: source.length } }));
+		for (const [from, message] of [[0, "First problem"], [7, "Second problem"], [0, "First problem"]] as const) {
+			const event = await f.press("F1");
+			assert.equal(event.defaultPrevented, true);
+			assert.equal(f.view.state.selection.main.from, from);
+			assert.equal(f.view.state.selection.main.to, from);
+			assert.equal(f.cm.state.vim?.visualMode, false);
+			assert.match(f.host.querySelector(".cm-tooltip-lint")?.textContent ?? "", new RegExp(message));
+		}
+		assert.equal(f.view.state.doc.toString(), source);
+		assert.deepEqual(f.changes, []);
+		assert.deepEqual(f.counts(), { submissions: 0, ancestorKeys: 0, documentKeys: 0 });
+	} finally { await f.dispose(); }
+});
+
+test("F1 works in Insert mode and consumes the key harmlessly when there are no errors", async () => {
+	const f = await fixture("okay");
+	try {
+		await f.press("i");
+		const empty = await f.press("F1");
+		assert.equal(empty.defaultPrevented, true);
+		assert.equal(f.cm.state.vim?.insertMode, true);
+		assert.equal(f.view.state.selection.main.head, 0);
+		await f.render(false, { diagnostics: [{ line: 1, column: 2, endColumn: 5, severity: "error", message: "Inspect this symbol" }] });
+		await f.press("F1");
+		assert.equal(f.view.state.selection.main.from, 1);
+		assert.equal(f.view.state.selection.main.to, 1);
+		assert.equal(f.cm.state.vim?.insertMode, true);
+		assert.equal(f.view.state.doc.toString(), "okay");
+		assert.deepEqual(f.counts(), { submissions: 0, ancestorKeys: 0, documentKeys: 0 });
+	} finally { await f.dispose(); }
+});
