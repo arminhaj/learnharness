@@ -34,6 +34,13 @@ export function ChemistryDemo() {
 		</nav>
 		{tab === "question" && <>{answer ? <><AnsweredCard answer={answer} input={quiz} /><button type="button" className="mt-3 rounded-md border px-3 py-2 text-sm" onClick={() => setAnswer(undefined)}>Try again</button></> : <div className="rounded-xl border bg-card"><QuestionDock toolName="quiz" toolCallId="chemistry-example-ester" input={quiz} expanded onExpand={() => {}} onSubmit={setAnswer} dictationClaim={false} /></div>}</>}
 		{tab === "drawing" && <><div className="rounded-xl border bg-card"><PracticeDock chatId="chemistry-demo" problemCallId="chemistry-example-oxidation" input={practice} expanded onExpand={() => {}} onSubmit={(text, molecule) => setSubmitted({ text, molecule })} /></div>{submitted && <section className="mt-5 border-t pt-4"><h2 className="font-medium">Submitted answer</h2>{submitted.molecule && <MoleculeFigure source={submitted.molecule} />}<p>{submitted.text}</p></section>}</>}
-		{tab === "stereo" && <div className="grid gap-5 sm:grid-cols-2"><MoleculeFigure source={{ smiles: "CC[C@H](O)C", label: "2-butanol · one enantiomer" }} /><MoleculeFigure source={{ smiles: "CC[C@@H](O)C", label: "2-butanol · opposite enantiomer" }} /></div>}
+		{tab === "stereo" && <div className="space-y-5">
+			<section className="space-y-2">
+				<h2 className="font-medium">Compare cyclohexane conformers</h2>
+				<p className="text-sm text-muted-foreground">Open View 3D to compare sampled conformers, relative energies, and ring shapes. Changing conformers changes the molecular geometry; dragging the model changes your viewpoint.</p>
+				<MoleculeFigure source={{ smiles: "Br[C@H]1[C@H](C)CCCC1", label: "trans-1-bromo-2-methylcyclohexane" }} />
+			</section>
+			<div className="grid gap-5 sm:grid-cols-2"><MoleculeFigure source={{ smiles: "CC[C@H](O)C", label: "2-butanol · one enantiomer" }} /><MoleculeFigure source={{ smiles: "CC[C@@H](O)C", label: "2-butanol · opposite enantiomer" }} /></div>
+		</div>}
 	</main>;
 }

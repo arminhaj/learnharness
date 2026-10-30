@@ -18,6 +18,56 @@ export interface MoleculeDocument {
 	label?: string;
 }
 
+/** A conservative geometric classification for an isolated, saturated,
+ * six-carbon ring. Other rings are omitted, not assigned a guessed shape. */
+export interface RingConformation {
+	/** Zero-based indices in each returned SDF; ring order is stable. */
+	atomIndices: number[];
+	shape: "chair" | "non-chair" | "near-planar";
+	/** Cremer–Pople polar angle in degrees and amplitude in angstroms. */
+	theta: number;
+	amplitude: number;
+	torsions: number[];
+	/** Relative to the fixed atom order; these are not absolute up/down labels. */
+	chairBasin?: "positive" | "negative";
+}
+
+export interface MoleculeConformer {
+	id: string;
+	sdf: string;
+	/** Force-field potential energy in kcal/mol, not solution free energy. */
+	energy: number;
+	relativeEnergy: number;
+	rings: RingConformation[];
+}
+
+export interface ConformerSearchSummary {
+	method: "MMFF94" | "UFF";
+	requested: number;
+	embedded: number;
+	converged: number;
+	stereoRejected: number;
+	unique: number;
+	returned: number;
+	rmsdThreshold: number;
+	seed: number;
+	stereochemistry: "specified" | "assigned-for-search";
+	/** The single stereoisomer whose conformers were compared. */
+	isomericSmiles: string;
+	energyUnit: "kcal/mol";
+	exhaustive: false;
+}
+
+export interface ConformerResult {
+	/** Lowest sampled energy, or validated imported coordinates. */
+	sdf: string;
+	generated: boolean;
+	warning?: string;
+	/** Imported coordinates have no inferred energy or search metadata. */
+	conformers?: MoleculeConformer[];
+	search?: ConformerSearchSummary;
+}
+
 export const MAX_MOLECULE_ATOMS = 512;
 export const MAX_CHEMISTRY_REQUEST_BYTES = 1_000_000;
 const LIMITS = { smiles: 16_000, molfile: 200_000, sdf: 200_000, ket: 500_000, label: 240, caption: 2_000 };

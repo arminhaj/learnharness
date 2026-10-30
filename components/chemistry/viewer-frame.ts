@@ -7,6 +7,8 @@ export function viewerFrameHtml(scriptUrl: string, channel: string): string {
 (() => {
   const channel = ${JSON.stringify(channel)};
   let viewer;
+  let activeModelId = null;
+  let activeGroup = null;
   function notify(type, extra) { parent.postMessage({channel, type, ...extra}, '*'); }
   function style(mode) {
     viewer.setStyle({}, mode === 'sticks' ? {stick:{radius:0.17}} : {stick:{radius:0.12}, sphere:{scale:0.26}});
@@ -17,8 +19,12 @@ export function viewerFrameHtml(scriptUrl: string, channel: string): string {
     const message = event.data;
     try {
       if (message.type === 'hello') { notify('ready', {}); }
-      else if (message.type === 'clear') { if (viewer) viewer.clear(); }
+      else if (message.type === 'clear') { activeModelId = null; activeGroup = null; if (viewer) viewer.clear(); }
       else if (message.type === 'model') {
+        if (typeof message.modelId !== 'string') return;
+        const previousView = viewer && activeGroup === message.group ? viewer.getView() : null;
+        activeModelId = message.modelId;
+        activeGroup = message.group;
         if (!viewer) {
           const library = window.$3Dmol || window['3Dmol'];
           if (!library) throw new Error('The 3D viewer did not load.');
@@ -29,16 +35,19 @@ export function viewerFrameHtml(scriptUrl: string, channel: string): string {
         const model = viewer.addModel(message.sdf, 'sdf');
         if (!model.selectedAtoms({}).length) throw new Error('No atoms were found in this model.');
         style(message.style);
-        viewer.zoomTo();
+        if (previousView) viewer.setView(previousView);
+        else viewer.zoomTo();
         viewer.resize();
         viewer.render();
-        notify('rendered', {});
-      } else if (viewer && message.type === 'style') style(message.style);
-      else if (viewer && message.type === 'rotate') { viewer.rotate(message.angle, message.axis); viewer.render(); }
-      else if (viewer && message.type === 'zoom') { viewer.zoom(message.factor); viewer.render(); }
-      else if (viewer && message.type === 'reset') { viewer.zoomTo(); viewer.render(); }
-      else if (viewer && message.type === 'resize') { viewer.resize(); viewer.render(); }
-    } catch (error) { notify('error', {error: error instanceof Error ? error.message : String(error)}); }
+        notify('rendered', {modelId: activeModelId});
+      } else if (viewer && message.modelId === activeModelId) {
+        if (message.type === 'style') style(message.style);
+        else if (message.type === 'rotate') { viewer.rotate(message.angle, message.axis); viewer.render(); }
+        else if (message.type === 'zoom') { viewer.zoom(message.factor); viewer.render(); }
+        else if (message.type === 'reset') { viewer.zoomTo(); viewer.render(); }
+        else if (message.type === 'resize') { viewer.resize(); viewer.render(); }
+      }
+    } catch (error) { notify('error', {modelId: message.modelId, error: error instanceof Error ? error.message : String(error)}); }
   });
   notify('ready', {});
 })();

@@ -5,7 +5,7 @@ import path from "node:path";
 import {
 	ChemistryInputError, MAX_CHEMISTRY_REQUEST_BYTES, MAX_MOLECULE_ATOMS,
 	moleculeInput, parseMoleculeDocument, parseMoleculeSource,
-	type MoleculeDocument, type MoleculeSource,
+	type ConformerResult, type MoleculeDocument, type MoleculeSource,
 } from "../core/chemistry.ts";
 
 let rdkitPromise: Promise<MainModule> | undefined;
@@ -53,7 +53,6 @@ export async function normalizeMoleculeDocument(value: unknown): Promise<Molecul
 }
 
 export class ChemistryUnavailableError extends Error {}
-export interface ConformerResult { sdf: string; generated: boolean; warning?: string }
 
 /** Imported coordinates are checked against the same structure as the 2D
  * view; an old SDF must never survive an edit to the answer's bonds. */
@@ -85,18 +84,70 @@ export function chemistryPython(): string {
 }
 
 let conformerJobs = 0;
-export async function generateConformer(source: MoleculeSource): Promise<ConformerResult> {
+
+/** Fail closed if the local helper is an incompatible version. In particular,
+ * never give the viewer NaN energies, an unsorted ensemble, or partial metadata. */
+function generatedResult(value: unknown): ConformerResult {
+	const result = value as ConformerResult | null;
+	const validSdf = (sdf: unknown): sdf is string => typeof sdf === "string" && sdf.length > 0 && sdf.length <= 200_000;
+	const boundedCount = (count: unknown): count is number => typeof count === "number" && Number.isInteger(count) && count >= 0 && count <= 128;
+	if (!result || result.generated !== true || !validSdf(result.sdf)
+		|| (result.warning !== undefined && (typeof result.warning !== "string" || result.warning.length > 2_000))
+		|| !Array.isArray(result.conformers) || result.conformers.length < 1 || result.conformers.length > 128) {
+		throw new Error("Invalid conformer response.");
+	}
+	const search = result.search;
+	if (!search || !["MMFF94", "UFF"].includes(search.method) || search.requested !== 128
+		|| ![search.embedded, search.converged, search.stereoRejected, search.unique, search.returned].every(boundedCount)
+		|| search.embedded > search.requested || search.converged > search.embedded || search.stereoRejected > search.converged
+		|| search.unique > search.converged - search.stereoRejected || search.returned !== search.unique || search.returned !== result.conformers.length
+		|| search.energyUnit !== "kcal/mol" || search.exhaustive !== false || search.rmsdThreshold !== 0.25 || search.seed !== 0xC0DE
+		|| !["specified", "assigned-for-search"].includes(search.stereochemistry)
+		|| typeof search.isomericSmiles !== "string" || search.isomericSmiles.length > 16_000) {
+		throw new Error("Invalid conformer search metadata.");
+	}
+	const ids = new Set<string>();
+	const minimum = result.conformers[0]!.energy;
+	let previousEnergy = -Infinity;
+	for (const conformer of result.conformers) {
+		if (!conformer || typeof conformer.id !== "string" || !/^conformer-\d{1,3}$/.test(conformer.id) || ids.has(conformer.id)
+			|| !validSdf(conformer.sdf) || !Number.isFinite(conformer.energy) || !Number.isFinite(conformer.relativeEnergy)
+			|| conformer.energy < previousEnergy || Math.abs(conformer.relativeEnergy - (conformer.energy - minimum)) > 1e-6
+			|| !Array.isArray(conformer.rings) || conformer.rings.length > 33) {
+			throw new Error("Invalid ranked conformer.");
+		}
+		ids.add(conformer.id);
+		previousEnergy = conformer.energy;
+		for (const ring of conformer.rings) {
+			if (!ring || !Array.isArray(ring.atomIndices) || ring.atomIndices.length !== 6 || new Set(ring.atomIndices).size !== 6
+				|| !ring.atomIndices.every(index => Number.isInteger(index) && index >= 0 && index < MAX_MOLECULE_ATOMS)
+				|| !["chair", "non-chair", "near-planar"].includes(ring.shape)
+				|| !Number.isFinite(ring.theta) || ring.theta < 0 || ring.theta > 180 || !Number.isFinite(ring.amplitude) || ring.amplitude < 0
+				|| !Array.isArray(ring.torsions) || ring.torsions.length !== 6 || !ring.torsions.every(angle => Number.isFinite(angle) && Math.abs(angle) <= 180)
+				|| (ring.shape === "chair" ? !["positive", "negative"].includes(ring.chairBasin ?? "") : ring.chairBasin !== undefined)) {
+				throw new Error("Invalid ring classification.");
+			}
+		}
+	}
+	if (result.sdf !== result.conformers[0]!.sdf) throw new Error("The default conformer must have the lowest sampled energy.");
+	return result;
+}
+
+export async function generateConformer(source: MoleculeSource, options: { search?: boolean } = {}): Promise<ConformerResult> {
 	const parsed = parseMoleculeSource(source);
 	const normalized = await normalizeMolecule(parsed);
 	const imported = await importedConformer(parsed, normalized);
-	if (imported) return imported;
+	if (imported && !options.search) return imported;
 	const python = chemistryPython();
 	if (conformerJobs >= 2) throw new ChemistryUnavailableError("Two 3D models are already being prepared. Please try again shortly.");
 	conformerJobs++;
 	try {
 		return await new Promise<ConformerResult>((resolve, reject) => {
 			// No shell: source arrives on stdin and can never become a command.
-			const child = spawn(python, [path.join(process.cwd(), "scripts", "chemistry-conformer.py")], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+			const child = spawn(python, [path.join(process.cwd(), "scripts", "chemistry-conformer.py")], {
+				stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+				env: { ...process.env, OMP_NUM_THREADS: "1", OPENBLAS_NUM_THREADS: "1", MKL_NUM_THREADS: "1" },
+			});
 			let output = "";
 			let errors = "";
 			let settled = false;
@@ -109,11 +160,11 @@ export async function generateConformer(source: MoleculeSource): Promise<Conform
 			const timer = setTimeout(() => {
 				child.kill("SIGKILL");
 				finish(new ChemistryUnavailableError("3D generation took too long. Try a smaller structure."));
-			}, 25_000);
+			}, 30_000);
 			child.on("error", () => finish(new ChemistryUnavailableError("The local 3D helper could not start. Run python3 scripts/setup-chemistry.py or check LH_CHEMISTRY_PYTHON.")));
 			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
-				if (output.length > 1_000_000) {
+				if (output.length > 8_000_000) {
 					child.kill("SIGKILL");
 					finish(new ChemistryUnavailableError("The generated model exceeded the supported size."));
 				}
@@ -129,7 +180,7 @@ export async function generateConformer(source: MoleculeSource): Promise<Conform
 						finish(code === 2 ? new ChemistryUnavailableError(message) : new ChemistryInputError(message));
 						return;
 					}
-					finish(undefined, { sdf: result.sdf, generated: true, ...(typeof result.warning === "string" && { warning: result.warning }) });
+					finish(undefined, generatedResult(result));
 				} catch {
 					finish(new ChemistryUnavailableError(errors.includes("No module named 'rdkit'") ? "RDKit is missing from the local 3D helper. Run python3 scripts/setup-chemistry.py." : "The local 3D helper failed. Check its Python installation."));
 				}
@@ -141,7 +192,7 @@ export async function generateConformer(source: MoleculeSource): Promise<Conform
 	}
 }
 
-async function requestSource(request: Request): Promise<MoleculeSource> {
+async function requestSource(request: Request): Promise<{ source: MoleculeSource; search: boolean }> {
 	const reader = request.body?.getReader();
 	if (!reader) throw new ChemistryInputError("A molecule is required.");
 	const chunks: Uint8Array[] = [];
@@ -157,7 +208,11 @@ async function requestSource(request: Request): Promise<MoleculeSource> {
 		chunks.push(value);
 	}
 	try {
-		return parseMoleculeSource(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+		const payload: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+		const source = parseMoleculeSource(payload);
+		const search = (payload as Record<string, unknown>).search;
+		if (search !== undefined && typeof search !== "boolean") throw new ChemistryInputError("The conformer search option must be a boolean.");
+		return { source, search: search === true };
 	} catch (error) {
 		if (error instanceof ChemistryInputError) throw error;
 		throw new ChemistryInputError("The molecule request must contain valid JSON.");
@@ -170,11 +225,14 @@ function failure(error: unknown): Response {
 }
 
 export async function chemistryNormalizeResponse(request: Request): Promise<Response> {
-	try { return Response.json(await normalizeMolecule(await requestSource(request))); }
+	try { return Response.json(await normalizeMolecule((await requestSource(request)).source)); }
 	catch (error) { return failure(error); }
 }
 
 export async function chemistryConformerResponse(request: Request): Promise<Response> {
-	try { return Response.json(await generateConformer(await requestSource(request))); }
+	try {
+		const { source, search } = await requestSource(request);
+		return Response.json(await generateConformer(source, { search }));
+	}
 	catch (error) { return failure(error); }
 }

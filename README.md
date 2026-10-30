@@ -124,17 +124,21 @@ python3 scripts/setup-chemistry.py
 
 The setup script creates an isolated `.venv-chemistry` environment and installs the pinned RDKit version. It uses `uv` with Python 3.12 when available, or the invoking Python's `venv` and `pip`. Alternatively, set `LH_CHEMISTRY_PYTHON` to the absolute path of a Python interpreter with RDKit installed before starting LearnHarness. Installation downloads dependencies; subsequent rendering, editing, and conformer generation run locally.
 
-Generated models use ETKDG and a supported force field, preserve specified stereochemistry, and are labeled as one possible conformer. Unspecified stereochemistry is called out. Imported valid 3D SDF coordinates can be viewed without the Python generator. Generation supports one connected molecule with up to 200 non-hydrogen atoms; failures remain local to the 3D panel, and the 2D drawing remains available.
+**View 3D** searches an ETKDG ensemble, optimizes supported conformers with one force field, checks stereochemistry and convergence, removes duplicate geometries, and ranks the remaining conformers by relative energy. The selector opens the lowest-energy conformer found and lets you compare other sampled geometries. Energies identify their method (MMFF94 or UFF) and use kcal/mol relative to the lowest retained conformer; they are potential-energy estimates, not experimental free energies or equilibrium populations. The search does not guarantee a global minimum or exhaustive coverage.
+
+Eligible isolated, saturated six-carbon rings are checked geometrically for chair conformations; fused, bridged, and other unsupported rings remain unclassified. The **Stereochemistry and 3D** example includes substituted cyclohexane for comparing conformers. Switching the selected conformer changes geometry; rotating or tilting only changes the camera.
+
+Specified stereochemistry is preserved; when configurations are unspecified, the search uses one deterministic assignment and calls this out instead of ranking a mixture of stereoisomers. Imported valid 3D SDF coordinates remain viewable without Python, with a separate **Search conformers** action when generation is available. Generation supports one connected molecule with up to 200 non-hydrogen atoms and 512 total atoms after adding hydrogens, with bounded search time and output size; failures remain local to the 3D panel, and the 2D drawing remains available.
 
 Standalone/Electron builds include the JavaScript/WASM assets and Python helper script, **but do not bundle a Python interpreter or `.venv-chemistry`**. Configure `LH_CHEMISTRY_PYTHON` on the machine running the packaged server to enable generated 3D there. The renderer/editor remain available without it.
 
 Focused checks:
 
 ```bash
-NODE_ENV=test node --import tsx --test tests/chemistry*.test.ts
+NODE_ENV=test node --import tsx --test tests/chemistry*.test.ts tests/render-chemistry.test.tsx tests/conformer-viewer.test.tsx
 ```
 
-The engine tests exercise invalid inputs, charge/isotope/stereo round trips, coordinate-source consistency, and API errors. Real conformer tests run when the configured or project-local Python runtime exists, otherwise they are skipped. Browser checks additionally cover drawing layout, editor save/reopen, keyboard isolation, and 3D interaction.
+The engine tests exercise invalid inputs, charge/isotope/stereo round trips, coordinate-source consistency, and API errors. Real conformer tests cover relative-energy ranking, both chair basins, independent ring-geometry fixtures, stereochemistry rejection, convergence, deduplication, and common coordinate alignment. They run when the configured or project-local Python runtime exists, otherwise they are skipped. Viewer tests cover conformer selection, imported-coordinate searches, stale responses, and keyboard isolation. Browser checks additionally cover drawing layout, editor save/reopen, and rendered 3D interaction.
 
 The chemistry integrations use [RDKit](https://github.com/rdkit/rdkit) (BSD-3-Clause), [Ketcher](https://github.com/epam/ketcher) and its Indigo engine (Apache-2.0), and [3Dmol.js](https://github.com/3dmol/3Dmol.js) (BSD-3-Clause). Asset preparation includes their copyright and license notices. Versioned upstream copies and provenance are in [third-party/chemistry](third-party/chemistry/README.md); preserve these notices when redistributing the application and prepared assets.
 
