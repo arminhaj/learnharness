@@ -130,6 +130,44 @@ describe("learning-history source evidence", () => {
 		const output = await findHistoryEpisodes(input, { topics: [], strategies: [], moments: [] }, { engine: submitEngine("submit_learning_history", [{ episodes: [{ ...e, afterId: input[1]!.id }] }, { episodes: [e] }]), signal: new AbortController().signal, onStep: () => { steps++; } });
 		assert.equal(steps, 2); assert.deepEqual(output, [e]);
 	});
+	it("reports every invalid episode together so one retry can repair uncertainty, order and references", async () => {
+		const input = cleaned(historyInputPassages({ messages, updatedAt: "2026-01-01" })), e = episode(input);
+		input[0]!.unclear = ["force or source"];
+		const invalid = [e, { ...e, beforeId: e.afterId, contextIds: ["missing-context"] }];
+		const corrected: HistoryEpisodeInput[] = [{ ...e, support: "uncertain" }, { ...e, beforeId: null }];
+		const fake = submitEngine("submit_learning_history", [{ episodes: invalid }, { episodes: corrected }]);
+		const stream = fake.streamFn;
+		let steps = 0, sawFeedback = false;
+		const output = await findHistoryEpisodes(input, { topics: [], strategies: [], moments: [] }, { engine: { ...fake, streamFn: (model, context, options) => {
+			const feedback = context.messages.find(m => m.role === "toolResult" && m.isError);
+			if (feedback?.role === "toolResult") {
+				const text = feedback.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+				assert.match(text, /Episode 1: Unresolved dictation/);
+				assert.match(text, /Episode 2: An earlier explanation must precede/);
+				assert.match(text, /Episode 2: Unknown context passage: missing-context/);
+				assert.match(text, /Set support to "uncertain"/);
+				sawFeedback = true;
+			}
+			return stream(model, context, options);
+		} }, signal: new AbortController().signal, onStep: () => { steps++; } });
+		assert.equal(sawFeedback, true); assert.equal(steps, 2); assert.deepEqual(output, corrected);
+		assert.match(validateHistoryEpisodes([{ ...e, afterId: "missing-after" }], input)!, /afterId must cite/);
+	});
+	it("keeps the actual validation problems when analysis retries are exhausted", async () => {
+		const input = cleaned(historyInputPassages({ messages, updatedAt: "2026-01-01" })), e = episode(input);
+		input[0]!.unclear = ["force or source"];
+		const invalid = [e, { ...e, beforeId: e.afterId }];
+		await assert.rejects(findHistoryEpisodes(input, { topics: [], strategies: [], moments: [] }, {
+			engine: submitEngine("submit_learning_history", Array.from({ length: 4 }, () => ({ episodes: invalid }))),
+			signal: new AbortController().signal, onStep: () => {},
+		}), error => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /History analysis did not return a valid result/);
+			assert.match(error.message, /Episode 1: Unresolved dictation/);
+			assert.match(error.message, /Episode 2: An earlier explanation must precede/);
+			return true;
+		});
+	});
 });
 
 describe("learning history persistence and backfill", () => {

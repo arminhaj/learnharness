@@ -28,6 +28,8 @@ Selection anchors store a stable source block, visible-text offsets and a conten
 
 Completed cleanup and analysis batches survive interruption and restart. Source fingerprints prevent edited or deleted messages from contributing stale evidence. Concurrent learner changes are read again after every model await. History model usage is recorded in the existing extraction usage log with `purpose: "learning-history"`.
 
+Episode validation reports all rejected evidence references, ordering problems, and uncertainty labels together, with the affected episode numbers. A retry can therefore repair the complete batch rather than guessing which episode failed first. Exhausted retries retain those validation details; they are distinct from provider refusals and missing submissions. Every cited passage with unresolved dictation requires uncertain support, and an earlier explanation must precede the later one in the supplied passage order.
+
 The queue is in-process for the app's existing single-server deployment. Restarting the app stops active work; reopening history resumes from persisted checkpoints. Replay drafts currently stay on the page and are explicitly unassessed. Semantic fidelity of speech cleanup still needs evaluation with real dictation; automated checks cover structure, source attribution and retry behavior, not the quality of a live model's judgment.
 
 ## Verification

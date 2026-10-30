@@ -81,6 +81,7 @@ export async function runSubmitAgent<T>(opts: {
 	validate?: (value: T) => string | null;
 }): Promise<T> {
 	let submitted: T | undefined;
+	let lastValidationProblem: string | null = null;
 	const result = await runSubagent(
 		[
 			// healToolRecord (owner, 2026-10-09): the standard argument heal
@@ -103,7 +104,7 @@ export async function runSubmitAgent<T>(opts: {
 				execute: async (_toolCallId, input) => {
 					const value = opts.fill(input);
 					const problem = opts.validate?.(value) ?? null;
-					if (problem) return invalidInputResult(opts.toolName, [problem]);
+					if (problem) { lastValidationProblem = problem; return invalidInputResult(opts.toolName, [problem]); }
 					submitted = value;
 					return toToolResult(submitted);
 				},
@@ -138,6 +139,7 @@ export async function runSubmitAgent<T>(opts: {
 		// data; do not persist the reply, which may repeat private source text.
 		const refusal = result.newMessages.map(m => (m as LhMessage).providerRefusal).find(Boolean);
 		if (refusal) throw new Error(`The model refused to complete the request${refusal.category ? ` (${refusal.category})` : ""}. No result was submitted.`);
+		if (lastValidationProblem) throw new Error(`${opts.neverSubmitted} ${lastValidationProblem}`);
 		throw new Error(opts.neverSubmitted);
 	}
 	return submitted;

@@ -136,14 +136,18 @@ export function historyBatches<T extends { text: string }>(passages: readonly T[
 
 export function validateHistoryEpisodes(episodes: HistoryEpisodeInput[], passages: readonly HistoryPassage[]): string | null {
 	const source = new Map(passages.map((p, i) => [p.id, { ...p, index: i }]));
-	for (const e of episodes) {
+	const problems: string[] = [];
+	for (const [index, e] of episodes.entries()) {
+		const report = (problem: string) => problems.push(`Episode ${index + 1}: ${problem}`);
 		const after = source.get(e.afterId), before = e.beforeId ? source.get(e.beforeId) : null;
-		if (!after || after.role !== "learner" || !after.substantive) return "A later explanation must cite substantive learner-authored speech.";
-		if (e.beforeId && (!before || before.role !== "learner" || !before.substantive || before.index >= after.index)) return "An earlier explanation must precede the later learner explanation.";
-		if (e.contextIds.some(id => !source.has(id))) return "Unknown context passage.";
-		if ([after, before, ...e.contextIds.map(id => source.get(id))].some(p => p && p.unclear.length) && e.support !== "uncertain") return "Unresolved dictation cannot support a confident assessment.";
+		if (!after || after.role !== "learner" || !after.substantive) report("afterId must cite substantive learner-authored speech.");
+		if (e.beforeId && (!before || before.role !== "learner" || !before.substantive || (after && before.index >= after.index))) report("An earlier explanation must precede the later learner explanation in the passages array. Choose a valid earlier learner beforeId, or use null when no earlier explanation is available.");
+		const unknown = e.contextIds.filter(id => !source.has(id));
+		if (unknown.length) report(`Unknown context passage: ${unknown.join(", ")}.`);
+		const unclear = [...new Set([after, before, ...e.contextIds.map(id => source.get(id))].filter(p => p && p.unclear.length).map(p => p!.id))];
+		if (unclear.length && e.support !== "uncertain") report(`Unresolved dictation cannot support a confident assessment. Set support to "uncertain" because these cited passages have unclear wording: ${unclear.join(", ")}.`);
 	}
-	return null;
+	return problems.length ? problems.join("\n") : null;
 }
 
 export const strategyKey = (name: string) => name.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
