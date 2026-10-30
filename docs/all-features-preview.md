@@ -1,8 +1,8 @@
 # All-features preview
 
-`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, subject-aware learning maps, learning history, the code snippet workbench, and the chemistry interface.
+`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, subject-aware learning maps, learning history, the code snippet workbench, the chemistry interface, and problem-set teaching.
 
-The node graph overhaul is merged into `main`. Learning history, the code snippet workbench, and the chemistry interface retain their own experimental branches; completed commits from those branches are integrated here and remain outside `main`.
+The node graph overhaul is merged into `main`. Learning history, the code snippet workbench, the chemistry interface, and problem-set teaching retain their own experimental branches; completed commits from those branches are integrated here and remain outside `main`.
 
 ## What to try
 
@@ -11,6 +11,7 @@ The node graph overhaul is merged into `main`. Learning history, the code snippe
 - On Home, open a concept from the prerequisite dots or the iceberg. Try its metadata, subject correction, **Learn this concept**, and **Test my understanding** actions.
 - In Iceberg, change **Subject**. Concepts, study groups, progress counts, unlocks, and search results stay within that subject.
 - In a **teaching session**, choose **Explore this** beneath a completed tutor explanation. Follow the tangent, then choose **Return to lesson** to resume the original question and draft. Inline explorations are not available in practice sessions.
+- To work through an assignment, start a **Teaching** session with its file path and ask to work through every question. The teacher starts at Question 1, labels original assigned questions, teaches prerequisites as needed, and retains checked guided solutions and unfinished subparts. See [problem-set teaching](problem-set-teaching.md).
 - After answering, inspect automatic understanding updates and their source links. Evidence from an inline exploration should open the exact passage inside its parent lesson. Reading an explanation alone does not mark a concept understood.
 - Open **Learning history** in the sidebar, or select a passage in a teaching session and choose **Mark this moment**. See [learning history](learning-history.md) for analysis, speech cleanup, and source attribution.
 - Choose **Write code** in a supported input, or open `/code-demo` and `/code-demo/api` to try C++ exercises, Vim controls, completion, and F1 diagnostics. See [code workspaces](code-workspaces.md) for compiler and local execution requirements.
