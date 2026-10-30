@@ -16,7 +16,7 @@ import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog"
 import { CompactionCutDivider, CompactionMomentDivider, type CompactionDividerData } from "@/components/compaction-divider";
 import { Composer } from "@/components/composer";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
+import { Reasoning, ReasoningContent, ReasoningStatus, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { useChatSession } from "@/components/session";
 import { SourcePassage } from "@/components/source-passage";
 import { useServerEvent, useServerResync } from "@/components/server-events";
@@ -233,7 +233,7 @@ export function InlineExploration({ chat, expanded, changing, canReopen, initial
 function ExplorationConversation({ chat, active, changing, initialPrompt, onInitialDelivered, onClose, onOpenPlan, dictationSlot }: {
 	chat: ExplorationRecord; active: boolean; changing: boolean; initialPrompt?: string; onInitialDelivered: () => void; onClose: () => void; onOpenPlan?: (messages: LhViewMessage[]) => void; dictationSlot?: ReactNode;
 }) {
-	const { messages, nativeMessages, send, status, error, setMessages, resumeStream, setReattachSettled, submitAnswer, dismissQuestion, questionDraft, saveQuestionDraft } = useChatSession({ chatId: chat.id, initialMessages: chat.messages });
+	const { messages, nativeMessages, send, status, error, reconcileTurn, resumeStreamIfIdle, setReattachSettled, submitAnswer, dismissQuestion, questionDraft, saveQuestionDraft } = useChatSession({ chatId: chat.id, initialMessages: chat.messages });
 	const parentActions = useContext(ChatActionsContext);
 	const pending = findPendingToolCall(messages, pendingQuestionOf(nativeMessages));
 	const pendingId = pending?.key ?? null;
@@ -270,24 +270,31 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 	const sync = useCallback(async () => {
 		const generation = ++syncGeneration.current;
 		try {
-			const record = await responseBody<ChatRecord & { turnInFlight?: boolean; turnError?: string; compacting?: boolean }>(await fetch(`/api/chats/${chat.id}`));
-			if (generation !== syncGeneration.current) return;
-			setTransportError(null);
-			setRemoteBusy(!!record.turnInFlight);
-			setCompacting(!!record.compacting);
-			if (!busyRef.current) {
-				setMessages(record.messages, record.turnError);
-				if (record.turnInFlight) resumeStream();
+			// The model owns transcript recovery: a notification can arrive while
+			// this view still waits for an SSE terminal, or after a newer send.
+			const result = await reconcileTurn();
+			if (generation !== syncGeneration.current || result === "superseded") return;
+			if (result === "unavailable") {
+				if (!busyRef.current) setTransportError("Could not load this exploration.");
+				return;
 			}
+			setTransportError(null);
+			setRemoteBusy(result === "running");
+			if (result === "running") resumeStreamIfIdle();
+			// Metadata is separate from canonical message adoption. A late
+			// response here cannot replace a new turn's optimistic/live tail.
+			const record = await responseBody<{ compacting?: boolean }>(await fetch(`/api/chats/${chat.id}`));
+			if (generation !== syncGeneration.current) return;
+			setCompacting(!!record.compacting);
 		} catch (cause) {
 			if (generation === syncGeneration.current) setTransportError(cause instanceof Error ? cause.message : "Could not load this exploration.");
 		} finally { if (generation === syncGeneration.current) setLoading(false); }
-	}, [chat.id, setMessages, resumeStream]);
-	setReattachSettled(() => { setRemoteBusy(false); void sync().catch(() => {}); });
+	}, [chat.id, reconcileTurn, resumeStreamIfIdle]);
+	setReattachSettled(() => { void sync().catch(() => {}); });
 	useEffect(() => { void sync().catch(() => {}); return () => { syncGeneration.current++; }; }, [sync]);
 	useServerEvent("turn-started", ({ chatId }) => { if (chatId === chat.id && !busyRef.current) void sync().catch(() => {}); });
-	useServerEvent("turn-settled", ({ chatId }) => { if (chatId === chat.id) { setRemoteBusy(false); if (!busyRef.current) void sync().catch(() => {}); } });
-	useServerResync(() => { if (!busyRef.current) void sync().catch(() => {}); });
+	useServerEvent("turn-settled", ({ chatId }) => { if (chatId === chat.id) void sync().catch(() => {}); });
+	useServerResync(() => { void sync().catch(() => {}); });
 	useServerEvent("compaction-changed", ({ chatId, running }) => { if (chatId === chat.id) { setCompacting(running); if (!running && !busyRef.current) void sync(); } });
 	useServerEvent("record-changed", ({ chatId }) => { if (chatId === chat.id && !busyRef.current) void sync(); });
 	// Own-stream settle can arrive before the stream closes. Adopt durable
@@ -400,7 +407,10 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 								const id = textPartMessageId(part.id);
 								return <div key={part.id || index} id={id && firstParts.get(id) === part.id ? messageAnchorId(id) : undefined} data-source-message-id={message.role !== "user" ? id ?? undefined : undefined} data-source-part-id={part.id}>{message.role === "user" ? <p className="whitespace-pre-wrap">{part.text}</p> : <MessageResponse>{part.text}</MessageResponse>}{message.role !== "user" && id && firstParts.get(id) === part.id && <MarkLearningMoment messageId={id} />}</div>;
 							}
-							if (part.type === "reasoning") return <Reasoning key={index} isStreaming={localBusy}><ReasoningTrigger /><ReasoningContent>{part.text ?? ""}</ReasoningContent></Reasoning>;
+							if (part.type === "reasoning") {
+								if (!part.text?.trim()) return part.state === "streaming" ? <ReasoningStatus key={index} className="mb-4" /> : null;
+								return <Reasoning key={index} isStreaming={part.state === "streaming"}><ReasoningTrigger /><ReasoningContent>{part.text}</ReasoningContent></Reasoning>;
+							}
 							if (part.type === "data-plan-block") return <PlanBlock key={index} data={part.data as PlanBlockData} onOpen={() => onOpenPlan?.(messages)} />;
 							if (part.type === "data-compaction") return <CompactionMomentDivider key={index} data={part.data as CompactionDividerData} />;
 							if (part.type === "data-compaction-cut") return <CompactionCutDivider key={index} data={part.data as CompactionDividerData} />;
@@ -414,7 +424,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 						})}
 					</SourcePassage>;
 				})}
-				{busy && <div role="status" className="text-xs text-muted-foreground">Exploring…</div>}
+				{busy && !messages.at(-1)?.parts.some(part => part.state === "streaming" || part.state === "input-streaming") && <ReasoningStatus />}
 				{error && <p role="alert" className="text-sm text-destructive">{explorationErrorMessage(error.message)}</p>}
 				{transportError && <p role="alert" className="text-sm text-destructive">{transportError} <button type="button" className="underline" onClick={() => { void sync(); }}>Retry</button></p>}
 				{compacting && <div role="status" className="text-xs text-muted-foreground">Compacting this exploration…</div>}

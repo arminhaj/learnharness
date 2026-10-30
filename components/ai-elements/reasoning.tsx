@@ -16,10 +16,7 @@ import {
   memo,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
-  useRef,
-  useState,
 } from "react";
 import { Streamdown } from "streamdown";
 
@@ -51,8 +48,6 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   onOpenChange?: (open: boolean) => void;
 };
 
-const AUTO_CLOSE_DELAY = 1000;
-
 export const Reasoning = memo(
   ({
     className,
@@ -63,12 +58,8 @@ export const Reasoning = memo(
     children,
     ...props
   }: ReasoningProps) => {
-    // COLLAPSED BY DEFAULT, ALWAYS (owner, streaming round 2026-10-01):
-    // the old default opened on streaming and an auto-open effect
-    // re-fought a manual collapse — the block "wasn't collapsible until
-    // it finished". Collapsed is the default; opening is always the
-    // learner's click; the auto-close after the stream still tidies a
-    // row the learner had opened.
+    // Start collapsed and retain the learner's choice across updates and
+    // completion. Stream state must not reopen or close a summary for them.
     const resolvedDefaultOpen = defaultOpen ?? false;
 
     const [isOpen, setIsOpen] = useControllableState<boolean>({
@@ -76,26 +67,6 @@ export const Reasoning = memo(
       onChange: onOpenChange,
       prop: open,
     });
-    const hasEverStreamedRef = useRef(isStreaming);
-    const [hasAutoClosed, setHasAutoClosed] = useState(false);
-
-    // Auto-close when streaming ends (once only, and only if it ever streamed)
-    useEffect(() => {
-      if (
-        hasEverStreamedRef.current &&
-        !isStreaming &&
-        isOpen &&
-        !hasAutoClosed
-      ) {
-        const timer = setTimeout(() => {
-          setIsOpen(false);
-          setHasAutoClosed(true);
-        }, AUTO_CLOSE_DELAY);
-
-        return () => clearTimeout(timer);
-      }
-    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
-
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {
         setIsOpen(newOpen);
@@ -129,17 +100,22 @@ export type ReasoningTriggerProps = ComponentProps<
   getThinkingMessage?: (isStreaming: boolean) => ReactNode;
 };
 
-/* The settled label (owner round, 2026-10-05): static "Agent's thinking" —
-   the duration was live-turn state that died on remount anyway ("thought
-   for a few seconds"), bookkeeping for information we knowingly lose. The
-   label pairs with the user's collapsed "Your thinking" rows — one
-   language; motion (spinner + shimmer) stays the working signal. */
 const defaultGetThinkingMessage = (isStreaming: boolean) => {
   if (isStreaming) {
-    return <Shimmer duration={1}>Thinking...</Shimmer>;
+    return <Shimmer duration={1}>Working…</Shimmer>;
   }
-  return <p>AGENT’S THINKING</p>;
+  return <span>Reasoning summary</span>;
 };
+
+/** An active response without public summary text has no disclosure to open. */
+export function ReasoningStatus({ className }: { className?: string }) {
+  return (
+    <div className={cn("flex items-center gap-2 text-muted-foreground text-xs font-medium uppercase tracking-wide", className)}>
+      <BrailleSpinner label="Working" />
+      <Shimmer duration={1}>Working…</Shimmer>
+    </div>
+  );
+}
 
 export const ReasoningTrigger = memo(
   ({
@@ -175,7 +151,7 @@ export const ReasoningTrigger = memo(
                 the component default (h-3) — IDENTICAL to the placeholder
                 spinner (owner, 2026-10-02): the handoff between the two
                 states must be visually seamless, one size everywhere. */}
-            {isStreaming && <BrailleSpinner label="Thinking" />}
+            {isStreaming && <BrailleSpinner label="Working" />}
             {getThinkingMessage(isStreaming)}
             <ChevronDownIcon
               className={cn(

@@ -88,11 +88,12 @@ export interface LiveTurnState {
 	 *  input-streaming (the shimmer); settled dangling calls render
 	 *  input-available (the dock mounts from the record). */
 	inFlight: boolean;
-	/** Ids of the messages THIS consume is streaming (optimistic round 3,
-	 *  2026-10-02): an arrived-but-empty streaming message projects one
-	 *  empty reasoning part — the thinking row — so the placeholder's
-	 *  handoff is seamless; settled empty messages stay hidden. */
+	/** Assistant messages observed during this consume. Their unresolved
+	 * calls can remain live after that response has finished streaming. */
 	streamingIds: ReadonlySet<string>;
+	/** The assistant response receiving provider events now. Older messages
+	 * can remain in streamingIds while their tools run during this turn. */
+	activeMessageId?: string | null;
 }
 
 function textPart(text: string): LhViewPart {
@@ -223,11 +224,15 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 			// back to a spinner mid-transcript; live cards belong at the
 			// bottom, and this gate is what puts them there by construction).
 			const streamingMessage = live?.streamingIds.has(m.id) === true;
+			const activeMessage = live?.inFlight === true && live.activeMessageId === m.id;
 			for (const [contentIndex, block] of assistant.content.entries()) {
 				if (block.type === "text") {
 					rest.push({ type: "text", id: `${m.id}-t${textN++}`, text: block.text, state: "done" });
 				} else if (block.type === "thinking") {
-					reasoning.push({ type: "reasoning", id: `${m.id}-r${reasoningN++}`, text: block.thinking, state: "done" });
+					const id = `${m.id}-r${reasoningN++}`;
+					// Providers can retain an opaque reasoning signature without
+					// a public summary. Only actual summary text is expandable.
+					if (block.thinking.trim()) reasoning.push({ type: "reasoning", id, text: block.thinking, state: activeMessage ? "streaming" : "done" });
 				} else if (block.type === "toolCall") {
 					const part = toolPartOf(block, live, streamingMessage);
 					if ((QUESTION_TOOLS as readonly string[]).includes(block.name)) {
@@ -264,16 +269,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 			}
 			const parts: LhViewPart[] = [...reasoning, ...rest];
 			if (parts.length === 0) {
-				// An arrived-but-silent STREAMING message (owner, optimistic
-				// round 3, 2026-10-02): the turn's first applied event can
-				// carry empty content — project ONE empty reasoning part so
-				// the message's ARRIVAL renders the thinking row (chat.tsx's
-				// Reasoning isStreamings the last part: the same spinner +
-				// shimmer as the placeholder it replaces — the handoff is
-				// seamless and the two can never double). Settled empty
-				// messages stay hidden (presentation-only).
-				if (live?.streamingIds.has(m.id)) {
-					parts.push({ type: "reasoning", id: `${m.id}-r0`, text: "", state: "done" });
+				// Keep one working placeholder for the current silent response,
+				// never an empty disclosure for a response that already ended.
+				// Older projection callers may not supply an active message yet.
+				const silentResponseActive = live?.activeMessageId === undefined ? streamingMessage : activeMessage;
+				if (live?.inFlight && silentResponseActive) {
+					parts.push({ type: "reasoning", id: `${m.id}-r0`, text: "", state: "streaming" });
 				} else {
 					continue;
 				}

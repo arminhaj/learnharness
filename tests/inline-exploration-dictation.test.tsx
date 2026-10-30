@@ -52,8 +52,9 @@ class MeterResizeObserver {
 }
 
 const quietEvents = (): NotifySource => ({ close() {}, onOpen() {}, onEvent() {} });
-const child: ExplorationRecord = {
+const child: ExplorationRecord & { turnInFlight: boolean } = {
 	id: "dictation_child", title: "Energy derivation", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z",
+	turnInFlight: false,
 	exploration: { parentChatId: "lesson", sourceMessageId: "m_source", parentTitle: "Physics", topic: "Energy derivation", status: "active" },
 	messages: [
 		{ id: "child_user", role: "user", content: [{ type: "text", text: "Help me derive energy." }], timestamp: 1 },

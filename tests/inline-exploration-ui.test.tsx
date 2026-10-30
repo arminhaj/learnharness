@@ -13,10 +13,12 @@ import type { LhViewMessage } from "../src/core/view.ts";
 import { QuestionDock } from "../components/question-dock.tsx";
 import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
+import { useChatSession } from "../components/session.ts";
 import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
 
-const chat: ExplorationRecord = {
+const chat: ExplorationRecord & { turnInFlight: boolean } = {
 	id: "child", title: "Why does this happen?", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", messages: [],
+	turnInFlight: false,
 	exploration: { parentChatId: "lesson", sourceMessageId: "m_source", parentTitle: "Django", topic: "Why does this happen?", status: "closed" },
 };
 
@@ -128,7 +130,10 @@ async function withExplorationDOM(run: (host: HTMLElement, root: ReturnType<type
 	const dom = parseHTML("<html><body></body></html>");
 	const saved = new Map<string, PropertyDescriptor | undefined>();
 	for (const [key, value] of Object.entries({ window: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent,
-		location: { href: "http://localhost/chat/lesson", hash: "" }, IS_REACT_ACT_ENVIRONMENT: true })) {
+		location: { href: "http://localhost/chat/lesson", hash: "" }, IS_REACT_ACT_ENVIRONMENT: true,
+		getComputedStyle: () => ({ display: "block", animationName: "none" }),
+		requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0),
+		cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle) })) {
 		saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
 		Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 	}
@@ -143,6 +148,88 @@ async function withExplorationDOM(run: (host: HTMLElement, root: ReturnType<type
 }
 
 describe("exploration request races", () => {
+	it("a running reconciliation cannot reattach over an input started before React renders its busy state", async () => {
+		await withExplorationDOM(async (_host, root) => {
+			let session!: ReturnType<typeof useChatSession>;
+			let finishPost!: (response: Response) => void;
+			let posts = 0;
+			let streams = 0;
+			globalThis.fetch = (async (url: string) => {
+				if (url === "/api/chat") { posts++; return new Promise<Response>(resolve => { finishPost = resolve; }); }
+				if (url.endsWith("/stream")) { streams++; throw new Error("A notification must not replace the admitted input's reader."); }
+				return Response.json({ ...chat, turnInFlight: true });
+			}) as typeof fetch;
+			function Fixture() { session = useChatSession({ chatId: "child", initialMessages: [] }); return null; }
+			await act(async () => root.render(<Fixture />));
+			await act(async () => {
+				const beforeRender = session;
+				assert.equal(await beforeRender.reconcileTurn(), "running");
+				const sending = beforeRender.send({ type: "text", text: "My new answer." });
+				assert.equal(beforeRender.status, "ready", "the React snapshot is still idle");
+				assert.equal(beforeRender.resumeStreamIfIdle(), false, "the current model already owns the newer input");
+				finishPost(Response.json({ error: "Offline for this test." }, { status: 503 }));
+				await sending;
+			});
+			assert.equal(posts, 1);
+			assert.equal(streams, 0);
+		});
+	});
+	for (const notification of ["turn-settled", "resync"] as const) {
+		it(`${notification} recovers a completed exploration whose stream never delivered a terminal`, async () => {
+			await withExplorationDOM(async (host, root) => {
+				const record: ExplorationRecord = { ...chat, exploration: { ...chat.exploration, status: "active" }, messages: [
+					{ ...fauxAssistantMessage([{ type: "thinking", thinking: "An earlier available summary." }, fauxText("Earlier explanation.")]), id: "earlier" },
+					{ id: "learner", role: "user", content: [{ type: "text", text: "A follow-up answer." }], timestamp: 2 },
+				] };
+				const completed: ExplorationRecord = { ...record, messages: [...record.messages,
+					{ ...fauxAssistantMessage([fauxText("The completed response.")]), id: "completed" },
+				] };
+				let running = true;
+				let streams = 0;
+				let cancellations = 0;
+				let writes = 0;
+				const handlers = new Map<string, (raw: string) => void>();
+				let reopened = () => {};
+				const source: NotifySource = { close() {}, onOpen(callback) { reopened = callback; }, onEvent(name, callback) { handlers.set(name, callback); } };
+				const notify = () => notification === "resync" ? reopened() : handlers.get("turn-settled")!(JSON.stringify({ chatId: "child" }));
+				globalThis.fetch = (async (url: string, init?: RequestInit) => {
+					if (init?.method === "POST") { writes++; throw new Error("Recovery must never submit an input."); }
+					if (url.startsWith("/api/jobs")) return Response.json({ jobs: [] });
+					if (url.endsWith("/stream")) {
+						streams++;
+						return new Response(new ReadableStream<Uint8Array>({
+							start(controller) {
+								controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "message_start", message: fauxAssistantMessage([{ type: "thinking", thinking: "" }]) })}\n\n`));
+							},
+							cancel() { cancellations++; },
+						}));
+					}
+					return Response.json({ ...(running ? record : completed), turnInFlight: running });
+				}) as typeof fetch;
+				await act(async () => root.render(<ServerEventsProvider connect={() => source}>
+					<InlineExploration chat={record} expanded changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} />
+				</ServerEventsProvider>));
+				assert.equal(streams, 1);
+				assert.equal(host.querySelectorAll('[aria-label="Working"]').length, 1, "only the blank live response has a working indicator");
+				const summary = [...host.querySelectorAll("button")].find(button => button.textContent?.includes("Reasoning summary"));
+				assert.ok(summary, "an older summary stays completed while the current response runs");
+				assert.equal(summary.getAttribute("aria-expanded"), "false");
+				assert.equal([...host.querySelectorAll("button")].some(button => button.textContent?.includes("Working")), false, "the empty live response has no disclosure");
+				await act(async () => notify());
+				assert.equal(cancellations, 0, "a notification cannot cancel a response the server still owns");
+				assert.equal(streams, 1, "a running response keeps its existing reader");
+				running = false;
+				await act(async () => notify());
+				assert.equal(cancellations, 1, "only the stale view reader is released");
+				assert.equal(writes, 0);
+				assert.equal(streams, 1);
+				assert.match(host.textContent ?? "", /The completed response\./);
+				assert.equal(host.querySelector('[aria-label="Working"]'), null);
+				const returnButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Return to lesson"));
+				assert.equal(returnButton?.disabled, false, "server-confirmed completion releases the exploration controls");
+			});
+		});
+	}
 	it("reopening an older exploration preserves chronological sibling order", async () => {
 		await withExplorationDOM(async (_host, root) => {
 			const newer: ExplorationRecord = { ...chat, id: "newer", createdAt: "2026-10-29T01:00:00Z" };

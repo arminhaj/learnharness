@@ -32,6 +32,15 @@ describe("QueuedSteersBody (the quiet queue above the composer)", () => {
 	it("empty queue renders nothing", () => {
 		assert.equal(renderToStaticMarkup(<QueuedSteersBody steers={[]} />), "");
 	});
+
+	it("keeps a failed follow-up readable without implying confirmed delivery", () => {
+		const text = "Keep my complete follow-up, including this second sentence.";
+		const html = renderToStaticMarkup(<QueuedSteersBody steers={[{ id: "retained", text, error: "Connection closed" }]} />);
+		assert.match(html, /Message kept — delivery unconfirmed/);
+		assert.match(html, /role="status"/);
+		assert(html.includes(text));
+		assert.doesNotMatch(html, /truncate/);
+	});
 });
 
 describe("visibleQueuedSteers (the fold: a line dies when its card lands)", () => {
