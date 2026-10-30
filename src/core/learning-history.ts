@@ -145,7 +145,19 @@ export function validateHistoryEpisodes(episodes: HistoryEpisodeInput[], passage
 }
 
 export const strategyKey = (name: string) => name.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-export interface HistoryRunStatus { running: boolean; chatId?: string; stage?: "cleaning" | "finding"; completed: number; total: number; error?: string }
+export interface HistoryRunStatus {
+	running: boolean; chatId?: string; stage?: "cleaning" | "finding";
+	/** Settled attempts, including failures; never use this as a success count. */
+	completed: number; total: number; succeeded: number; failed: number; cancelled: number; skipped: number;
+	stopped?: boolean; error?: string; errorChatId?: string;
+}
+
+export function historyErrorMessage(error: string): string {
+	if (/claude CLI.*(?:admitt|admission|compatibility|handoff|waiting for results)/i.test(error)) return "Claude did not complete its handoff to LearnHarness. This session can be retried.";
+	if (/model refused|safeguards flagged|model_refusal/i.test(error)) return "Claude declined to return a result for this session.";
+	if (/Configure an extraction model/i.test(error)) return error;
+	return "This session could not be analyzed. Completed work has been kept.";
+}
 export interface LearningHistorySnapshot {
 	enabled: boolean; sessions: { id: string; title: string; parentId?: string; updatedAt: string; analyzedAt: string | null; error: string | null; pending: boolean }[];
 	passages: Record<string, HistoryPassage>; episodes: HistoryEpisode[]; moments: LearningMoment[];

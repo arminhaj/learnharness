@@ -8,9 +8,9 @@ export async function GET(request: Request) { try { const chatId = new URL(reque
 export async function POST(request: Request) {
 	try {
 		const body = await request.json();
-		if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["chatId", "cancel"].includes(key)) || (body.chatId !== undefined && (typeof body.chatId !== "string" || !body.chatId)) || (body.cancel !== undefined && typeof body.cancel !== "boolean")) throw new HistoryRequestError("Invalid history request.");
+		if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["chatId", "cancel", "retryFailed"].includes(key)) || (body.chatId !== undefined && (typeof body.chatId !== "string" || !body.chatId)) || (body.cancel !== undefined && typeof body.cancel !== "boolean") || (body.retryFailed !== undefined && typeof body.retryFailed !== "boolean") || (body.retryFailed && (body.cancel || body.chatId))) throw new HistoryRequestError("Invalid history request.");
 		if (body.cancel) { learningHistory.cancel(); return Response.json({ stopped: true }); }
-		return Response.json(learningHistory.refresh(body.chatId), { status: 202 });
+		return Response.json(learningHistory.refresh(body.chatId, body.retryFailed === true), { status: 202 });
 	} catch (error) { return errorResponse(error instanceof SyntaxError ? new HistoryRequestError("Invalid JSON body.") : error); }
 }
 export async function PATCH(request: Request) {

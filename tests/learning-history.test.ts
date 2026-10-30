@@ -178,10 +178,52 @@ describe("learning history persistence and backfill", () => {
 		let entered!: () => void; const began = new Promise<void>(resolve => { entered = resolve; });
 		const { chat, service } = fixture({ analyze: async input => { entered(); await gate; return [episode(input)]; } });
 		service.refresh(chat.id); await began;
+		assert.deepEqual(service.refresh(chat.id), { queued: 0 }, "refreshing an unchanged active session cannot count it twice");
 		service.mutate({ action: "mark", chatId: chat.id, messageId: "help", kind: "clicked", note: "This made it clear", surface: "session" });
 		release(); await service.idle();
 		assert.equal(service.snapshot().moments[0]!.note, "This made it clear");
 		assert.equal(service.snapshot().sessions.find(s => s.id === chat.id)!.pending, false);
+		assert.equal(service.snapshot().status.total, 2, "the changed marker adds exactly one new attempt");
+		assert.equal(service.snapshot().status.succeeded, 2);
+		assert.equal(service.snapshot().status.failed, 0);
+	});
+	it("counts mixed outcomes and retries only failed sessions, reusing saved cleanup", async () => {
+		const scope = new Set<string>(); let shouldFail = true;
+		const { chat, historyStore, calls, service } = fixture({
+			chatStore: { ...chatStore, listChats: () => chatStore.listChats().filter(c => scope.has(c.id)) },
+			analyze: async input => { if (shouldFail && input[0]!.text.startsWith("fail")) throw new Error("Test handoff failure"); return [episode(input)]; },
+		});
+		const failed = chatStore.createChat("Failed session", undefined, { messages: [user("before", "fail: motion needs force"), ...messages.slice(1)] });
+		scope.add(chat.id); scope.add(failed.id);
+		assert.deepEqual(service.refresh(), { queued: 2 }); await service.idle();
+		let status = service.snapshot().status;
+		assert.deepEqual([status.total, status.completed, status.succeeded, status.failed], [2, 2, 1, 1]);
+		assert.equal(service.snapshot().sessions.filter(s => !s.pending).length, 1);
+		const saved = structuredClone(historyStore.read().sources[chat.id]);
+		const pending = chatStore.createChat("Unattempted", undefined, { messages }); scope.add(pending.id);
+		shouldFail = false;
+		assert.deepEqual(service.refresh(undefined, true), { queued: 1 }); await service.idle();
+		status = service.snapshot().status;
+		assert.deepEqual([status.total, status.completed, status.succeeded, status.failed], [1, 1, 1, 0]);
+		assert.equal(calls.clean, 2, "the failed analysis reuses its completed cleanup");
+		assert.deepEqual(historyStore.read().sources[chat.id], saved, "successful sources remain untouched");
+		assert.equal(historyStore.read().sources[pending.id], undefined);
+		assert.equal(service.snapshot().sessions.find(s => s.id === failed.id)!.error, null);
+	});
+	it("reports interruptions separately and keeps queued sessions unattempted", async () => {
+		let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+		const { chat, service } = fixture({ clean: async input => { await gate; return input.map(p => ({ id: p.id, text: p.text, unclear: [] })); } });
+		const queued = chatStore.createChat("Queued session", undefined, { messages });
+		service.refresh(chat.id); service.refresh(queued.id); service.cancel();
+		assert.throws(() => service.refresh(chat.id), /stopping/, "no requests disappear into a stopping worker");
+		release(); await service.idle();
+		const status = service.snapshot().status;
+		assert.deepEqual([status.total, status.completed, status.succeeded, status.failed, status.cancelled], [2, 1, 0, 0, 1]);
+		assert.equal(status.stopped, true);
+		assert.equal(service.snapshot().sessions.find(s => s.id === chat.id)!.error, null);
+		service.refresh(chat.id); await service.idle();
+		assert.equal(service.snapshot().status.succeeded, 1);
+		assert.equal(service.snapshot().status.stopped, false);
 	});
 	it("resumes after failure using completed speech cleanup", async () => {
 		let attempts = 0;

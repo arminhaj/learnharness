@@ -144,6 +144,9 @@ class ClaudeTurn {
 	private readonly partialJson = new Map<number, string>();
 	private readonly toolBlocks = new Map<number, ToolCall>();
 	private readonly intents: ToolCall[] = [];
+	private refused = false;
+	private currentUsage: CliUsage = {};
+	private previousUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 	started = false;
 	finished = false;
 
@@ -216,7 +219,16 @@ class ClaudeTurn {
 			case "messageStop":
 				// Tool intent is not execution admission. The process publishes only
 				// calls that actually reach the authenticated MCP bridge.
-				if (this.output.stopReason !== "toolUse") this.finish();
+				// A raw API refusal is not necessarily the CLI's final result.
+				// Let its own policy handling finish; never resubmit or replay
+				// withheld output ourselves. A terminal refusal still fails below.
+				if (!this.refused && this.output.stopReason !== "toolUse") this.finish();
+				return;
+
+			case "result":
+				if (this.refused || event.stopReason === "refusal") this.fail(REFUSAL_MESSAGE, "error");
+				else if (this.waitingForAdmission) this.fail("claude CLI ended without admitting its harness tool calls", "error");
+				else this.finish();
 				return;
 
 			case "assistantError":
@@ -230,6 +242,23 @@ class ClaudeTurn {
 	}
 
 	get waitingForAdmission(): boolean { return !this.finished && this.output.stopReason === "toolUse"; }
+	get waitingAfterRefusal(): boolean { return !this.finished && this.refused; }
+
+	restartMessage(): void {
+		for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) this.previousUsage[key] += this.currentUsage[key] ?? 0;
+		this.currentUsage = {};
+		this.discardMessage();
+		this.output.stopReason = "pending";
+		delete this.output.errorMessage;
+		this.refused = false;
+	}
+
+	private discardMessage(): void {
+		this.output.content = [];
+		this.contentIndexes.clear(); this.partialJson.clear(); this.toolBlocks.clear(); this.intents.length = 0;
+		// Pi shares this partial object. The next update/final event replaces
+		// its content; emitting another start would append a duplicate message.
+	}
 
 	getIntents(): ToolCall[] { return this.intents; }
 
@@ -329,13 +358,16 @@ class ClaudeTurn {
 	}
 
 	private updateUsage(usage: CliUsage): void {
-		Object.assign(this.output.usage, usage);
+		Object.assign(this.currentUsage, usage);
+		for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) this.output.usage[key] = this.previousUsage[key] + (this.currentUsage[key] ?? 0);
 
 		const { input, output, cacheRead, cacheWrite } = this.output.usage;
 		this.output.usage.totalTokens = input + output + cacheRead + cacheWrite;
 	}
 
 	private setStopReason(stopReason: string): void {
+		this.refused = stopReason === "refusal";
+		if (this.refused) this.discardMessage();
 		const mapped = STOP_REASONS[stopReason];
 
 		if (!mapped) {
@@ -401,6 +433,7 @@ class ClaudeProcess implements LiveProcess {
 	private signal: AbortSignal | undefined;
 	private sourceCalls: ToolCall[] = [];
 	private sourceComplete = false;
+	private replacedMessages = 0;
 	private admitted: PendingToolCall[] = [];
 	private readonly cancelledIds = new Set<string>();
 	private pendingError: string | undefined;
@@ -458,6 +491,7 @@ class ClaudeProcess implements LiveProcess {
 		this.admitted = [];
 		this.conversation = structuredClone(conversationForReuse(messages));
 		this.turn = turn;
+		this.replacedMessages = 0;
 		this.turn.setContextWindow(this.contextWindow);
 		this.sourceComplete = this.sourceCalls.length > 0;
 		this.setSignal(signal);
@@ -557,9 +591,17 @@ class ClaudeProcess implements LiveProcess {
 			this.fail("claude CLI moved on while harness tool calls were waiting for results");
 			return;
 		}
-		if (event.type === "messageStart" && this.sourceComplete && this.sourceCalls.length > 0) {
-			this.fail("claude CLI moved on without admitting its harness tool calls");
-			return;
+		if (event.type === "messageStart" && (this.turn.waitingAfterRefusal || this.sourceComplete && this.sourceCalls.length > 0)) {
+			// The CLI can abandon a streamed attempt and start another itself.
+			// No side effect has been admitted: discard that entire attempt,
+			// rather than mistake its provisional tool intents for executed work.
+			// Never release held requests, replay withheld content, or retry here.
+			if (this.bridge.getPendingToolCalls().length || ++this.replacedMessages > 3) {
+				this.fail("claude CLI could not complete its harness tool handoff");
+				return;
+			}
+			this.sourceCalls = []; this.sourceComplete = false;
+			this.turn.restartMessage();
 		}
 		if (event.type === "messageStart") this.contextProbe?.refresh();
 		this.turn.handle(event);
@@ -585,7 +627,7 @@ class ClaudeProcess implements LiveProcess {
 		if (this.pendingError) addLiveProcess(this);
 		this.signal?.removeEventListener("abort", this.abort);
 		if (this.stderr.trim()) console.error("claude CLI stderr:", this.stderr.trim());
-		this.turn.fail(message, "error");
+		this.turn.fail(this.turn.waitingAfterRefusal ? REFUSAL_MESSAGE : message, "error");
 		removeTurnResources(this.bridge, this.files).catch((error: unknown) => {
 			console.error("claude CLI cleanup failed:", error);
 		});

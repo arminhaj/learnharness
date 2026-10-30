@@ -4,15 +4,25 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRightIcon, BookmarkPlusIcon, CheckIcon, RefreshCwIcon } from "lucide-react";
-import { historyPassageKey, historyReplayGroups, momentLabels, strategyKey, propositionSessionHref, type HistoryEpisode, type HistoryPassage, type LearningHistorySnapshot } from "@/src/core";
+import { historyPassageKey, historyReplayGroups, historyErrorMessage, momentLabels, strategyKey, propositionSessionHref, type HistoryEpisode, type HistoryPassage, type LearningHistorySnapshot, type HistoryRunStatus } from "@/src/core";
 import { TopBar } from "./top-bar";
 import { useServerEvent, useServerResync } from "./server-events";
 import { SessionStarter } from "./start-session";
 
 const actionClass = "inline-flex min-h-9 items-center justify-center gap-2 rounded-md border px-3 py-2 font-ui text-xs hover:bg-accent disabled:opacity-40";
 const labelClass = "font-ui text-xs uppercase tracking-wider text-muted-foreground";
-const empty: LearningHistorySnapshot = { enabled: false, sessions: [], passages: {}, episodes: [], moments: [], corrections: {}, savedStrategies: [], status: { running: false, completed: 0, total: 0 } };
+const empty: LearningHistorySnapshot = { enabled: false, sessions: [], passages: {}, episodes: [], moments: [], corrections: {}, savedStrategies: [], status: { running: false, completed: 0, total: 0, succeeded: 0, failed: 0, cancelled: 0, skipped: 0 } };
 const date = (stamp: string) => new Date(stamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+export function HistoryRunProgress({ status, title }: { status: HistoryRunStatus; title?: string }) {
+	if (!status.total) return null;
+	const remaining = Math.max(0, status.total - status.completed);
+	return <div role="status" className="my-3 rounded-md border bg-card p-3 text-xs">
+		<p>{status.running ? "This update" : status.stopped ? "Update stopped" : "Update complete"}: {status.succeeded} successful · {status.failed} failed{status.cancelled > 0 ? ` · ${status.cancelled} interrupted` : ""}{status.skipped > 0 ? ` · ${status.skipped} skipped` : ""}{remaining > 0 ? ` · ${remaining} ${status.running ? "remaining" : "not attempted"}` : ""}</p>
+		{status.running && <p className="mt-2 text-muted-foreground">{status.stage === "cleaning" ? "Making recorded speech coherent" : "Finding learning episodes"}{title ? ` · ${title}` : ""}. You can keep learning.</p>}
+		{status.stopped && <p className="mt-2 text-muted-foreground">Completed work is saved. Interrupted and unattempted sessions can resume with Update history.</p>}
+	</div>;
+}
 
 export function historySourceHref(data: LearningHistorySnapshot, chatId: string, messageId: string, momentId?: string) {
 	const href = propositionSessionHref({ provenance: [{ chatId, messageId, subjectId: data.sessions.find(s => s.id === chatId)?.parentId }] }, chatId);
@@ -53,12 +63,12 @@ export function LearningHistoryPage() {
 	useServerEvent("learning-history-changed", () => void load());
 	useServerEvent("chats-changed", () => void load());
 	useServerResync(() => void load());
-	const refresh = useCallback(async (cancel = false) => {
+	const refresh = useCallback(async (cancel = false, retryFailed = false) => {
 		setError(null);
-		try { const response = await fetch("/api/learning-history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cancel ? { cancel: true } : {}) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); await load(); }
+		try { const response = await fetch("/api/learning-history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cancel ? { cancel: true } : retryFailed ? { retryFailed: true } : {}) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); await load(); }
 		catch (error) { setError(error instanceof Error ? error.message : "History update could not start."); }
 	}, [load]);
-	useEffect(() => { if (loaded && !started.current) { started.current = true; if (data.sessions.some(s => s.pending) && !data.status.running) void refresh(); } }, [loaded, data.sessions, data.status.running, refresh]);
+	useEffect(() => { if (loaded && !started.current) { started.current = true; if (data.sessions.some(s => s.pending && !s.error) && !data.status.running) void refresh(); } }, [loaded, data.sessions, data.status.running, refresh]);
 	async function mutate(body: unknown) {
 		setError(null);
 		try {
@@ -82,15 +92,18 @@ export function LearningHistoryPage() {
 		return <HistorySpeech key={`${chatId}/${id}/${title}`} passage={p} title={title} href={p ? historySourceHref(data, chatId, p.messageId) : undefined} onCorrect={p ? text => mutate({ action: "wording", chatId, passageId: p.id, text }) : undefined} />;
 	};
 	const titleFor = (id: string) => data.sessions.find(s => s.id === id)?.title ?? "Session";
+	const failedSessions = data.sessions.filter(s => s.error);
 	return <div className="flex h-dvh min-w-0 flex-col">
 		<TopBar><span className="font-ui text-sm">Learning history</span><div className="ml-auto flex gap-2"><button className={actionClass} onClick={() => void refresh(data.status.running)}>{data.status.running ? "Stop update" : <><RefreshCwIcon className="size-3" />Update history</>}</button></div></TopBar>
 		<div className="min-h-0 flex-1 overflow-y-auto">
 			<div className="mx-auto max-w-6xl px-4 py-6 sm:px-8">
 				<h1 className="font-title text-3xl">How you got here</h1><p className="mt-2 font-prose text-lg text-muted-foreground">What changed in your thinking. What helped you get there.</p>
 				<div className="my-4 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground"><span>{data.sessions.filter(s => s.analyzedAt && !s.pending).length} of {data.sessions.length} existing sessions analyzed</span><label className="flex min-w-0 items-center gap-2">Sessions <select aria-label="Filter history by session" className="min-w-0 max-w-80 rounded-md border bg-background p-2 text-foreground" value={sessionId} onChange={e => { setSessionId(e.target.value); setSelected(""); }}><option value="">All sessions</option>{data.sessions.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}</select></label></div>
-				{data.status.running && <p role="status" className="my-3 rounded-md border bg-card p-3 text-xs">{data.status.stage === "cleaning" ? "Making recorded speech coherent" : "Finding learning episodes"} · {data.status.completed} of {data.status.total} sessions finished{data.status.chatId ? ` · ${titleFor(data.status.chatId)}` : ""}. You can keep learning.</p>}
-				{(error || data.status.error) && <p role="alert" className="my-3 rounded-md border p-3 font-prose text-base text-destructive">{error ?? data.status.error}</p>}
-				<details className="mb-4 text-xs text-muted-foreground"><summary>History coverage and wording</summary><p className="my-3 font-prose text-base">Earlier conversations are included automatically. A dedicated coherence pass cleans dictated speech without summarizing or correcting your ideas. Uncertain words remain flagged. Personal markers are recorded only when you add them.</p><ul className="space-y-2">{data.sessions.map(s => <li key={s.id}>{s.title} · {s.error ?? (s.pending ? "Awaiting analysis" : "Analyzed")}</li>)}</ul></details>
+				<HistoryRunProgress status={data.status} title={data.status.chatId ? titleFor(data.status.chatId) : undefined} />
+				{error && <p role="alert" className="my-3 rounded-md border p-3 font-prose text-base text-destructive">{error}</p>}
+				{data.status.error && !failedSessions.some(s => s.id === data.status.errorChatId) && <p role="alert" className="my-3 rounded-md border p-3 font-prose text-base text-destructive">{historyErrorMessage(data.status.error)}</p>}
+				{failedSessions.length > 0 && <section aria-label="Failed history analyses" className="my-3 rounded-md border p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><p>{failedSessions.length} {failedSessions.length === 1 ? "session could" : "sessions could"} not be analyzed. Completed work is saved.</p><button className={actionClass} disabled={data.status.running} onClick={() => void refresh(false, true)}>Retry failed analyses</button></div><ul className="mt-3 space-y-3">{failedSessions.map(s => <li key={s.id}><p className="font-medium">{s.title}</p><p className="mt-1 font-prose text-base text-muted-foreground">{historyErrorMessage(s.error!)}</p><details className="mt-1 text-xs text-muted-foreground"><summary>Technical details</summary><p className="mt-1 break-words">{s.error}</p></details></li>)}</ul></section>}
+				<details className="mb-4 text-xs text-muted-foreground"><summary>History coverage and wording</summary><p className="my-3 font-prose text-base">Earlier conversations are included automatically. A dedicated coherence pass cleans dictated speech without summarizing or correcting your ideas. Uncertain words remain flagged. Personal markers are recorded only when you add them.</p><ul className="space-y-2">{data.sessions.map(s => <li key={s.id}>{s.title} · {s.error ? "Analysis failed" : data.status.running && data.status.chatId === s.id ? "Analyzing" : s.pending ? "Awaiting analysis" : "Analyzed"}</li>)}</ul></details>
 				<nav role="tablist" aria-label="Learning history views" className="mb-6 flex flex-wrap gap-1 border-b">{([['timeline','Turning points'],['strategies','Successful strategies'],['replay','Then & now']] as const).map(([value, label]) => <button key={value} id={`history-tab-${value}`} type="button" role="tab" aria-controls={`history-panel-${value}`} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1} onKeyDown={e => {
 						const tabs = ['timeline', 'strategies', 'replay'] as const;
 						const index = tabs.indexOf(value);

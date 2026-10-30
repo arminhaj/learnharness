@@ -496,11 +496,12 @@ test("result error without result text or errors surfaces its subtype", async (t
 	assert.equal(getErrorMessage(events), "claude CLI failed: error_during_execution");
 });
 
-test("refusal stop reason → error", async (t) => {
+test("terminal CLI refusal remains an error", async (t) => {
 	const { events } = await runScenario(t, [
 		streamEvent({ type: "message_start", message: { usage: {} } }),
 		streamEvent({ type: "message_delta", delta: { stop_reason: "refusal" }, usage: {} }),
 		streamEvent({ type: "message_stop" }),
+		JSON.stringify({ type: "result", subtype: "success", is_error: false, stop_reason: "refusal" }),
 	]);
 	assert.equal(getErrorMessage(events), "The model refused to complete the request");
 });
@@ -634,12 +635,13 @@ test("writes one user prompt after local-only control initialization and summary
 	assert(lines.slice(3).every((line) => JSON.parse(line).request.detail === "summary"));
 });
 
-test("parseCliLine ignores non-JSON, system, rate-limit and successful result lines", () => {
+test("parseCliLine ignores informational lines but preserves the final CLI result", () => {
 	assert.equal(parseCliLine("not json"), null);
 	assert.equal(parseCliLine("null"), null);
 	assert.equal(parseCliLine('{"type":"system","subtype":"init"}'), null);
 	assert.equal(parseCliLine('{"type":"rate_limit_event"}'), null);
-	assert.equal(parseCliLine('{"type":"result","is_error":false,"result":"hello there"}'), null);
+	assert.deepEqual(parseCliLine('{"type":"result","is_error":false,"result":"hello there"}'), { type: "result", stopReason: null });
+	assert.deepEqual(parseCliLine('{"type":"result","is_error":false,"stop_reason":"refusal"}'), { type: "result", stopReason: "refusal" });
 	assert.equal(parseCliLine('{"type":"assistant","error":null,"message":{"content":[{"type":"text","text":"hello there"}]}}'), null);
 });
 
@@ -715,13 +717,83 @@ test("user message after tool results starts fresh with unfinished calls in the 
 	assert.ok(stdin.includes("wait, explain sockets first"), stdin);
 });
 
-test("output while waiting for tool results kills the process", async (t) => {
+test("CLI replacement discards an unadmitted attempt without executing its tools", async (t) => {
 	const readA: ToolUse = { id: "toolu_moved_on_a", name: "read", arguments: { path: "a" } };
 	const { runClaude, calls } = createFakeRun(t, [...toToolUseMessage([readA]), REPLY, HOLD]);
 	const events = await collectEvents(createClaudeCodeStreamFunction(runClaude)(getModel(), normalizeContext({ messages: [HI], tools: [READ_TOOL] })));
-	assert.match(getErrorMessage(events) ?? "", /moved on without admitting/);
+	assert.equal(getLastEvent(events).type, "done");
 	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
 	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("only a replacement attempt's authenticated MCP call is executable", async (t) => {
+	const old: ToolUse = { id: "toolu_discarded", name: "read", arguments: { path: "old" } };
+	const current: ToolUse = { id: "toolu_replacement", name: "read", arguments: { path: "current" } };
+	const { events } = await runScenario(t, [...toToolUseMessage([old]), ...toToolUseMessage([current]), callTool(current), HOLD]);
+	assert.deepEqual(events.filter(e => e.type === "toolcall_end").map(e => e.toolCall.id), [current.id]);
+	const last = getLastEvent(events); assert.equal(last.type, "done");
+	if (last.type === "done") assert.deepEqual(last.message.content.filter(b => b.type === "toolCall").map(b => b.id), [current.id]);
+});
+
+test("late MCP calls from a discarded attempt cannot execute", async (t) => {
+	const old: ToolUse = { id: "toolu_stale", name: "read", arguments: { path: "old" } };
+	const current: ToolUse = { id: "toolu_fresh", name: "read", arguments: { path: "current" } };
+	const { events } = await runScenario(t, [...toToolUseMessage([old]), ...toToolUseMessage([current]), callTool(old), HOLD]);
+	assert.match(getErrorMessage(events)!, /does not match/);
+	assert.equal(events.some(e => e.type === "toolcall_end"), false);
+});
+
+test("repeated unadmitted replacements are bounded and terminal tool-only results fail", async (t) => {
+	const intent: ToolUse = { id: "toolu_loop", name: "read", arguments: {} };
+	const loop = await runScenario(t, [...Array.from({ length: 5 }, () => toToolUseMessage([intent])).flat(), HOLD]);
+	assert.match(getErrorMessage(loop.events)!, /could not complete.*handoff/);
+	const terminal = await runScenario(t, [...toToolUseMessage([intent]), JSON.stringify({ type: "result", is_error: false }), HOLD]);
+	assert.match(getErrorMessage(terminal.events)!, /ended without admitting/);
+	assert.equal([...loop.events, ...terminal.events].some(e => e.type === "toolcall_end"), false);
+});
+
+test("native refusal continuation clears withheld content and intents, preserving usage once", async (t) => {
+	const refused = toToolUseMessage([{ id: "toolu_withheld", name: "read", arguments: {} }]);
+	refused[0] = streamEvent({ type: "message_start", message: { usage: { input_tokens: 7, output_tokens: 1 } } });
+	refused.splice(-2, 2,
+		streamEvent({ type: "message_delta", delta: { stop_reason: "refusal" }, usage: { output_tokens: 3 } }),
+		streamEvent({ type: "message_stop" }));
+	// A native CLI continuation, with no additional prompt sent by LearnHarness.
+	const { events, calls } = await runScenario(t, [...refused, ...readFixtureLines("text.jsonl")]);
+	const last = getLastEvent(events); assert.equal(last.type, "done");
+	if (last.type === "done") {
+		assert.equal(getText(last.message), "hello there");
+		assert.equal(last.message.usage.input, 2 + 7);
+		assert.equal(last.message.usage.output, 5 + 3);
+		assert.equal(last.message.usage.totalTokens, 624);
+		assert.equal(last.message.content.some(b => b.type === "toolCall"), false);
+	}
+	assert.equal(calls.length, 1);
+	assert.equal(events.some(e => e.type === "toolcall_end"), false);
+});
+
+test("process exit after refusal retains the refusal and clears withheld speech", async (t) => {
+	const prefix = readFixtureLines("text.jsonl").filter(line => JSON.parse(line).type === "stream_event").slice(0, -2);
+	const { events } = await runScenario(t, [...prefix,
+		streamEvent({ type: "message_delta", delta: { stop_reason: "refusal" }, usage: {} }),
+		streamEvent({ type: "message_stop" }), exitWith(0, "")]);
+	assert.equal(getErrorMessage(events), "The model refused to complete the request");
+	const last = getLastEvent(events); if (last.type === "error") assert.deepEqual(last.error.content, []);
+});
+
+test("native replacement produces one Pi assistant message and never executes abandoned work", async (t) => {
+	const old: ToolUse = { id: "toolu_abandoned", name: "read", arguments: { path: "old" } };
+	const { runClaude } = createFakeRun(t, [...toToolUseMessage([old]), ...readFixtureLines("text.jsonl")]);
+	let executed = 0;
+	const agent = new Agent({ initialState: { model: getModel(), tools: [{
+		name: "read", label: "Read", description: "Read", parameters: Type.Object({ path: Type.String() }),
+		execute: async () => { executed++; return { content: [{ type: "text", text: "must not run" }], details: null }; },
+	}] }, streamFn: createClaudeCodeStreamFunction(runClaude) });
+	await agent.prompt("hi");
+	assert.equal(executed, 0);
+	const replies = agent.state.messages.filter(m => m.role === "assistant");
+	assert.equal(replies.length, 1);
+	assert.equal(getText(replies[0]!), "hello there");
 });
 
 test("unadmitted tool intent never becomes an executable call", async (t) => {

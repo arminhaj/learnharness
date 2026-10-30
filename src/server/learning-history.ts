@@ -29,8 +29,9 @@ interface Dependencies {
 /** Single writer service. Each await is followed by a fresh state read, so
  * marking/correcting during model work cannot be overwritten by stale state. */
 export function createLearningHistoryService(deps: Dependencies) {
-	const queue = new Set<string>(); let controller: AbortController | null = null;
-	const status: HistoryRunStatus = { running: false, completed: 0, total: 0 };
+	const queue = new Set<string>(); let controller: AbortController | null = null, activeSignature: string | undefined;
+	const status: HistoryRunStatus = { running: false, completed: 0, total: 0, succeeded: 0, failed: 0, cancelled: 0, skipped: 0 };
+	const enqueue = (id: string) => { if (queue.has(id)) return false; queue.add(id); status.total++; return true; };
 	const notify = () => emit("learning-history-changed", {});
 	const write = (edit: (state: LearningHistoryState) => void) => { const state = deps.historyStore.read(); edit(state); deps.historyStore.write(state); notify(); };
 	const inputs = (id: string) => { const chat = deps.chatStore.getChat(id); return chat ? historyInputPassages(chat) : []; };
@@ -66,9 +67,10 @@ export function createLearningHistoryService(deps: Dependencies) {
 		return { enabled: state.enabled, sessions, passages, episodes: episodes.sort((a, b) => a.observedAt.localeCompare(b.observedAt)), moments, corrections: state.corrections, savedStrategies: state.savedStrategies, status: { ...status } };
 	}
 	async function processSource(id: string, signal: AbortSignal) {
-		const chat = deps.chatStore.getChat(id); if (!chat) return;
+		const chat = deps.chatStore.getChat(id); if (!chat) return "skipped";
 		const initial = deps.historyStore.read(), startSignature = signature(id, initial);
-		if (initial.sources[id]?.fingerprint === startSignature) return;
+		activeSignature = startSignature;
+		if (initial.sources[id]?.fingerprint === startSignature) return "skipped";
 		const sourceInputs = inputs(id);
 		const engine = deps.engine(); if (sourceInputs.length && !engine) throw new Error("Configure an extraction model and its provider connection in Settings to build learning history.");
 		const startedAt = Date.now();
@@ -115,7 +117,8 @@ export function createLearningHistoryService(deps: Dependencies) {
 				source.fingerprint = startSignature; source.analyzedAt = new Date().toISOString(); source.error = null;
 				current.sources[id] = source;
 			});
-			if (signature(id) !== startSignature) queue.add(id);
+			if (signature(id) !== startSignature) enqueue(id);
+			return "succeeded";
 		} finally {
 			if (deps.chatStore.getChat(id) && Object.values(usage.stages).some(s => s.steps.length)) {
 				usage.durationMs = Date.now() - startedAt; deps.chatStore.appendExtractionUsage(id, usage);
@@ -124,31 +127,40 @@ export function createLearningHistoryService(deps: Dependencies) {
 	}
 	async function drain() {
 		if (status.running) return;
-		status.running = true; status.error = undefined; controller = new AbortController(); notify();
+		status.running = true; status.error = undefined; status.errorChatId = undefined; controller = new AbortController(); notify();
 		try {
 			while (queue.size && !controller.signal.aborted) {
 				const id = queue.values().next().value!; queue.delete(id); status.chatId = id; notify();
-				try { await processSource(id, controller.signal); }
+				try { const outcome = await processSource(id, controller.signal); if (outcome === "succeeded") status.succeeded++; else status.skipped++; }
 				catch (error) {
-					const message = controller.signal.aborted ? "History update stopped. Completed work is saved." : error instanceof Error ? error.message : "History update failed.";
-					status.error = message;
-					try { if (deps.chatStore.getChat(id)) write(state => { (state.sources[id] ??= emptyHistorySource()).error = message; }); }
+					const cancelled = controller.signal.aborted, deleted = !deps.chatStore.getChat(id);
+					if (cancelled) status.cancelled++; else if (deleted) status.skipped++; else status.failed++;
+					const message = cancelled || deleted ? null : error instanceof Error ? error.message : "History update failed.";
+					if (message) { status.error = message; status.errorChatId = id; }
+					try { if (!deleted) write(state => { (state.sources[id] ??= emptyHistorySource()).error = message; }); }
 					catch { /* Keep the visible run error if storage itself is unavailable. */ }
 				}
-				status.completed++; notify();
+				status.completed++; activeSignature = undefined; notify();
 			}
-		} finally { status.running = false; status.chatId = undefined; status.stage = undefined; controller = null; notify(); }
+		} finally { status.running = false; status.chatId = undefined; status.stage = undefined; activeSignature = undefined; controller = null; notify(); }
 	}
-	function refresh(chatId?: string) {
+	function refresh(chatId?: string, failedOnly = false) {
+		if (controller?.signal.aborted) throw new HistoryRequestError("The current update is stopping. Try again once it has stopped.", 409);
 		if (chatId && !deps.chatStore.getChat(chatId)) throw new HistoryRequestError("Session not found.", 404);
 		if (!deps.engine()) throw new HistoryRequestError("Configure an extraction model and its provider connection in Settings to build learning history.", 503);
 		write(state => { state.enabled = true; });
 		const ids = chatId ? [chatId] : deps.chatStore.listChats().slice().reverse().map(s => s.id);
-		if (!status.running) { status.completed = 0; status.total = 0; }
+		if (!status.running) { status.completed = 0; status.total = 0; status.succeeded = 0; status.failed = 0; status.cancelled = 0; status.skipped = 0; status.stopped = false; status.error = undefined; status.errorChatId = undefined; }
 		let added = 0;
 		const state = deps.historyStore.read();
-		for (const id of ids) if (!queue.has(id) && state.sources[id]?.fingerprint !== signature(id, state)) { queue.add(id); status.total++; added++; }
+		for (const id of ids) {
+			if (failedOnly && !state.sources[id]?.error) continue;
+			const current = signature(id, state);
+			if (state.sources[id]?.fingerprint === current || status.running && status.chatId === id && activeSignature === current) continue;
+			if (enqueue(id)) added++;
+		}
 		if (queue.size) void drain();
+		else notify();
 		return { queued: added };
 	}
 	function mutate(input: unknown) {
@@ -181,7 +193,7 @@ export function createLearningHistoryService(deps: Dependencies) {
 		return snapshot();
 	}
 	function removeSource(id: string) {
-		queue.delete(id);
+		if (queue.delete(id)) status.total--;
 		write(state => {
 			const episodeIds = new Set(Object.values(state.sources[id]?.batches ?? {}).flatMap(b => b.episodes.map(e => e.id)));
 			delete state.sources[id];
@@ -197,7 +209,7 @@ export function createLearningHistoryService(deps: Dependencies) {
 			const chat = deps.chatStore.getChat(chatId); if (!chat) throw new HistoryRequestError("Session not found.", 404);
 			return Object.values(deps.historyStore.read().moments).filter(m => m.chatId === chatId && chat.messages.some(p => p.id === m.messageId));
 		},
-		cancel() { queue.clear(); controller?.abort(); },
+		cancel() { if (status.running) status.stopped = true; queue.clear(); controller?.abort(); },
 		async idle() { while (status.running) await new Promise(resolve => setTimeout(resolve, 5)); },
 	};
 }

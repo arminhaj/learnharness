@@ -15,6 +15,7 @@ export type CliEvent =
 	| { type: "messageStop" }
 	| { type: "assistantError"; error: string; text: string }
 	| { type: "resultError"; text: string }
+	| { type: "result"; stopReason: string | null }
 	| { type: "toolResults"; ids: string[] };
 
 type RawUsage = {
@@ -52,6 +53,7 @@ type RawCliLine = {
 	result?: string;
 	subtype?: string;
 	errors?: string[];
+	stop_reason?: string | null;
 };
 
 function toUsage(raw: RawUsage): CliUsage {
@@ -179,7 +181,7 @@ export function parseCliLine(text: string): CliEvent | null {
 		}
 
 		case "result":
-			if (line.is_error !== true) return null;
+			if (line.is_error !== true) return { type: "result", stopReason: line.stop_reason ?? null };
 			return { type: "resultError", text: getResultErrorText(line) };
 
 		default:
