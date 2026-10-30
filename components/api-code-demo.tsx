@@ -139,7 +139,7 @@ export function ApiCodeDemo() {
 						: <div className="flex min-h-48 items-center justify-center gap-2 rounded-lg border border-border/70 bg-background/60 text-sm text-muted-foreground">{locked && <LoaderCircleIcon className="size-4 animate-spin" />}{locked ? "Preparing the API and starter files…" : "Workspace not loaded."}</div>}
 					<p className="mt-2 text-[11px] text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter checks the exercise.</p>
 					<p className="mt-1 text-[11px] text-muted-foreground">API suggestions: Ctrl+Space · Tab accepts (Insert mode).</p>
-					<p className="mt-1 text-[11px] text-muted-foreground">Errors are underlined; hover for an explanation or press F1 to jump to the next one. Run or check for full compiler feedback.</p>
+					<p className="mt-1 text-[11px] text-muted-foreground">Errors are underlined; hover or press F1 with the cursor on a squiggle to see its explanation. Run or check for full compiler feedback.</p>
 					<div className="mt-3 flex flex-wrap items-center gap-2">
 						<label htmlFor={`${ids}-editor`} className="sr-only">External editor</label>
 						<select id={`${ids}-editor`} value={editor} onChange={event => setEditor(event.target.value as Editor)} disabled={locked} className="h-8 rounded-md border border-border bg-background px-2 text-xs disabled:opacity-50"><option value="vscode">VS Code</option><option value="cursor">Cursor</option><option value="default">Default editor</option></select>

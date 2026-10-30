@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { Compartment, EditorState, Prec, type Text } from "@codemirror/state";
-import { EditorView, activateHover, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
+import { EditorView, activateHover, closeHoverTooltips, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { cpp } from "@codemirror/lang-cpp";
@@ -40,14 +40,17 @@ function completionExtension(context?: ExerciseCodeContext) {
 	});
 }
 
-function focusNextDiagnostic(editor: EditorView) {
-	const positions: number[] = [];
-	forEachDiagnostic(editor.state, (_diagnostic, from) => positions.push(from));
-	const position = positions.find(from => from > editor.state.selection.main.head) ?? positions[0];
-	if (position === undefined) return;
-	// A collapsed cursor preserves Vim's mode; selecting the diagnostic's full
-	// range would unexpectedly switch Normal mode into Visual mode.
-	editor.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+function showCursorDiagnostic(editor: EditorView) {
+	const position = editor.state.selection.main.head;
+	let hasDiagnostic = false;
+	forEachDiagnostic(editor.state, (_diagnostic, from, to) => {
+		if (position >= from && (position < to || from === to && position === from)) hasDiagnostic = true;
+	});
+	editor.dispatch({ effects: closeHoverTooltips });
+	if (!hasDiagnostic) return;
+	closeCompletion(editor);
+	// Open the same explanation as mouse hover without changing the cursor,
+	// selection, scroll position, or Vim mode.
 	activateHover(editor, position, 1, {
 		until: transaction => transaction.docChanged || transaction.newSelection.main.head !== position,
 	});
@@ -130,8 +133,7 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 					// closes suggestions and still reaches Vim to enter Normal mode.
 					Prec.highest(EditorView.domEventHandlers({ keydown: (event, editor) => {
 						if (event.key === "F1" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-							closeCompletion(editor);
-							focusNextDiagnostic(editor);
+							showCursorDiagnostic(editor);
 							// Consume F1 even without diagnostics so browser help does not
 							// take focus away from the code input.
 							return true;

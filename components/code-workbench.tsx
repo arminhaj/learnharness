@@ -230,7 +230,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 				</div>
 			</div>
 			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
-			<p className="text-[11px] leading-relaxed text-muted-foreground">Compiler errors from the latest check are underlined; hover for an explanation or press F1 to jump to the next one. Check again after editing for updated feedback.</p>
+			<p className="text-[11px] leading-relaxed text-muted-foreground">Compiler errors from the latest check are underlined; hover or press F1 with the cursor on a squiggle to see its explanation. Check again after editing for updated feedback.</p>
 			{workspace?.path && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Workspace file</summary><code className="mt-1 block select-all break-all rounded bg-muted/50 px-2 py-1.5">{workspace.path}</code></details>}
 			{workspace?.lastRun && <CodeCheckResults result={workspace.lastRun} stale={workspace.lastRun.source !== source || workspace.lastRun.revision !== workspace.revision} />}
 			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see compiler and test results.</p>}

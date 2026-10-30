@@ -17,7 +17,7 @@ Object.assign(globalThis, {
 Object.assign(document, { getSelection: () => null, hasFocus: () => false });
 
 const { CodeEditor } = await import("../components/code-editor.tsx");
-const { EditorView } = await import("@codemirror/view");
+const { EditorView, activateHover } = await import("@codemirror/view");
 const { getCM } = await import("@replit/codemirror-vim");
 const { completionStatus, currentCompletions } = await import("@codemirror/autocomplete");
 const { forEachDiagnostic } = await import("@codemirror/lint");
@@ -250,21 +250,29 @@ test("qualified API suggestions rank before unqualified words copied from the dr
 	} finally { await f.dispose(); }
 });
 
-test("F1 focuses successive diagnostics, shows their explanations, and wraps without editing", async () => {
+test("F1 shows only the diagnostic under the cursor without moving or cycling", async () => {
 	const source = "bad();\nwrong();";
 	const f = await fixture(source, false, { diagnostics: [
 		{ line: 1, column: 1, endColumn: 4, severity: "error", message: "First problem" },
 		{ line: 2, column: 1, endColumn: 6, severity: "warning", message: "Second problem" },
 	] });
 	try {
-		await act(async () => f.view.dispatch({ selection: { anchor: source.length } }));
-		for (const [from, message] of [[0, "First problem"], [7, "Second problem"], [0, "First problem"]] as const) {
+		for (const [position, message] of [[0, "First problem"], [1, "First problem"], [1, "First problem"], [7, "Second problem"], [9, "Second problem"]] as const) {
+			await act(async () => f.view.dispatch({ selection: { anchor: position } }));
 			const event = await f.press("F1");
 			assert.equal(event.defaultPrevented, true);
-			assert.equal(f.view.state.selection.main.from, from);
-			assert.equal(f.view.state.selection.main.to, from);
+			assert.equal(f.view.state.selection.main.from, position);
+			assert.equal(f.view.state.selection.main.to, position);
 			assert.equal(f.cm.state.vim?.visualMode, false);
 			assert.match(f.host.querySelector(".cm-tooltip-lint")?.textContent ?? "", new RegExp(message));
+		}
+		for (const position of [3, 5, 12, source.length]) {
+			await act(async () => f.view.dispatch({ selection: { anchor: position } }));
+			// A mouse hover elsewhere must not remain as apparent F1 feedback.
+			await act(async () => activateHover(f.view, 0, 1));
+			assert.equal((await f.press("F1")).defaultPrevented, true);
+			assert.equal(f.view.state.selection.main.head, position);
+			assert.equal(f.host.querySelector(".cm-tooltip-lint"), null, "F1 outside a diagnostic does not jump to another one");
 		}
 		assert.equal(f.view.state.doc.toString(), source);
 		assert.deepEqual(f.changes, []);
@@ -281,9 +289,11 @@ test("F1 works in Insert mode and consumes the key harmlessly when there are no 
 		assert.equal(f.cm.state.vim?.insertMode, true);
 		assert.equal(f.view.state.selection.main.head, 0);
 		await f.render(false, { diagnostics: [{ line: 1, column: 2, endColumn: 5, severity: "error", message: "Inspect this symbol" }] });
+		await act(async () => f.view.dispatch({ selection: { anchor: 2 } }));
 		await f.press("F1");
-		assert.equal(f.view.state.selection.main.from, 1);
-		assert.equal(f.view.state.selection.main.to, 1);
+		assert.equal(f.view.state.selection.main.from, 2);
+		assert.equal(f.view.state.selection.main.to, 2);
+		assert.match(f.host.querySelector(".cm-tooltip-lint")?.textContent ?? "", /Inspect this symbol/);
 		assert.equal(f.cm.state.vim?.insertMode, true);
 		assert.equal(f.view.state.doc.toString(), "okay");
 		assert.deepEqual(f.counts(), { submissions: 0, ancestorKeys: 0, documentKeys: 0 });
