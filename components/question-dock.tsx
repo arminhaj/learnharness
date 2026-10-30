@@ -7,6 +7,7 @@ import { finishDictation, isDictationActive, joinDictation, useDictationTarget }
 import { useDictationActive } from "@/components/dictation-state";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
+import { CodeAwareInput } from "@/components/code-aware-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
 import {
@@ -334,6 +335,7 @@ function QuestionDockForm({
 	const [thinking, setThinking] = useState(initialDraft?.thinking ?? "");
 	const [other, setOther] = useState(initialDraft?.other ?? "");
 	const [text, setText] = useState(initialDraft?.text ?? "");
+	const [codeAnswer, setCodeAnswer] = useState(() => /^`{3,}[a-zA-Z0-9_+-]*\n/.test(initialDraft?.text ?? ""));
 	/* Refs MIRROR the two dictation-target fields ("nothing gets lost"
 	 * round, owner 2026-10-01): the run's flush lands via setState, which
 	 * a closure waiting through `await finishDictation()` cannot observe
@@ -878,7 +880,9 @@ function QuestionDockForm({
 						{qd.mode === "text" ? "Your answer" : "YOUR THINKING"}
 					</div>
 					{qd.mode === "text" ? (
-						<PathInput
+						<CodeAwareInput
+							onCodeSubmit={submit}
+							onCodeModeChange={setCodeAnswer}
 							value={text}
 							onValueChange={(value) => {
 								answerTextRef.current = value;
@@ -941,7 +945,7 @@ function QuestionDockForm({
 					)}
 					<div className="flex items-center justify-between gap-2 p-1">
 						<span aria-hidden className="pl-1.5 text-xs text-muted-foreground">
-								{compactionRunning ? "compacting session…" : "↵ submits · ⇧↵ newline"}
+								{compactionRunning ? "compacting session…" : codeAnswer ? "Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter submits" : "↵ submits · ⇧↵ newline"}
 						</span>
 						<Button
 							type="submit"

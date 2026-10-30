@@ -2,7 +2,7 @@
 
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
-import type { ArtifactPartProps } from "@/src/core";
+import { fenceCode, type ArtifactPartProps, type CodeRunResult } from "@/src/core";
 
 /**
  * The practice transcript cards (practice sessions, owner design
@@ -53,6 +53,7 @@ export interface PracticeThinkingData {
 	/** Legacy records (pre 2026-10-05) carry the old two-lane flag; ignored. */
 	commit?: boolean;
 	text: string;
+	codeResult?: CodeRunResult;
 }
 
 export function ProblemCard({ part }: ArtifactPartProps) {
@@ -290,6 +291,19 @@ function MetadataPopover({
 }
 
 export function ThinkingCard({ data }: { data: PracticeThinkingData }) {
+	if (data.codeResult) {
+		const run = data.codeResult;
+		const labels = { passed: "All tests passed", tests_failed: "Compiled · some tests failed", compilation_error: "Compilation failed", runtime_error: "Program stopped with an error", timeout: "Time limit reached", unavailable: "Compiler unavailable" };
+		return <div data-testid="checked-code-answer" className="my-3 rounded-xl border bg-card p-3">
+			<div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+				<span className="font-medium uppercase tracking-wide text-muted-foreground">Your code answer · {run.language === "cpp" ? "C++" : run.language}</span>
+				<span className={run.status === "passed" ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}>{labels[run.status]}</span>
+			</div>
+			<ThinkingBlock label="Submitted source" text={fenceCode(run.source, run.language)} inCard />
+			{run.tests.length > 0 && <ul className="mt-2 space-y-1 text-sm">{run.tests.map((test, index) => <li key={index} className="flex justify-between gap-2"><span>{test.name}</span><span>{test.status === "passed" ? "Passed" : test.status === "failed" ? "Failed" : test.status === "timeout" ? "Timed out" : "Runtime error"}</span></li>)}</ul>}
+			{(run.stdout || run.stderr || run.tests.some((test) => test.status !== "passed")) && <details className="mt-2 text-xs"><summary className="cursor-pointer text-muted-foreground">Compiler and test output</summary><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap font-mono">{[run.stdout, run.stderr, ...run.tests.filter((test) => test.status !== "passed").map((test) => `${test.name}\nExpected: ${test.expectedStdout}\nActual: ${test.stdout}\n${test.stderr}`)].filter(Boolean).join("\n")}</pre></details>}
+		</div>;
+	}
 	// The unified row (owner rounds, 2026-10-05): one style, one label —
 	// 50%-italic quote block on expand. Legacy records' commit flag is
 	// deliberately unread (one lane now). A TRANSCRIPT row (owner round,

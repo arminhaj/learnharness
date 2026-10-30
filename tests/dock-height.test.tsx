@@ -90,8 +90,8 @@ Object.defineProperty(dom.window.HTMLElement.prototype, "offsetWidth", { configu
 Object.defineProperty(dom.window.HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number(this.dataset.scrollHeight ?? 0); } });
 
 const ignoreHeight = () => {};
-function Fixture({ expanded = true, practice = false, enabled = true, inspected, onHeight = ignoreHeight }: {
-	expanded?: boolean; practice?: boolean; enabled?: boolean; inspected?: (block: HTMLDivElement) => void;
+function Fixture({ expanded = true, practice = false, code = false, enabled = true, inspected, onHeight = ignoreHeight }: {
+	expanded?: boolean; practice?: boolean; code?: boolean; enabled?: boolean; inspected?: (block: HTMLDivElement) => void;
 	onHeight?: (height: number) => void;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -109,7 +109,7 @@ function Fixture({ expanded = true, practice = false, enabled = true, inspected,
 	return <><div ref={scrollRef} data-part="column" /><div ref={blockRef} data-part="block" data-inset={inset}>
 		<div ref={viewportRef} data-part="viewport"><div ref={bodyRef} data-part="body">
 			<div ref={shellRef} data-part="shell"><div ref={contentRef} data-part="content" key={practice ? "practice" : "question"}>
-				{practice ? <PracticeDock problemCallId="p1" input={{ statement: "Long practice problem" }} expanded={expanded} onExpand={() => {}} onSubmit={() => {}} />
+				{practice ? <PracticeDock problemCallId="p1" chatId={code ? "chat-1" : undefined} input={{ statement: "Long practice problem", ...(code ? { codeExercise: { language: "cpp", starterCode: "int main() {}", tests: [{ name: "Example", stdin: "", expectedStdout: "" }] } } : {}) }} expanded={expanded} onExpand={() => {}} onSubmit={() => {}} />
 					: <QuestionDock toolName="probe" toolCallId="q1" input={{ question: "Long teaching question", options: [{ label: "A" }, { label: "B" }], correctAnswer: "A", explanation: "A is correct." }} expanded={expanded} dictationClaim={false} onExpand={() => {}} onSubmit={() => {}} />}
 			</div></div>
 		</div></div><div data-testid="toolbar" />
@@ -166,6 +166,38 @@ describe("measured question/practice DOM and observer lifecycle", () => {
 			assert.ok(observers.at(-1)!.elements.has(host.querySelector('[data-dock-scroll-area]')!));
 			assert.equal(part(host, "block").style.getPropertyValue("--dock-max-h"), "406px");
 		});
+	});
+	it("keeps the code workspace and its pending load alive across collapse and reveal", async () => {
+		const previousFetch = globalThis.fetch;
+		const requests: AbortSignal[] = [];
+		globalThis.fetch = async (_url, init) => {
+			const signal = init!.signal!;
+			requests.push(signal);
+			// Leave the editor loading so this lifecycle test does not require
+			// CodeMirror layout support from the DOM fixture.
+			return new Promise<Response>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(new Error("Load aborted")), { once: true });
+			});
+		};
+		try {
+			await withFixture(async (host, render) => {
+				await render({ practice: true, code: true });
+				const workspace = host.querySelector('[data-testid="code-workbench"]');
+				assert.ok(workspace !== null);
+				assert.equal(requests.length, 1);
+				await render({ practice: true, code: true, expanded: false });
+				assert.equal(host.querySelector('[data-testid="code-workbench"]') === workspace, true);
+				assert.equal(workspace.closest("[hidden]") !== null, true);
+				assert.equal(requests[0]!.aborted, false, "collapsing must not discard the workspace's state or request");
+				await render({ practice: true, code: true, expanded: true });
+				assert.equal(host.querySelector('[data-testid="code-workbench"]') === workspace, true);
+				assert.equal(workspace.closest("[hidden]") !== null, false);
+				assert.equal(requests.length, 1, "revealing must reuse the current workspace rather than reload over a draft");
+			});
+			assert.equal(requests[0]!.aborted, true, "leaving the practice dock still releases the request");
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
 	});
 	it("intentionally uncaps the question for a short window, then restores the measured cap on growth", async () => {
 		await withFixture(async (host, render) => {

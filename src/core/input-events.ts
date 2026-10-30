@@ -29,6 +29,7 @@
  */
 
 import type { QuestionAnswerData } from "./question-core.ts";
+import type { CodeRunResult } from "./code-workspace.ts";
 import type { LhMessage } from "./native-messages.ts";
 import {
 	activeProblemOf,
@@ -54,7 +55,7 @@ export type ChatInput =
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
 	 *  whether it claims an answer is read from the text. One
 	 *  problem may carry many submissions; each is its own turn. */
-	| { type: "thinking"; problemCallId: string; text: string }
+	| { type: "thinking"; problemCallId: string; text: string; codeRunId?: string; /** Server-resolved only; never accepted from JSON. */ codeResult?: CodeRunResult }
 	/** The practice move-on signal (owner round 16): the learner's
 	 *  explicit go-ahead during the between-problems pause — the Next
 	 *  chip or Enter on an empty composer. Practice sessions only, and
@@ -184,7 +185,10 @@ export function parseChatInput(input: unknown): ChatInput {
 			if (typeof i.text !== "string" || i.text.trim().length === 0) {
 				throw new ChatInputError("thinking input requires non-empty text");
 			}
-			return { type: "thinking", problemCallId: i.problemCallId, text: i.text };
+			if (i.codeRunId !== undefined && (typeof i.codeRunId !== "string" || !i.codeRunId || i.codeRunId.length > 128)) {
+				throw new ChatInputError("Code submission requires a valid check ID.");
+			}
+			return { type: "thinking", problemCallId: i.problemCallId, text: i.text, ...(typeof i.codeRunId === "string" ? { codeRunId: i.codeRunId } : {}) };
 		case "next":
 			return { type: "next" };
 		default:
@@ -226,7 +230,7 @@ export function inputAppends(
 			if (!active || active.toolCallId !== input.problemCallId) {
 				throw new ChatInputError("thinking input targets no active problem");
 			}
-			return [...dismissalConclusion(record), newThinkingMessage(input.problemCallId, input.text)];
+			return [...dismissalConclusion(record), newThinkingMessage(input.problemCallId, input.text, input.codeResult)];
 		}
 		case "next": {
 			// Honest 400s, the thinking gate's discipline: the signal is a

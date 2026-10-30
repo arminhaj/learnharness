@@ -90,3 +90,9 @@ export * from "./coverage.ts";
 // ONE session→markdown formatter — the extractor's view and the user-facing
 // export share it. Pure, browser-safe.
 export * from "./session-markdown.ts";
+export * from "./code-text.ts";
+export * from "./code-workspace.ts";
+export * from "./api-code-demo.ts";
+export * from "./code-completion.ts";
+export * from "./code-diagnostics.ts";
+export * from "./api-code-completion.ts";

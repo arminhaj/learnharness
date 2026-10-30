@@ -14,7 +14,7 @@ import {
 	ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import { PathText } from "@/components/file-path-chip";
+import { LearnerText } from "@/components/learner-text";
 import { readPathSelection, restorePathSelection, type TextSelection } from "@/components/path-input-dom";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -540,10 +540,14 @@ export function Chat({
 	// the dock stays mounted (the problem is still active until the agent
 	// concludes).
 	const submitThinking = useCallback(
-		(text: string) => {
+		async (text: string, codeRunId?: string) => {
 			const problem = activeProblemRef.current;
-			if (!problem || explorationPausedRef.current) return;
-			void send({ type: "thinking", problemCallId: problem.toolCallId, text });
+			if (!problem || explorationPausedRef.current) {
+				if (codeRunId) throw new Error("Resume the active code problem before submitting.");
+				return;
+			}
+			const accepted = await send({ type: "thinking", problemCallId: problem.toolCallId, text, ...(codeRunId ? { codeRunId } : {}) });
+			if (codeRunId && !accepted) throw new Error("The answer was not accepted. Your saved code and check results are still available.");
 		},
 		[send],
 	);
@@ -1589,7 +1593,7 @@ export function Chat({
 												    rail as the thinking rows — one quote geometry. */}
 												<div className="font-medium uppercase tracking-wide text-muted-foreground">You</div>
 												<div className="lh-prose whitespace-pre-wrap text-foreground">
-													<PathText text={m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")} />
+														<LearnerText text={m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")} />
 												</div>
 											</SourcePassage>
 									) : (
@@ -2036,7 +2040,7 @@ function DockOverlay({
 	 *  question (the composer is replaced); null in teaching sessions. */
 	practice: { toolCallId: string; input: unknown } | null;
 	/** (commit, text) — the practice dock's two submit lanes. */
-	onSubmitThinking: (text: string) => void;
+	onSubmitThinking: (text: string, codeRunId?: string) => void | Promise<void>;
 	/** Teach-phase pending question: arrives collapsed behind the reveal button (W5). */
 	requiresReveal: boolean;
 	/** The reading-thinking draft (owner 2026-10-03) — owned by ChatView so
@@ -2497,6 +2501,7 @@ function DockOverlay({
 								/>
 							) : practice ? (
 								<PracticeDock
+									chatId={chatId}
 									paused={paused}
 									problemCallId={practice.toolCallId}
 									input={practice.input as { statement: string }}
