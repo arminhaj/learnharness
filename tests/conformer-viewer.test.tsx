@@ -69,12 +69,16 @@ async function emit(frame: Frame, message: Partial<Message>) {
 
 function latestModel(frame: Frame) { return frame.messages.filter(message => message.type === "model").at(-1)!; }
 function button(text: string) { return [...host!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === text)!; }
+function labeledButton(label: string) { return [...host!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label") === label)!; }
+function conformerRow(id: string) { return [...host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(row => row.dataset.conformerId === id)!; }
 async function selectConformer(id: string) {
-	const select = host!.querySelector<HTMLSelectElement>("select")!;
-	// Linkedom exposes a getter-only select value; the native change event is
-	// otherwise the real React state path exercised in the browser.
-	Object.defineProperty(select, "value", { configurable: true, writable: true, value: id });
-	await act(async () => select.dispatchEvent(new window.Event("change", { bubbles: true })));
+	await act(async () => conformerRow(id).click());
+}
+async function pressConformerKey(id: string, key: string) {
+	const event = new window.Event("keydown", { bubbles: true, cancelable: true });
+	Object.assign(event, { key });
+	await act(async () => conformerRow(id).dispatchEvent(event));
+	return event;
 }
 
 afterEach(async () => {
@@ -84,13 +88,19 @@ afterEach(async () => {
 	requests.length = 0;
 });
 
-test("the selector loads lowest-found geometry and changes both geometry and energy metadata", async () => {
+test("the sidebar sorts conformers by energy and changes both geometry and energy metadata", async () => {
 	mockFetch(() => Response.json(ensemble()));
 	await mount({ smiles: "C1CCCCC1" });
 	const frame = await connectFrame();
 	const lowest = latestModel(frame);
 	assert.equal(lowest.sdf, "sample-lowest");
-	assert.match(host!.querySelector("option")!.textContent!, /1 · lowest found · ΔE 0.00 kcal\/mol · chair/);
+	const rows = [...host!.querySelectorAll('[role="radio"]')];
+	assert.deepEqual(rows.map(row => row.textContent), ["ΔE 0.00chair", "ΔE 5.20non-chair"]);
+	assert.equal(rows[0]!.getAttribute("aria-checked"), "true");
+	assert.equal(rows[1]!.getAttribute("aria-checked"), "false");
+	assert.equal(labeledButton("Collapse conformers").getAttribute("aria-expanded"), "true");
+	assert.equal(host!.querySelector("select"), null);
+	assert.doesNotMatch(host!.querySelector('[role="radiogroup"]')!.textContent!, /kcal\/mol|MMFF94|lowest found/);
 	assert.match(host!.querySelector('[data-testid="conformer-details"]')!.textContent!, /MMFF94 · ΔE 0.00 kcal\/mol · chair/);
 	assert.match(host!.textContent!, /22\/24 samples embedded · 21 converged · 2 distinct · 2 shown/);
 	assert.match(host!.textContent!, /not free energies or conformer populations/);
@@ -103,6 +113,8 @@ test("the selector loads lowest-found geometry and changes both geometry and ene
 	assert.equal(higher.style, "sticks", "conformer switching preserves the chosen representation");
 	assert.notEqual(higher.modelId, lowest.modelId);
 	assert.equal(higher.group, lowest.group, "the frame can retain the camera within this search");
+	assert.equal(conformerRow("sample-high").getAttribute("aria-checked"), "true");
+	assert.equal(conformerRow("sample-low").getAttribute("aria-checked"), "false");
 	assert.match(host!.querySelector('[data-testid="conformer-details"]')!.textContent!, /ΔE 5.20 kcal\/mol · non-chair/);
 	assert.equal(button("Rotate left").disabled, true, "new model waits for its own render acknowledgement");
 	await emit(frame, { type: "rendered", modelId: lowest.modelId });
@@ -116,6 +128,77 @@ test("the selector loads lowest-found geometry and changes both geometry and ene
 	assert.equal(frame.messages.at(-1)!.type, "rotate");
 	assert.equal(frame.messages.at(-1)!.modelId, higher.modelId);
 	assert.equal(frame.messages.filter(message => message.type === "model").length, count, "rotation never changes the selected conformer");
+});
+
+test("collapsing and reopening preserves the iframe, selected model, and render state", async () => {
+	mockFetch(() => Response.json(ensemble()));
+	await mount({ smiles: "C1CCCCC1" });
+	const frame = await connectFrame();
+	await selectConformer("sample-high");
+	const model = latestModel(frame);
+	await emit(frame, { type: "rendered", modelId: model.modelId });
+	const iframe = host!.querySelector("iframe");
+	const count = frame.messages.length;
+	const activeElementDescriptor = Object.getOwnPropertyDescriptor(document, "activeElement");
+	const toggle = labeledButton("Collapse conformers");
+	let focusedToggle = false;
+	toggle.focus = () => { focusedToggle = true; };
+	Object.defineProperty(document, "activeElement", { configurable: true, get: () => conformerRow("sample-high") });
+	try {
+		await act(async () => toggle.click());
+		assert.equal(focusedToggle, true, "focus moves out of the hidden list to its visible toggle");
+		assert.equal(labeledButton("Expand conformers").getAttribute("aria-expanded"), "false");
+		assert.equal(host!.querySelector<HTMLElement>('[role="radiogroup"]')!.hidden, true);
+		assert.equal(host!.querySelector("iframe"), iframe);
+		assert.equal(host!.querySelector("iframe")!.contentWindow, frame.window);
+		assert.equal(button("Rotate left").disabled, false);
+		assert.match(host!.querySelector('[data-testid="conformer-sidebar"]')!.className, /sm:w-10/);
+		await act(async () => labeledButton("Expand conformers").click());
+		assert.equal(labeledButton("Collapse conformers").getAttribute("aria-expanded"), "true");
+		assert.equal(host!.querySelector<HTMLElement>('[role="radiogroup"]')!.hidden, false);
+		assert.equal(conformerRow("sample-high").getAttribute("aria-checked"), "true");
+		assert.equal(host!.querySelector("iframe"), iframe);
+		assert.equal(button("Rotate left").disabled, false);
+		assert.equal(latestModel(frame), model);
+		assert.equal(frame.messages.length, count, "collapse never clears, reloads, or rotates the model");
+		assert.equal(requests.length, 1);
+		await selectConformer("sample-high");
+		assert.equal(frame.messages.length, count, "selecting the current conformer preserves the rendered model");
+	} finally {
+		if (activeElementDescriptor) Object.defineProperty(document, "activeElement", activeElementDescriptor);
+		else Reflect.deleteProperty(document, "activeElement");
+	}
+});
+
+test("conformer radio navigation moves focus and selection with arrows, Home, and End", async () => {
+	mockFetch(() => Response.json(ensemble()));
+	await mount({ smiles: "C1CCCCC1" });
+	const frame = await connectFrame();
+	let focused: string | undefined;
+	for (const row of host!.querySelectorAll<HTMLButtonElement>('[role="radio"]')) {
+		row.focus = () => { focused = row.dataset.conformerId; };
+	}
+	let escapedKeys = 0;
+	const listener = () => escapedKeys++;
+	window.addEventListener("keydown", listener);
+	try {
+		const down = await pressConformerKey("sample-low", "ArrowDown");
+		assert.equal(down.defaultPrevented, true);
+		assert.equal(focused, "sample-high");
+		assert.equal(conformerRow("sample-high").getAttribute("tabindex"), "0");
+		assert.equal(conformerRow("sample-low").getAttribute("tabindex"), "-1");
+		assert.equal(latestModel(frame).sdf, "sample-high-geometry");
+		await pressConformerKey("sample-high", "ArrowRight");
+		assert.equal(focused, "sample-low", "arrow navigation wraps at the end");
+		await pressConformerKey("sample-low", "ArrowUp");
+		assert.equal(focused, "sample-high", "arrow navigation wraps at the start");
+		await pressConformerKey("sample-high", "Home");
+		assert.equal(focused, "sample-low");
+		await pressConformerKey("sample-low", "End");
+		assert.equal(focused, "sample-high");
+		assert.equal(conformerRow("sample-high").getAttribute("aria-checked"), "true");
+		assert.equal(escapedKeys, 0, "viewer keys cannot trigger question shortcuts");
+	} finally { window.removeEventListener("keydown", listener); }
 });
 
 test("changing molecular source resets selection and ignores the previous model's messages", async () => {
@@ -141,33 +224,26 @@ test("an imported model remains unranked until an explicit conformer search", as
 	await mount({ sdf: "source-sdf", label: "Imported ring" });
 	const frame = await connectFrame();
 	assert.equal(latestModel(frame).sdf, "imported-coordinates");
-	assert.equal(host!.querySelector("select"), null);
+	assert.equal(host!.querySelector('[data-testid="conformer-sidebar"]'), null);
 	assert.doesNotMatch(host!.textContent!, /ΔE|kcal\/mol|lowest found/);
 	assert.match(host!.textContent!, /energy not evaluated/);
 	assert.equal(requests[0]!.search, undefined);
 	await act(async () => button("Search conformers").click());
 	assert.deepEqual(requests[1], { sdf: "source-sdf", label: "Imported ring", search: true });
 	assert.equal(latestModel(frame).sdf, "searched-lowest");
-	assert.ok(host!.querySelector("select"));
+	assert.ok(host!.querySelector('[data-testid="conformer-sidebar"]'));
 	await act(async () => button("Show imported coordinates").click());
 	assert.equal(requests[2]!.search, undefined);
 	assert.equal(latestModel(frame).sdf, "imported-coordinates");
 	assert.doesNotMatch(host!.textContent!, /ΔE|kcal\/mol/);
 });
 
-test("empty ring validation never invents a chair label and selector keys remain local", async () => {
+test("empty ring validation never invents a chair label", async () => {
 	const result = ensemble();
 	result.conformers!.forEach(candidate => { candidate.rings = []; });
 	mockFetch(() => Response.json(result));
 	await mount({ smiles: "CCCC" });
-	assert.doesNotMatch(host!.querySelector("select")!.textContent!, /chair|near-planar/);
-	let escapedKeys = 0;
-	const listener = () => escapedKeys++;
-	window.addEventListener("keydown", listener);
-	try {
-		await act(async () => host!.querySelector("select")!.dispatchEvent(new window.Event("keydown", { bubbles: true, cancelable: true })));
-		assert.equal(escapedKeys, 0);
-	} finally { window.removeEventListener("keydown", listener); }
+	assert.doesNotMatch(host!.querySelector('[role="radiogroup"]')!.textContent!, /chair|near-planar/);
 });
 
 test("search intent resets when switching imported sources, including returning to the old source", async () => {
@@ -193,7 +269,7 @@ test("a late response from an aborted source cannot replace the current search",
 	assert.equal(latestModel(frame).sdf, "new-lowest");
 	await act(async () => resolveFirst(Response.json(ensemble("old"))));
 	assert.equal(latestModel(frame).sdf, "new-lowest");
-	assert.doesNotMatch(host!.querySelector("select")!.innerHTML, /old-/);
+	assert.doesNotMatch(host!.querySelector('[role="radiogroup"]')!.innerHTML, /old-/);
 });
 
 test("failed imported searches can retry with search intent preserved", async () => {
