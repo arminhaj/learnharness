@@ -1,10 +1,21 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 import { createWebTools } from "../tools/web.ts";
 import { createPdfReadTools } from "../tools/pdf-read.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import type { PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
+
+// Preserve the existing total step bound, reserving the last step for a
+// deliverable. A tool handoff (including a zero-usage CLI continuation) is
+// progress, but its incidental text is not a completed research brief.
+const MAX_STEPS = 12;
+const FINALIZE = `The research collection step budget is exhausted. Do not call more tools.
+Write your final brief now, in the required Summary, Findings, Sources, and Gaps format,
+using only the task and evidence already in this conversation. Cite only sources actually
+available in that evidence. Clearly distinguish supported findings from unresolved questions.
+State that the collection budget was reached and identify any remaining gaps. If the available
+evidence cannot answer the question, say so explicitly; do not invent an answer or sources.`;
 
 /**
  * The researcher sub-agent (vision §2.5): a SEPARATE ToolLoopAgent instance
@@ -94,18 +105,45 @@ export interface ResearcherRunOptions {
 export async function runResearcherAgent(prompt: string, opts: ResearcherRunOptions = {}): Promise<string> {
 	const tools = Object.values(createWebTools(opts.search ?? (() => null)));
 	if (opts.pdfDir) tools.push(...Object.values(createPdfReadTools(opts.pdfDir)));
-	const { text } = await runSubagent(tools, {
-		role: "researcher",
-		prompt,
+	const shared = {
+		role: "researcher" as const,
 		engine: opts.engine,
 		systemPrompt: INSTRUCTIONS,
-		maxTurns: 12,
 		abortSignal: opts.abortSignal,
 		onUsage: opts.onUsage,
 		onToolStart: opts.onToolStart,
 		chatId: opts.chatId,
+	};
+	const task: AgentMessage = { role: "user", content: prompt, timestamp: Date.now() };
+	const collected = await runSubagent(tools, {
+		...shared,
+		messages: [task],
+		maxTurns: MAX_STEPS - 1,
 	});
-	return text;
+	const last = collected.newMessages.findLast((message) => message.role === "assistant");
+	const unfinished = last?.role === "assistant" &&
+		(last.stopReason === "toolUse" || last.content.some((block) => block.type === "toolCall"));
+	if (!unfinished) {
+		if (last?.role === "assistant" && last.stopReason === "length") {
+			throw new Error("the research response was truncated before a complete brief was produced");
+		}
+		return collected.text;
+	}
+
+	// Keep all collected evidence and the original task, but remove tools so
+	// the final step must synthesize rather than spend the budget searching.
+	// runSubagent has already released any parked provider from collection.
+	const final = await runSubagent([], {
+		...shared,
+		messages: [task, ...collected.newMessages, { role: "user", content: FINALIZE, timestamp: Date.now() }],
+		maxTurns: 1,
+	});
+	const completed = final.newMessages.findLast((message) => message.role === "assistant");
+	if (completed?.role !== "assistant" || completed.stopReason !== "stop" ||
+		completed.content.some((block) => block.type === "toolCall") || !final.text.trim()) {
+		throw new Error("research step limit reached; final synthesis did not produce a complete text brief");
+	}
+	return final.text;
 }
 
 export type ResearcherAgent = ReturnType<typeof runResearcherAgent>;

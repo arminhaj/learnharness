@@ -40,6 +40,7 @@ import { authEnvRecord } from "../src/core/auth-env.ts";
 import { ClaudeLaunchError } from "../src/agent/claude-code/launch.ts";
 import { createClaudeCodeStreamFunction, toClaudeArgs, toEffort, type RunClaude } from "../src/agent/claude-code/stream.ts";
 import { toStreamJsonLine } from "../src/agent/claude-code/transcript.ts";
+import { runSubagent } from "../src/agent/subagents/pi-run.ts";
 
 const FAKE_CLAUDE = fileURLToPath(new URL("./fixtures/claude-code/fake-claude.mjs", import.meta.url));
 const FIXTURES = fileURLToPath(new URL("./fixtures/claude-code/", import.meta.url));
@@ -853,6 +854,25 @@ test("idle timeout kills an orphaned waiting process", async (t) => {
 	await runTurn(createClaudeCodeStreamFunction(runClaude), [HI]);
 
 	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("a capped subagent immediately releases its parked Claude process and bridge", async (t) => {
+	const readA: ToolUse = { id: "toolu_capped_subagent", name: "read", arguments: { path: "a" } };
+	const { runClaude, calls } = createFakeRun(t, [...toToolUseMessage([readA]), callTool(readA), REPLY]);
+	let executed = 0;
+	const read = {
+		name: "read", label: "read", description: "Read fixture", parameters: Type.Object({ path: Type.String() }),
+		execute: async () => { executed++; return { content: [{ type: "text" as const, text: "synthetic source" }], details: {} }; },
+	};
+	const result = await runSubagent([read], {
+		role: "researcher", engine: { model: CLAUDE_CODE_MODELS[0]!, streamFn: createClaudeCodeStreamFunction(runClaude) },
+		systemPrompt: "Offline fixture", prompt: "Read the fixture", maxTurns: 1,
+	});
+	assert.equal(executed, 1);
+	assert.ok(result.newMessages.some((message) => message.role === "toolResult"), "completed source result is retained");
+	const call = getOnlyCall(calls);
+	await assertCleanedUp(call);
+	await assert.rejects(fetch(getMcpUrl(call)), "the parked MCP bridge must close without its 10-minute timeout");
 });
 
 test("a tool result arriving after the idle timeout starts fresh with the call and its result in the replay", async (t) => {
