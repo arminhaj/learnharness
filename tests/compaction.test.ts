@@ -340,6 +340,27 @@ describe("serializeForSummary + buildCompactionPrompt", () => {
 		assert.ok(serializeForSummary([marker]).includes("LEGACY SUMMARY"));
 	});
 
+	it("retains a full assignment handoff and checked solution when source-read results are shortened", () => {
+		const inventory = Array.from({ length: 40 }, (_, i) =>
+			`Problem Set 4 · Question ${i + 1}(a): Solve 2x + ${i + 4} = ${i + 10} for real x and verify by substitution. Source: /courses/ps4.txt. Status: remaining.`,
+		).join("\n");
+		const handoff: LhMessage = {
+			id: "assignment-handoff", role: "assistant", timestamp: 1,
+			content: [{ type: "toolCall", id: "probe-done", name: "probe_done", arguments: {
+				assessment: { strands: [{ strand: "Linear equations", assessment: "Unmeasured" }], summary: inventory },
+			} }],
+		} as never;
+		const solution = "Problem Set 4 · Question 1(a): subtract 4, then divide by 2 to obtain x = 3. Check: 2(3) + 4 = 10. Guided solution checked; completed. Next: Question 2(a).";
+		const serialized = serializeForSummary([
+			{ ...resultFor("read-set", inventory), toolName: "read" },
+			handoff,
+			assistantText("checked-solution", solution),
+		]);
+		assert.ok(serialized.includes("…[truncated]"), "the raw source is longer than the tool-result budget");
+		assert.ok(serialized.includes(JSON.stringify(inventory)), "the handoff retains every original statement and status");
+		assert.ok(serialized.includes(solution), "usable working and the next unfinished question reach the summarizer");
+	});
+
 	it("the prompt demands the four sections in order and carries the plan tree verbatim", () => {
 		const prompt = buildCompactionPrompt({ spanText: "TRANSCRIPT", planTreeText: "- [done] A (a1)\n- A → B", kind: "teach" });
 		const order = ["The learner's understanding", "The teaching arc", "The plan dependency tree", "The current moment"].map(

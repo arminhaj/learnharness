@@ -200,13 +200,17 @@ export interface TurnUsage {
  *  — plan_init is still the first tool, the plan map still the first
  *  artifact, and presenting still ends the turn (the verdict death,
  *  2026-09-26: the learner's next message is a natural reply — a change
- *  request or the go-ahead). */
+ *  request or the go-ahead). A requested problem-set walkthrough instead
+ *  enters its first question directly after presenting the map. */
 export const HANDOFF_TEXT =
 	"Next: plan the full teaching arc from my current understanding to the goal understanding. " +
 	"Apply the teaching methodology in your system prompt, and find the optimal way to teach me this. " +
 	"Find the unconditional truths, plan the motivated derivations/discoveries, so every reasoning step has to land as obviously true. " +
 	"Take your time here and really think this through. " +
-	"When it's genuinely reasoned out, call plan_init and present the plan; I'll accept it or ask for changes.";
+	"When it's genuinely reasoned out, call plan_init and present the plan; I'll accept it or ask for changes. " +
+	"If I requested a problem-set walkthrough, use that workflow instead: follow the original question order, " +
+	"plan from the first assigned question, and teach prerequisites only as needed. Present the approach and " +
+	"map, then begin that question without a separate plan-acceptance round; retain any work already completed.";
 
 // ─── Practice sessions (owner, 2026-10-04) — marker + ack texts ──────────────
 // Single-sourced here per the marker law: the model-facing text of every

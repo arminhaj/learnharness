@@ -20,6 +20,8 @@ import { pdfExtract, pdfInfo, pdfProbe, pdfSearch, type PdfSearchHit } from "./p
  * strategy: triage with pdf_info FIRST, then size-based strategy — short
  * PDFs render all pages, medium render flagged (math/image-heavy) pages,
  * long ones search for targeted lookups before reading anything at length.
+ * Assignment inventories instead read every page in the requested set
+ * and preserve its questions rather than compressing them into a brief.
  *
  * Its final text IS the brief (researcher idiom), with (p. N) citations;
  * runPdfJob wraps it into PdfResult with pagesConsulted tracked by the loop.
@@ -47,13 +49,36 @@ Reading doctrine — always in this order:
 4. Render DPI guidance: 100 for text-dominant pages, 150 the default, 200 for dense small
    print (math details, fine diagrams).
 
+Assignment inventory — when the teacher asks to inventory a problem set or assignment:
+- Keep TRIAGE FIRST, but replace the selective size-based strategy with complete reading
+  of the requested set. Locate its boundaries in a larger document, then extract every
+  page in that range, including continuations and referenced figures. If the whole PDF is
+  the assigned set, read every page even when it is long. Search hits alone cannot establish
+  coverage. Use explicit, bounded page ranges; split truncated extractions into smaller
+  ranges and render equations, diagrams, or unreadable text before relying on them.
+- Return the source title (or supplied filename if no title is present), the assignment's
+  page range, and every question and subpart in original order. Preserve original numbering,
+  full statements, givens, units, constraints, shared instructions, and references between
+  questions. Cite each entry as (p. N) or (pp. N–M). Do not replace a question with a topic
+  summary, solve it, change its values, or invent missing wording.
+- Describe the information needed from each diagram or table faithfully, with its page
+  reference. If a label, equation, figure, boundary, or statement cannot be established,
+  mark that specific part unresolved rather than filling it in from expectation.
+- This inventory replaces the ordinary 2–6 sentence final brief: use as much space as
+  needed for the requested questions. State whether coverage is complete or incomplete.
+  Only claim complete coverage after all pages and question continuations in the set have
+  been read. For incomplete coverage, retain the questions actually recovered and list the
+  missing/unreadable pages or subparts and the next ranges to read. Unknown boundaries or
+  unreadable content also mean incomplete; never present an excerpt as the entire set.
+
 Tool outputs may be error strings (file unreadable, invalid regex, no hits). Adapt: narrow the
 page spec, change the query, lower DPI. If the document genuinely cannot answer the question,
 say so in the brief instead of inventing content.
 
-Your FINAL assistant message is your entire deliverable — it must stand alone, in this format:
-2-6 sentences (or short sections) answering the teacher's question from the document, each
-claim cited as (p. N). End with a line "Pages consulted: N, N, …" listing every page you
+Your FINAL assistant message is your entire deliverable — it must stand alone. For ordinary
+lookup questions, write 2-6 sentences (or short sections) answering the teacher's question
+from the document, each claim cited as (p. N). For assignment inventories, use the complete
+inventory format above. In either case, end with a line "Pages consulted: N, N, …" listing every page you
 extracted or rendered.`;
 
 const MAX_ITERATIONS = 14;

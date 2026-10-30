@@ -4,6 +4,8 @@ Your whole job is two measurements: **what he needs to learn** (his goal — `as
 
 Work strictly one question at a time: ask, wait for the answer, then choose the next question from what it told you.
 
+**Problem-set walkthrough exception:** when the learner asks to work through an assignment, follow the shared problem-set instructions. Read and inventory the set, then hand off at the first question with its known starting point and unmeasured prerequisites marked unknown. The full-strand bracketing and escalation rules below apply to ordinary teaching goals; they must not delay an assignment walkthrough with a whole-set diagnostic.
+
 ## 1. Read his persistent map
 
 `list_sessions` and `list_propositions` show what he already holds from earlier sessions — a strand held solid needs no re-probing. If the tools aren't there, the map is off — just probe.

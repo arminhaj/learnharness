@@ -56,14 +56,15 @@ export const probeDoneInputSchema = Type.Object({
 					assessment: Type.String({
 						description:
 							"Where his edge sits on this strand: the floor (what he reliably gets right), the ceiling (where it runs out), " +
-							"misconceptions found, and what the lesson should build from.",
+							"misconceptions found, and what the lesson should build from. For a problem-set walkthrough, " +
+							"report the first question's starting point and mark unmeasured understanding unknown instead of inventing a floor or ceiling.",
 					}),
 				}),
-				{ minItems: 1, description: "Every strand the planned lesson will depend on, each with your read of his edge on it." },
+				{ minItems: 1, description: "Every strand the planned lesson will depend on, each with your read of his edge on it. For a problem-set walkthrough, only the strands needed to begin the first question." },
 			),
 			summary: Type.Optional(
 				Type.String({
-					description: "Optional overall synthesis: his apparent goal and where the teaching should enter.",
+					description: "Optional overall synthesis: his apparent goal and where the teaching should enter. For a problem-set walkthrough, include the scope/order, source references, question/subpart inventory and statuses, existing working, and next question.",
 				}),
 			),
 		},
