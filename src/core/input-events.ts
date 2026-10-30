@@ -42,6 +42,7 @@ import {
 	newThinkingMessage,
 	newUserMessage,
 	pendingProblemDismissalOf,
+	reconstructRequestCause,
 } from "./native-messages.ts";
 import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
 
@@ -279,14 +280,36 @@ export function inputAppends(
 	}
 }
 
+type AssistantResponse = Extract<LhMessage, { role: "assistant" }>;
+
+/** A provider can report success while returning no answer. Only verified
+ * foreground requests require an answer; automatic wakes may end silently.
+ * Reasoning alone is not an answer, and unfamiliar output is never guessed empty. */
+function failedResponse(messages: readonly LhMessage[], index: number): boolean {
+	const message = messages[index]!;
+	if (message.role !== "assistant") return false;
+	if (message.stopReason === "error") return true;
+	if (message.stopReason !== "stop" || !message.content.every(block =>
+		block.type === "thinking" || (block.type === "text" && block.text.trim().length === 0),
+	)) return false;
+	return reconstructRequestCause(messages.slice(0, index + 1)) === "foreground";
+}
+
+/** Display text for a response already classified as failed; keep provider errors verbatim. */
+export function failedResponseMessage(message: AssistantResponse): string {
+	return message.stopReason === "error"
+		? message.errorMessage ?? "An error occurred."
+		: "The model finished without an answer. Your input is saved.";
+}
+
 /** The failure owning the ephemeral banner. Plan presentation and
  * compaction do not resolve an error; substantive later input/output does.
  * This is deliberately broader than Retry eligibility below. */
-export function failedResponseAtEnd(messages: readonly LhMessage[]): Extract<LhMessage, { role: "assistant" }> | undefined {
+export function failedResponseAtEnd(messages: readonly LhMessage[]): AssistantResponse | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i]!;
 		if (m.role === "custom" && (m.customType === "plan-block" || m.customType === "compaction")) continue;
-		return m.role === "assistant" && m.stopReason === "error" ? m : undefined;
+		return m.role === "assistant" && failedResponse(messages, i) ? m : undefined;
 	}
 	return undefined;
 }
@@ -312,7 +335,7 @@ export function retryDrops(messages: readonly LhMessage[]): Set<string> {
 	if (ids.size === 0) {
 		const failure = failedResponseAtEnd(messages);
 		if (failure) {
-			throw new ChatInputError(`${failure.errorMessage ?? "An error occurred."}\n\nThis response cannot be retried after compaction. Send a new message to continue.`);
+			throw new ChatInputError(`${failedResponseMessage(failure)}\n\nThis response cannot be retried after compaction. Send a new message to continue.`);
 		}
 		throw new ChatInputError("retry input requires a failed turn to retry");
 	}
@@ -328,7 +351,7 @@ function failedTail(messages: readonly LhMessage[]): { ids: Set<string>; before:
 	let i = messages.length - 1;
 	for (; i >= 0; i--) {
 		const m = messages[i]!;
-		if (m.role === "assistant" && m.stopReason === "error") ids.add(m.id);
+		if (failedResponse(messages, i)) ids.add(m.id);
 		else if (!(m.role === "custom" && m.customType === "plan-block")) break;
 	}
 	return { ids, before: messages[i] };

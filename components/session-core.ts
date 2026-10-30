@@ -19,6 +19,7 @@ import {
 	needsContinuation,
 	pendingQuestionOf,
 	failedResponseAtEnd,
+	failedResponseMessage,
 	measuredContextTokens,
 	newAnswerResult,
 	newNextMessage,
@@ -316,7 +317,7 @@ export class SessionModel {
 		const providerError =
 			latest !== undefined &&
 			!this.incompleteUsageIds.has(latest.id) && (!live || latest.id === this.liveFailureId)
-				? { message: latest.errorMessage ?? "An error occurred." }
+				? { message: failedResponseMessage(latest) }
 				: null;
 		return {
 			messages: projectView(messages, live),
@@ -440,12 +441,6 @@ export class SessionModel {
 				const withId = { ...message, id } as LhMessage;
 				if (agent.type === "message_end") {
 					this.incompleteUsageIds.delete(id);
-					if (message.role === "assistant" && message.stopReason === "error") {
-						this.liveFailureId = id;
-						// A newer provider failure replaces an earlier connection/loop
-						// error, just as the live message_end did before restoration.
-						this.errorValue = null;
-					}
 				} else this.incompleteUsageIds.add(id);
 				if (agent.type === "message_start") {
 					this.streamingMessageId = id;
@@ -457,10 +452,16 @@ export class SessionModel {
 					this.mutate(() => {
 						const idx = this.tail.findIndex((m) => m.id === id);
 						this.tail = idx === -1 ? [...this.tail, withId] : this.tail.with(idx, withId);
+						if (agent.type === "message_end") {
+							this.streamingMessageId = null; // slot done — next start mints fresh
+							if (failedResponseAtEnd([...this.base, ...this.tail])?.id === id) {
+								this.liveFailureId = id;
+								// Completed empty replies use the same banner as provider
+								// failures, derived from saved input and the complete reply.
+								this.errorValue = null;
+							}
+						}
 					});
-				}
-				if (agent.type === "message_end") {
-					this.streamingMessageId = null; // slot done — next start mints fresh
 				}
 				return true; // a message event is view work, even empty content
 			}

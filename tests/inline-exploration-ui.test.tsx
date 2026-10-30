@@ -15,6 +15,7 @@ import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 import { useChatSession } from "../components/session.ts";
 import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
+import { buildAnswer, newAnswerResult } from "../src/core/index.ts";
 
 const chat: ExplorationRecord & { turnInFlight: boolean } = {
 	id: "child", title: "Why does this happen?", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", messages: [],
@@ -321,6 +322,32 @@ function mockBranchRequests(record: ExplorationRecord, inputs: Array<{ chatId: s
 }
 
 describe("exploration teaching controls", () => {
+	it("offers an explicit response retry after a saved choice receives an empty completion", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const choice = "Continue the derivation";
+			const answer = buildAnswer({ id: "choice", kind: "ask", question: "What should we explore?", mode: "single-select", options: [{ label: choice, value: "continue" }], createdAt: "fixture" }, { values: ["continue"] });
+			const record: ExplorationRecord = { ...chat, exploration: { ...chat.exploration, status: "active" }, messages: [
+				{ id: "learner", role: "user", content: [{ type: "text", text: "Help me understand this derivation." }], timestamp: 1 },
+				{ ...fauxAssistantMessage([fauxToolCall("ask_user_question", { question: "What should we explore?", options: [{ label: choice, value: "continue" }] }, { id: "choice" })], { stopReason: "toolUse" }), id: "question" },
+				newAnswerResult("choice", "ask_user_question", answer),
+				{ ...fauxAssistantMessage([{ type: "thinking", thinking: "" }, fauxText("")], { stopReason: "stop" }), id: "empty" },
+			] };
+			const original = JSON.stringify(record);
+			const inputs: Array<{ chatId: string; input: { type: string; toolCallId?: string } }> = [];
+			mockBranchRequests(record, inputs);
+			await renderBranch(root, record);
+			assert.match(host.querySelector('[role="alert"]')?.textContent ?? "", /The model finished without an answer\. Your input is saved\./);
+			assert.match(host.textContent ?? "", /Continue the derivation/);
+			assert.equal(host.querySelector('[role="radio"]'), null, "the saved choice is not requested again");
+			assert.equal(host.querySelector('[aria-label="Working"]'), null, "a completed empty reply is no longer presented as working");
+			assert.equal(inputs.length, 0, "opening the exploration never retries inference");
+			const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry response");
+			assert.ok(retry);
+			await act(async () => retry.click());
+			assert.deepEqual(inputs, [{ chatId: "child", input: { type: "retry" } }], "retry reuses the saved input instead of submitting the choice twice");
+			assert.equal(JSON.stringify(record), original, "the failed attempt and original input remain in the record");
+		});
+	});
 	it("reveals child checks after teaching and preserves the exact selected answer across returning and reopening", async () => {
 		await withExplorationDOM(async (host, root) => {
 			const record = teachingBranch();

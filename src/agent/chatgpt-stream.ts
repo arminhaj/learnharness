@@ -1,7 +1,9 @@
 import type { Api, AssistantMessage, Model, SimpleStreamOptions, StreamFunction, TranscriptContext } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-responses";
+import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import type { ResponseOutputMessage, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { chatGPTAbortController, chatGPTScope, chatGPTScopeCurrent, chatGPTLease, chatGPTDenial } from "./chatgpt-bridge.ts";
 import type { AdmissionScope, ChatGPTDispatchLifecycle } from "./chatgpt-request-cycle.ts";
 
@@ -44,6 +46,48 @@ export function chatGPTHistory(context: TranscriptContext, logicalModel: Model<A
 function empty(model: Model<Api>): AssistantMessage {
 	return { role: "assistant", api: model.api, provider: "chatgpt", model: model.id, content: [], stopReason: "error", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
+interface StreamedItem { id?: string; type: "text" | "thinking" | "toolCall" }
+function completedMessage(item: unknown): item is ResponseOutputMessage {
+	if (!item || typeof item !== "object") return false;
+	const value = item as ResponseOutputMessage;
+	return value.type === "message" && value.role === "assistant" && value.status === "completed" &&
+		typeof value.id === "string" && value.id.length > 0 && Array.isArray(value.content) &&
+		value.content.every((part) => part && ((part.type === "output_text" && typeof part.text === "string") || (part.type === "refusal" && typeof part.refusal === "string")));
+}
+/** Pi 1.4 finalizes text from item.done, but does not reconcile completed.output.
+ * Restore only authoritative nonempty message text; never reconstruct tool calls.
+ * Run those messages through Pi's public parser to retain its exact ID/phase
+ * signature format, which is private to the native history serializer. */
+async function preserveCompletedText(message: AssistantMessage, model: Model<Api>, finalOutput: unknown[], streamedItems: StreamedItem[]): Promise<AssistantMessage> {
+	const items = finalOutput.filter(completedMessage).filter((item) => item.content.some((part) => (part.type === "output_text" ? part.text : part.refusal).length > 0));
+	if (items.length === 0 || new Set(items.map((item) => item.id)).size !== items.length) return message;
+	const canonical = empty(model);
+	const parsed = new AssistantMessageEventStream();
+	await processResponsesStream((async function* () {
+		for (const [output_index, item] of items.entries()) yield { type: "response.output_item.done", output_index, item } as ResponseStreamEvent;
+		yield { type: "response.completed", response: { status: "completed" } } as ResponseStreamEvent;
+	})(), canonical, parsed, model);
+	parsed.end();
+	const restored = new Map(items.map((item, index) => [item.id, canonical.content[index]!]));
+	const positions = new Map(finalOutput.flatMap((item, index) => item && typeof item === "object" && "id" in item && typeof item.id === "string" ? [[item.id, index] as const] : []));
+	const content = message.content.map((block, index) => {
+		const source = streamedItems[index];
+		const id = source?.type === block.type ? source.id : undefined;
+		const replacement = id && block.type === "text" ? restored.get(id) : undefined;
+		if (id && replacement) restored.delete(id);
+		return { id, block: replacement ?? block };
+	});
+	for (const [id, block] of restored) {
+		const position = positions.get(id)!;
+		const before = content.findIndex((entry) => entry.id !== undefined && (positions.get(entry.id) ?? -1) > position);
+		content.splice(before < 0 ? content.length : before, 0, { id, block });
+	}
+	if (content.length === message.content.length && content.every(({ block }, index) => {
+		const original = message.content[index]!;
+		return block === original || (block.type === "text" && original.type === "text" && block.text === original.text && block.textSignature === original.textSignature);
+	})) return message;
+	return { ...message, content: content.map(({ block }) => block) };
+}
 export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDispatchLifecycle): StreamFunction<Api, SimpleStreamOptions> {
 	return (logicalModel, context, options) => {
 		const output = new AssistantMessageEventStream();
@@ -57,6 +101,9 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			let scope: AdmissionScope | undefined;
 			let committed = false;
 			let terminal = false;
+			let completedOutput: unknown[] | undefined;
+			const streamedItems: StreamedItem[] = [];
+			const openSlots = new Set<number | undefined>();
 			const check = () => { if (signal.aborted || !scope || !chatGPTScopeCurrent(scope)) throw new Error("cancelled or catalog authority changed"); };
 			try {
 				if (logicalModel.provider !== "chatgpt") throw new Error("ChatGPT account catalog has no selected model");
@@ -88,8 +135,17 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 						return payload;
 					},
 					onProviderStreamEvent: async (raw, model) => {
-						const event = raw as { type?: string; code?: string; error?: { code?: string }; response?: { error?: { code?: string }; status?: string } };
-						if (event.type === "response.completed" && event.response?.status === "completed" && !event.response?.error) completed = true;
+						const event = raw as { type?: string; output_index?: number; item?: { id?: string; type?: string }; code?: string; error?: { code?: string }; response?: { error?: { code?: string }; status?: string; output?: unknown[] } };
+						if (event.type === "response.completed" && event.response?.status === "completed" && !event.response?.error) {
+							completed = true;
+							completedOutput = Array.isArray(event.response.output) ? event.response.output : undefined;
+						}
+						if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
+							const type = event.item?.type === "message" ? "text" : event.item?.type === "reasoning" ? "thinking" : ["function_call", "custom_tool_call"].includes(event.item?.type ?? "") ? "toolCall" : undefined;
+							if (type && (event.type.endsWith("added") || !openSlots.has(event.output_index))) streamedItems.push({ id: event.item?.id, type });
+							if (type && event.type.endsWith("added")) openSlots.add(event.output_index);
+							if (event.type.endsWith("done")) openSlots.delete(event.output_index);
+						}
 						if (["response.incomplete", "response.failed", "error"].includes(event.type ?? "") || event.response?.error) failure = event.code || event.error?.code || event.response?.error?.code || "incomplete terminal response";
 						await options?.onProviderStreamEvent?.(raw, model);
 					},
@@ -100,6 +156,7 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 					partial = { ...message, provider: "chatgpt" };
 					if (event.type === "done") {
 						if (!completed || failure) throw new Error(failure || "missing terminal response.completed");
+						if (completedOutput) partial = await preserveCompletedText(partial, logicalModel, completedOutput, streamedItems);
 						terminal = true;
 						output.push({ ...event, message: partial });
 					} else if (event.type === "error") {

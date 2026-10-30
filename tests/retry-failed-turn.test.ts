@@ -36,7 +36,7 @@ const { chatStore } = await import("../src/store/chats.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
 const { subscribe } = await import("../src/core/events.ts");
 const { buildAnswer, normalizeOptions, resolveCorrect } = await import("../src/core/question-core.ts");
-const { ChatInputError, endsInFailedTurn, failedResponseAtEnd, inputAppends, parseChatInput, retryDrops } = await import("../src/core/input-events.ts");
+const { ChatInputError, endsInFailedTurn, failedResponseAtEnd, failedResponseMessage, inputAppends, parseChatInput, retryDrops } = await import("../src/core/input-events.ts");
 const { INTERRUPTED_TEXT, asAgentMessages, hasProbeDone, newHandoffMessage, newPlanBlockMessage, newUserMessage, reconstructRequestCause, toLlmMessages } = await import("../src/core/native-messages.ts");
 const { phaseAt3Lh } = await import("../src/core/phases.ts");
 const { newCompactionMarker } = await import("../src/core/compaction.ts");
@@ -119,6 +119,9 @@ const roles = (chatId: string) => chatStore.getChat(chatId)!.messages.map((m) =>
 const failed = (id: string, text = ""): LhMessage => ({
 	...fauxAssistantMessage(text, { stopReason: "error", errorMessage: "fetch failed" }), id,
 });
+const noAnswer = (id: string, reasoning = ""): LhMessage => ({
+	...fauxAssistantMessage([{ type: "thinking", thinking: reasoning }, fauxText("")], { stopReason: "stop" }), id,
+});
 const compaction = (firstKeptMessageId: string) => newCompactionMarker("summary", {
 	firstKeptMessageId, tokensBefore: 100, model: "fixture", at: "2026-01-01T00:00:00Z",
 });
@@ -128,6 +131,56 @@ function assertPreserved(before: LhMessage[], saved: LhMessage[]): void {
 }
 
 describe("failed-response Retry (issue #110)", () => {
+	it("an empty successful completion after a saved ask answer exposes explicit Retry without resubmitting the answer", async () => {
+		const ask = { question: "Follow the mechanism?", options: [{ label: "Yes, follow mechanism" }, { label: "Review the terminology" }] };
+		const answer = buildAnswer({ id: "ask-1", kind: "ask", question: ask.question, mode: "single-select", options: normalizeOptions(ask.options), createdAt: "fixture" }, { values: ["Yes, follow mechanism"] });
+		const { engine, contexts, histories } = scripted([
+			() => fauxAssistantMessage([fauxToolCall("ask_user_question", ask, { id: "ask-1" })], { stopReason: "toolUse" }),
+			() => fauxAssistantMessage([{ type: "thinking", thinking: "" }, fauxText("")], { stopReason: "stop" }),
+			() => fauxAssistantMessage("Here is the requested mechanism."),
+		]);
+		const chat = createConfiguredChat("Test: blank completion after saved ask answer");
+		await turn(engine, chat.id, { type: "text", text: "Explain this mechanism" });
+		await turn(engine, chat.id, { type: "answer", toolCallId: "ask-1", answer });
+		const before = chatStore.getChat(chat.id)!.messages;
+		assert.equal(contexts.length, 2, "the empty completion does not trigger an automatic model retry");
+		assert.equal(isTurnRunning(chat.id), false);
+		assert.equal(before.at(-1)?.role, "assistant");
+		assert.equal(endsInFailedTurn(before), true);
+		assert.strictEqual(failedResponseAtEnd(before), before.at(-1), "classification returns the original saved response");
+		assert.equal(failedResponseMessage(failedResponseAtEnd(before)!), "The model finished without an answer. Your input is saved.");
+		assert.equal((await turn(engine, chat.id, { type: "retry" })).status, 200);
+		const saved = chatStore.getChat(chat.id)!.messages;
+		assertPreserved(before, saved);
+		assert.equal(saved.filter(message => message.role === "toolResult" && message.toolCallId === "ask-1").length, 1);
+		assert.deepEqual(contexts.at(-1), ["user", "assistant", "toolResult"]);
+		assert.match(histories.at(-1)!, /Yes, follow mechanism/);
+		assert.match(JSON.stringify(saved.at(-1)), /requested mechanism/);
+		assert.equal(endsInFailedTurn(saved), false);
+	});
+
+	it("repeated empty, reasoning-only and failed attempts retry the saved text without duplicating input", async () => {
+		const { engine, contexts } = scripted([
+			() => fauxAssistantMessage(""),
+			() => fauxAssistantMessage([{ type: "thinking", thinking: "A fixture reasoning summary, without an answer." }]),
+			networkFailure,
+			() => fauxAssistantMessage("The answer is ready."),
+		]);
+		const chat = createConfiguredChat("Test: repeated answerless completions");
+		await turn(engine, chat.id, { type: "text", text: "Explain the concept" });
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const before = chatStore.getChat(chat.id)!.messages;
+			assert.equal(endsInFailedTurn(before), true);
+			assert.equal((await turn(engine, chat.id, { type: "retry" })).status, 200);
+			const saved = chatStore.getChat(chat.id)!.messages;
+			assertPreserved(before, saved);
+			assert.equal(saved.length, before.length + 1);
+			assert.equal(saved.filter(message => message.role === "user").length, 1);
+		}
+		assert.deepEqual(contexts, [["user"], ["user"], ["user"], ["user"]]);
+		assert.equal(endsInFailedTurn(chatStore.getChat(chat.id)!.messages), false);
+	});
+
 	it("retries from the saved answer, preserving the full input and failed attempt", async () => {
 		const { engine, contexts, histories } = scripted([
 			() => fauxAssistantMessage([fauxToolCall("quiz", QUIZ_INPUT, { id: "call-1" })], { stopReason: "toolUse" }),
@@ -236,11 +289,11 @@ describe("failed-response Retry (issue #110)", () => {
 		assert.deepEqual(contexts.at(-1), ["user"], "the plan block remains UI-only");
 	});
 
-	it("does not reexecute completed tools before a later model failure", async () => {
+	for (const failure of ["error", "empty"] as const) it(`does not reexecute completed tools before a later ${failure} completion`, async () => {
 		let executions = 0;
 		const { engine, contexts } = scripted([
 			() => fauxAssistantMessage([fauxToolCall("save_note", {}, { id: "note-1" })], { stopReason: "toolUse" }),
-			networkFailure,
+			failure === "error" ? networkFailure : () => fauxAssistantMessage(""),
 			() => fauxAssistantMessage("The saved note is ready."),
 		]);
 		const tools: AgentBuildOptions["tools"] = {
@@ -572,6 +625,66 @@ describe("the Retry button's client path", () => {
 });
 
 describe("Retry eligibility and temporary omissions (pure)", () => {
+	for (const response of [
+		noAnswer("empty"),
+		noAnswer("reasoning-only", "A fixture reasoning summary."),
+		{ ...fauxAssistantMessage(" \n\t "), id: "whitespace" } as LhMessage,
+		{ ...fauxAssistantMessage([]), id: "no-blocks" } as LhMessage,
+	]) it(`classifies foreground ${response.id} without changing its stored content or success status`, () => {
+		const messages = [newUserMessage("Explain this"), response];
+		const before = JSON.parse(JSON.stringify(messages));
+		assert.strictEqual(failedResponseAtEnd(messages), response);
+		assert.equal(endsInFailedTurn(messages), true);
+		assert.deepEqual([...retryDrops(messages)], [response.id]);
+		assert.deepEqual(messages, before);
+		assert.equal(response.role === "assistant" && response.stopReason, "stop");
+	});
+
+	it("preserves background silence and ambiguous request causes", () => {
+		const user = newUserMessage("Hello");
+		const blank = noAnswer("blank");
+		const unknown = { id: "unknown", role: "custom", customType: "future-input", content: "", details: {}, timestamp: 1 } as unknown as LhMessage;
+		for (const messages of [[user, newHandoffMessage("chat_x"), blank], [user, unknown, blank], [blank]]) {
+			assert.notEqual(reconstructRequestCause(messages), "foreground");
+			assert.equal(failedResponseAtEnd(messages), undefined);
+			assert.equal(endsInFailedTurn(messages), false);
+			assert.throws(() => retryDrops(messages), /requires a failed turn/);
+		}
+	});
+
+	it("does not reinterpret substantive, tool, aborted or unfamiliar output as an empty answer", () => {
+		const base = noAnswer("response");
+		const responses: LhMessage[] = [
+			{ ...fauxAssistantMessage("The answer."), id: "text" },
+			{ ...fauxAssistantMessage([fauxToolCall("ask_user_question", { question: "Continue?" }, { id: "call" })]), id: "tool" },
+			{ ...base, stopReason: "aborted" } as LhMessage,
+			{ ...base, stopReason: "length" } as LhMessage,
+			{ ...base, stopReason: "toolUse" } as LhMessage,
+			{ ...base, content: [{ type: "future-output", data: "value" }] } as unknown as LhMessage,
+		];
+		for (const response of responses) {
+			const messages = [newUserMessage("Explain this"), response];
+			assert.equal(failedResponseAtEnd(messages), undefined);
+			assert.equal(endsInFailedTurn(messages), false);
+			assert.throws(() => retryDrops(messages), /requires a failed turn/);
+		}
+	});
+
+	it("keeps empty-completion recovery behind the existing compaction and later-output boundaries", () => {
+		const user = newUserMessage("Explain this");
+		const blank = noAnswer("blank");
+		const block = newPlanBlockMessage("plan-1", {});
+		assert.deepEqual([...retryDrops([user, blank, block])], [blank.id]);
+		const compacted = [user, blank, compaction(user.id), block];
+		assert.strictEqual(failedResponseAtEnd(compacted), blank);
+		assert.equal(endsInFailedTurn(compacted), false);
+		assert.throws(() => retryDrops(compacted), /The model finished without an answer\. Your input is saved\.[\s\S]*cannot be retried after compaction/);
+		for (const later of [newUserMessage("A new request"), { ...fauxAssistantMessage("A real answer"), id: "answered" } as LhMessage]) {
+			assert.equal(failedResponseAtEnd([user, blank, later]), undefined);
+			assert.equal(endsInFailedTurn([user, blank, later]), false);
+		}
+	});
+
 	it("parses Retry without appending input", () => {
 		const input = parseChatInput({ type: "retry" });
 		assert.deepEqual(input, { type: "retry" });

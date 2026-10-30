@@ -854,6 +854,77 @@ function heldView(...events: unknown[]) {
 	};
 }
 
+describe("empty completed foreground replies", () => {
+	const notice = "The model finished without an answer. Your input is saved.";
+	const question = { ...assistantMsg("preference", ""), stopReason: "toolUse", content: [{ type: "toolCall", id: "choice", name: "ask_user_question", arguments: { question: "What should we explore?", options: [{ label: "Continue the derivation", value: "continue" }] } }] } as LhMessage;
+	const answer = newAnswerResult("choice", "ask_user_question", buildAnswer({ id: "choice", kind: "ask", question: "What should we explore?", mode: "single-select", options: [{ label: "Continue the derivation", value: "continue" }], createdAt: "fixture" }, { values: ["continue"] }));
+	const savedInput = [newUserMessage("Help me understand this derivation."), question, answer];
+	const empty = { ...assistantMsg("empty", ""), content: [{ type: "thinking", thinking: "" }, { type: "text", text: "" }] } as LhMessage;
+
+	it("shows the completed failure on live delivery, reopen, sync and adoption without losing the saved choice", async () => {
+		let posts = 0;
+		const m = model({ initialMessages: savedInput, fetch: async () => { posts++; throw new Error("No automatic retry."); } });
+		m.applyWireEvent({ type: "message_start", message: empty });
+		m.applyWireEvent({ type: "message_update", message: empty });
+		assert.equal(m.getState().error, null, "empty partials are normal during generation");
+		m.applyWireEvent({ type: "message_end", message: empty });
+		const record = m.getState().nativeMessages;
+		assert.equal(m.getState().error?.message, notice);
+		assert.ok(endsInFailedTurn(record));
+		assert.deepEqual(record.slice(0, -1), savedInput);
+		assert.deepEqual(record.at(-1), empty, "the raw successful stop and empty output stay unchanged");
+		assert.equal(model({ initialMessages: record }).getState().error?.message, notice);
+		const synced = model(); synced.setMessages(record);
+		assert.equal(synced.getState().error?.message, notice);
+		const adopted = model({ initialMessages: savedInput }); adopted.adoptRecord(record);
+		assert.equal(adopted.getState().error?.message, notice);
+		await m.continueIfOwed(record);
+		assert.equal(posts, 0);
+	});
+
+	it("hides the old notice during an explicit retry and exposes a new empty completion before DONE", async () => {
+		const view = heldView({ type: "message_start", message: { ...empty, id: "retry-empty" } });
+		const inputs: ChatInput[] = [];
+		const m = model({ initialMessages: [...savedInput, empty], fetch: async (url, init) => {
+			if (String(url) === "/api/chat") { inputs.push(JSON.parse(String(init?.body)).input); return Response.json({ ok: true }); }
+			if (String(url).endsWith("/stream")) return view.response;
+			return Response.json({ messages: [...savedInput, empty], turnInFlight: true });
+		} });
+		assert.equal(m.getState().error?.message, notice);
+		const retrying = m.send({ type: "retry" });
+		assert.equal(m.getState().error, null, "the old failure does not look like failure of the retry");
+		await view.started;
+		assert.equal(m.getState().error, null, "a new empty partial is still working");
+		m.applyWireEvent({ type: "message_end", message: { ...empty, id: "retry-empty" } });
+		assert.equal(m.status, "streaming");
+		assert.equal(m.getState().error?.message, notice, "the completed new failure is visible before the stream terminal");
+		assert.deepEqual(inputs, [{ type: "retry" }]);
+		assert.equal(m.getState().nativeMessages.filter(message => message.id === answer.id).length, 1);
+		view.finish();
+		await retrying;
+	});
+
+	it("canonical recovery of an empty completion blocks inference until explicit learner action", async () => {
+		const view = heldView();
+		const record = JSON.parse(JSON.stringify([...savedInput, empty])) as LhMessage[];
+		let posts = 0;
+		const m = model({ initialMessages: savedInput, fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			if (String(url) === "/api/chat") posts++;
+			return Response.json({ messages: record, turnInFlight: false });
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		assert.equal(await m.reconcileTurn(), "settled");
+		await consuming;
+		assert.equal(m.getState().error?.message, notice);
+		assert.deepEqual(m.getState().nativeMessages, record);
+		m.clearError();
+		await m.continueIfOwed(savedInput);
+		assert.equal(posts, 0, "even an earlier answered-question snapshot cannot trigger a retry");
+	});
+});
+
 describe("authoritative settlement recovery", () => {
 	it("recovers a reader that never emits DONE, adopts once, and never POSTs", async () => {
 		const view = heldView(partial([{ type: "text", text: "incomplete" }]));
