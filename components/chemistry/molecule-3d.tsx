@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ConformerResult, MoleculeConformer, MoleculeSource } from "@/src/core";
 import { viewerFrameHtml } from "./viewer-frame";
@@ -18,10 +19,6 @@ function ringLabel(conformer: MoleculeConformer): string {
 		.join(", ");
 }
 
-function optionLabel(conformer: MoleculeConformer, rank: number): string {
-	return [`${rank}${rank === 1 ? " · lowest found" : ""}`, `ΔE ${conformer.relativeEnergy.toFixed(2)} kcal/mol`, ringLabel(conformer)].filter(Boolean).join(" · ");
-}
-
 type SearchResponse = { sourceKey: string; requestId: number; result: ConformerResult };
 type ViewerError = { sourceKey: string; message: string };
 
@@ -29,6 +26,9 @@ export default function Molecule3D({ source }: { source: MoleculeSource }) {
 	const id = useId();
 	const channel = `lh-chemistry-3d-${id}`;
 	const iframeRef = useRef<HTMLIFrameElement>(null);
+	const sidebarRef = useRef<HTMLElement>(null);
+	const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+	const choiceRefs = useRef(new Map<string, HTMLButtonElement>());
 	const requestSequence = useRef(0);
 	const [attempt, setAttempt] = useState(0);
 	const [frameReady, setFrameReady] = useState(false);
@@ -38,6 +38,7 @@ export default function Molecule3D({ source }: { source: MoleculeSource }) {
 	const [errorState, setError] = useState<ViewerError | null>(null);
 	const [style, setStyle] = useState<"balls" | "sticks">("balls");
 	const [searchedSource, setSearchedSource] = useState<string | null>(null);
+	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const styleRef = useRef(style);
 	styleRef.current = style;
 	const sourceKey = JSON.stringify(source);
@@ -132,6 +133,27 @@ export default function Molecule3D({ source }: { source: MoleculeSource }) {
 		setError(null);
 		setSelectedId(next);
 	};
+	const walkConformers = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+		let next: number;
+		switch (event.key) {
+			case "ArrowDown": case "ArrowRight": next = (index + 1) % candidates.length; break;
+			case "ArrowUp": case "ArrowLeft": next = (index + candidates.length - 1) % candidates.length; break;
+			case "Home": next = 0; break;
+			case "End": next = candidates.length - 1; break;
+			default: return;
+		}
+		event.preventDefault();
+		const candidate = candidates[next]!;
+		chooseConformer(candidate.id);
+		const row = choiceRefs.current.get(candidate.id);
+		row?.focus();
+		row?.scrollIntoView?.({ block: "nearest" });
+	};
+	const toggleSidebar = () => {
+		// A collapsing list cannot leave keyboard focus inside hidden content.
+		if (sidebarOpen && sidebarRef.current?.contains(document.activeElement)) sidebarToggleRef.current?.focus();
+		setSidebarOpen(open => !open);
+	};
 
 	return (
 		<section data-testid="molecule-3d" data-chemistry-interactive="" className="space-y-3" aria-label={source.label ? `3D view of ${source.label}` : "3D molecular view"} onKeyDown={event => event.stopPropagation()}>
@@ -139,18 +161,28 @@ export default function Molecule3D({ source }: { source: MoleculeSource }) {
 				<Button type="button" size="sm" variant={style === "balls" ? "secondary" : "ghost"} aria-pressed={style === "balls"} onClick={() => selectStyle("balls")}>Ball and stick</Button>
 				<Button type="button" size="sm" variant={style === "sticks" ? "secondary" : "ghost"} aria-pressed={style === "sticks"} onClick={() => selectStyle("sticks")}>Sticks</Button>
 			</div>
-			{candidates.length > 1 && <label htmlFor={`${id}-conformer`} className="block space-y-1 text-sm">
-				<span>Conformer</span>
-				<select id={`${id}-conformer`} data-testid="conformer-selector" className="block w-full min-w-0 rounded-md border border-input bg-background px-3 py-2 text-foreground" value={selected?.id} onChange={event => chooseConformer(event.target.value)}>
-					{candidates.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{optionLabel(candidate, index + 1)}</option>)}
-				</select>
-			</label>}
-			{selected && <p data-testid="conformer-details" role="status" className="text-sm">
-				{candidates.length === 1 ? "Lowest conformer found · " : ""}{result?.search?.method ? `${result.search.method} · ` : ""}ΔE {selected.relativeEnergy.toFixed(2)} kcal/mol{ringLabel(selected) ? ` · ${ringLabel(selected)}` : ""}
+			{selected && <p id={`${id}-conformer-details`} data-testid="conformer-details" role="status" className="text-sm">
+				{result?.search?.method ? `${result.search.method} · ` : ""}ΔE {selected.relativeEnergy.toFixed(2)} kcal/mol{ringLabel(selected) ? ` · ${ringLabel(selected)}` : ""}
 			</p>}
-			<div className="relative h-[min(52vh,420px)] min-h-[260px] overflow-hidden rounded-md border bg-background" aria-busy={!rendered && !error}>
-				<iframe key={attempt} ref={iframeRef} srcDoc={frame} onLoad={() => command({ type: "hello" })} title="Molecular model: drag to rotate and scroll to zoom" sandbox="allow-scripts" className="h-full w-full border-0" />
-				{!rendered && !error && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">{result ? "Loading 3D viewer…" : searchRequested ? "Searching conformers…" : "Preparing 3D structure…"}</div>}
+			<div data-testid="conformer-viewer-layout" className="flex min-w-0 flex-col overflow-hidden rounded-md border bg-background sm:h-[min(52vh,420px)] sm:min-h-[260px] sm:flex-row">
+				{candidates.length > 0 && <aside key="conformer-sidebar" ref={sidebarRef} data-testid="conformer-sidebar" aria-label="Conformer selection" className={`flex min-h-0 min-w-0 shrink-0 flex-col border-b border-border sm:border-r sm:border-b-0 ${sidebarOpen ? "w-full sm:w-48" : "w-full sm:w-10"}`}>
+					<div className={`flex min-h-10 shrink-0 items-center gap-2 ${sidebarOpen ? "justify-between px-2" : "justify-start px-1 sm:justify-center"}`}>
+						{sidebarOpen && <span className="text-sm font-medium">Conformers</span>}
+						<Button ref={sidebarToggleRef} type="button" variant="ghost" size="icon-sm" aria-label={sidebarOpen ? "Collapse conformers" : "Expand conformers"} aria-expanded={sidebarOpen} aria-controls={`${id}-conformers`} onClick={toggleSidebar}>
+							{sidebarOpen ? <PanelLeftCloseIcon aria-hidden="true" /> : <PanelLeftOpenIcon aria-hidden="true" />}
+						</Button>
+					</div>
+					<div id={`${id}-conformers`} hidden={!sidebarOpen} role="radiogroup" aria-label="Conformers by increasing relative energy" aria-describedby={`${id}-conformer-details`} className="min-h-0 max-h-40 overflow-y-auto px-1 pb-1 sm:max-h-none sm:flex-1">
+						{candidates.map((candidate, index) => <button key={candidate.id} type="button" role="radio" aria-checked={candidate.id === selected?.id} tabIndex={candidate.id === selected?.id ? 0 : -1} data-conformer-id={candidate.id} ref={element => { if (element) choiceRefs.current.set(candidate.id, element); else choiceRefs.current.delete(candidate.id); }} onClick={() => chooseConformer(candidate.id)} onKeyDown={event => walkConformers(event, index)} className={`block w-full min-w-0 rounded-md px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${candidate.id === selected?.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"}`}>
+							<span className="block tabular-nums">ΔE {candidate.relativeEnergy.toFixed(2)}</span>
+							{ringLabel(candidate) && <span className="block break-words text-xs text-muted-foreground">{ringLabel(candidate)}</span>}
+						</button>)}
+					</div>
+				</aside>}
+				<div key="molecular-viewport" data-testid="molecular-viewport" className="relative h-[min(52vh,420px)] min-h-[260px] min-w-0 flex-none overflow-hidden sm:h-full sm:min-h-0 sm:flex-1" aria-busy={!rendered && !error}>
+					<iframe key={attempt} ref={iframeRef} srcDoc={frame} onLoad={() => command({ type: "hello" })} title="Molecular model: drag to rotate and scroll to zoom" sandbox="allow-scripts" className="h-full w-full border-0" />
+					{!rendered && !error && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center px-3 text-center text-sm text-muted-foreground">{result ? "Loading 3D viewer…" : searchRequested ? "Searching conformers…" : "Preparing 3D structure…"}</div>}
+				</div>
 			</div>
 			{error && <div role="alert" className="space-y-2"><p className="text-sm text-destructive">{error}</p><Button type="button" variant="outline" size="sm" onClick={() => { modelIdRef.current = null; setError(null); setFrameReady(false); setAttempt(value => value + 1); }}>Try again</Button></div>}
 			<div className="flex flex-wrap gap-2" aria-label="Rotate and zoom model">
