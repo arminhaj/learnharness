@@ -83,7 +83,7 @@ describe("learning-history source evidence", () => {
 	});
 	it("runs a dedicated coherence agent that retries omitted passages and preserves the speaker boundary", async () => {
 		const input = historyInputPassages({ messages, updatedAt: "2026-01-01" });
-		const result = input.filter(p => p.role === "learner").map(p => ({ id: p.id, text: p.text, unclear: [] }));
+		const result = input.map((p, i) => ({ ...p, id: `entry_${i + 1}` })).filter(p => p.role === "learner").map(p => ({ id: p.id, text: p.text, unclear: [] }));
 		let steps = 0;
 		const output = await cleanHistorySpeech(input, { engine: submitEngine("submit_coherent_speech", [{ passages: result.slice(1) }, { passages: result }]), signal: new AbortController().signal, onStep: () => { steps++; } });
 		assert.equal(steps, 2);
@@ -92,6 +92,8 @@ describe("learning-history source evidence", () => {
 	});
 	it("preserves tutor context without model work and submits only human-authored edits", async () => {
 		const input = historyInputPassages({ messages, updatedAt: "2026-01-01" });
+		input[0]!.id = "native-tool-result:readingThinking:0";
+		input[0]!.messageId = "native-tool-result";
 		const tutors = input.filter(p => p.role === "tutor");
 		let spawned = false;
 		const engine = submitEngine("submit_coherent_speech", []);
@@ -100,17 +102,21 @@ describe("learning-history source evidence", () => {
 		assert.equal(spawned, false);
 		assert.deepEqual(tutorOnly.map(p => p.text), tutors.map(p => p.text));
 		assert.equal(tutorOnly[0]!.wording, "original");
-		const edits = input.filter(p => p.role === "learner").map(p => ({ id: p.id, text: p.text, unclear: [] }));
+		const transcript = input.map((p, i) => ({ ...p, id: `entry_${i + 1}`, messageId: `message_${i + 1}` }));
+		const edits = transcript.filter(p => p.role === "learner").map(p => ({ id: p.id, text: `Edited: ${p.text}`, unclear: [] }));
 		const fake = submitEngine("submit_coherent_speech", [{ passages: edits }]);
 		const originalStream = fake.streamFn;
 		const output = await cleanHistorySpeech(input, { engine: { ...fake, streamFn: (model, context, options) => {
 			const request = context.messages.find(m => m.role === "user"); assert.ok(request?.role === "user" && typeof request.content === "string");
 			const payload = JSON.parse(request.content);
+			assert.doesNotMatch(request.content, /native-tool-result|readingThinking/);
 			assert.deepEqual(payload.learnerPassages.map((p: HistoryPassage) => p.role), ["learner", "learner"]);
-			assert.deepEqual(payload.tutorContext, tutors);
+			assert.deepEqual(payload.learnerPassages, transcript.filter(p => p.role === "learner"));
+			assert.deepEqual(payload.tutorContext, transcript.filter(p => p.role === "tutor"));
 			return originalStream(model, context, options);
 		} }, signal: new AbortController().signal, onStep: () => {} });
 		assert.deepEqual(output.map(p => p.id), input.map(p => p.id));
+		assert.deepEqual(output.map(p => p.text), input.map(p => p.role === "learner" ? `Edited: ${p.text}` : p.text));
 	});
 	it("reports a provider refusal followed by a normal explanation as refusal, not incomplete cleanup", async () => {
 		const input = historyInputPassages({ messages, updatedAt: "2026-01-01" });

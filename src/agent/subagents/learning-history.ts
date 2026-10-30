@@ -21,19 +21,23 @@ const episodeParameters = Type.Object({
 }, { additionalProperties: false });
 
 export async function cleanHistorySpeech(input: HistoryInput[], opts: Options): Promise<Pick<HistoryPassage, "id" | "text" | "unclear" | "wording">[]> {
-	const learner = input.filter(p => p.role === "learner");
 	const unchanged = (p: HistoryInput) => ({ id: p.id, text: p.text, unclear: [], wording: "original" as const });
-	if (!learner.length) return input.map(unchanged);
+	if (!input.some(p => p.role === "learner")) return input.map(unchanged);
+	// Native source IDs contain transport details and labels such as
+	// readingThinking. They are not authorship evidence. Use local references
+	// for the editing request, then restore the durable source IDs below.
+	const transcript = input.map((p, i) => ({ ...p, id: `entry_${i + 1}`, messageId: `message_${i + 1}` }));
+	const learner = transcript.filter(p => p.role === "learner");
 	const result = await runSubmitAgent<{ passages: { id: string; text: string; unclear: string[] }[] }>({
 		...opts, role: "extractor", toolName: "submit_coherent_speech", toolDescription: "Save the copyedited human learner entries. Include every learnerPassages id once, in order. Do not include tutorContext.",
 		parameters: Type.Object({ passages: Type.Array(Type.Object({ id: str(), text: str(), unclear: Type.Array(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false }),
 		fill: value => value, systemPrompt: COHERENCE_PROMPT,
-		prompt: JSON.stringify({ learnerPassages: learner, tutorContext: input.filter(p => p.role === "tutor") }),
+		prompt: JSON.stringify({ learnerPassages: learner, tutorContext: transcript.filter(p => p.role === "tutor") }),
 		neverSubmitted: "Speech cleanup did not return a complete result.",
 		validate: value => value.passages.length !== learner.length || value.passages.some((p, i) => p.id !== learner[i]?.id || !p.text.trim()) ? "Submit every learnerPassages id exactly once, in order, with its full edited text. Do not submit tutorContext entries." : null,
 	});
 	const edited = new Map(result.passages.map(p => [p.id, p]));
-	return input.map(p => p.role === "tutor" ? unchanged(p) : { ...edited.get(p.id)!, wording: "coherence-edited" as const });
+	return input.map((p, i) => p.role === "tutor" ? unchanged(p) : { ...edited.get(transcript[i]!.id)!, id: p.id, wording: "coherence-edited" as const });
 }
 
 export async function findHistoryEpisodes(passages: HistoryPassage[], context: { topics: { key: string; name: string }[]; strategies: string[]; moments: LearningMoment[] }, opts: Options): Promise<HistoryEpisodeInput[]> {
