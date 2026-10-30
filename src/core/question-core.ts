@@ -19,6 +19,7 @@
 
 import { Type, type Static } from "typebox";
 import { stripModelValueDebris } from "./value-debris.ts";
+import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
 
 // ─── shared types ───────────────────────────────────────────────────────────
 
@@ -451,6 +452,8 @@ export interface QuestionAnswerData {
 	answers: OptionAnswer[];
 	other?: string; // ask: "Other" free text
 	text?: string; // ask/explain: text-mode answer
+	/** A saved structure submitted with a free-response answer. */
+	molecule?: MoleculeDocument;
 	/** The learner's reasoning on the QUESTION (renamed from `note`, owner
 	 *  2026-10-03 — "that's what it is"). */
 	thinking?: string;
@@ -487,6 +490,7 @@ export interface AnswerRequest {
 	values?: string[]; // option values
 	other?: string; // ask "Other"
 	text?: string; // ask text-mode
+	molecule?: MoleculeDocument;
 	thinking?: string; // the reasoning-on-the-question channel (was `note`)
 	readingThinking?: string; // the thinking-while-reading channel (check answers)
 	confidence?: number; // quiz only: 0-100 raw probability — 50 is a real coin flip, always sent (owner, 2026-10-01)
@@ -519,6 +523,7 @@ export interface QuestionFormDraft {
 	other: string;
 	text: string;
 	confidenceIndex: number;
+	molecule?: MoleculeDocument;
 }
 
 export interface QuestionDraft {
@@ -730,6 +735,9 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 	}
 	if (req.other?.trim()) base.other = req.other.trim();
 	if (req.text?.trim()) base.text = req.text.trim();
+	if (qd.mode === "text" && qd.kind !== "quiz" && !base.dontKnow && req.molecule) {
+		base.molecule = { ...req.molecule };
+	}
 
 	if (qd.kind === "quiz") {
 		base.correctIndices = qd.correctIndices ?? [];
@@ -785,6 +793,7 @@ export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, un
 	if (Array.isArray(ad.answers) && ad.answers.length > 0)
 		out.answers = ad.answers.map((a) => ({ index: a.index, label: a.label }));
 	if (ad.text) out.text = ad.text;
+	if (ad.molecule) out.molecule = moleculeMarkdown(ad.molecule);
 	if (ad.other) out.other = ad.other;
 	// The verdict + stated confidence are the learner's PERFORMANCE — new
 	// information the model needs for its next move. (dontKnow implies

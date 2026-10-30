@@ -59,6 +59,8 @@ export function KeyboardShortcuts() {
 
 	useEffect(() => {
 		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.defaultPrevented || document.querySelector("dialog[data-chemistry-dialog][open]")) return;
+			if ((e.target as HTMLElement | null)?.closest?.("[data-chemistry-interactive]")) return;
 			// ── Tab is dead (owner, 2026-09-17): preventDefault even when
 			// nothing is bound to it — browser tab-focus is abandoned, and
 			// the default action runs after dispatch, so suppressing it here

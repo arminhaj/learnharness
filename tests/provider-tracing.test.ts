@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 const picomatch = require("next/dist/compiled/picomatch");
 const { makeIgnoreFn } = require("next/dist/build/collect-build-traces");
 const patterns = nextConfig.outputFileTracingExcludes!["*"];
+const nativeClosure = ["node_modules/gcp-metadata/**/*", "node_modules/json-bigint/**/*", "node_modules/bignumber.js/**/*"];
+const chemistryRuntime = ["node_modules/@rdkit/rdkit/dist/**/*", "scripts/chemistry-conformer.py"];
 
 describe("standalone JavaScript tracing exclusions and native workaround policy", () => {
 	for (const windows of [false, true]) {
@@ -16,7 +18,7 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 		const file = (relative: string) => root + (windows ? "\\" : "/") + (windows ? relative.replaceAll("/", "\\") : relative);
 		const ignored = picomatch(patterns, { contains: true, dot: true, windows });
 		it(`excludes genuine data directories and secrets (${windows ? "Windows" : "POSIX"})`, () => {
-			for (const relative of ["data/canary.json", "nested/data/private.json", "auth.json", ".env", ".env.local", "chatgpt-credentials.json", "github-copilot-credentials.json", "xai-credentials.json", "chatgpt-credentials.json.fixture.tmp", "github-copilot-credentials.json.fixture.tmp", "xai-credentials.json.fixture.tmp"]) {
+			for (const relative of ["data/canary.json", "nested/data/private.json", "auth.json", ".env", ".env.local", "chatgpt-credentials.json", "github-copilot-credentials.json", "xai-credentials.json", "chatgpt-credentials.json.fixture.tmp", "github-copilot-credentials.json.fixture.tmp", "xai-credentials.json.fixture.tmp", ".venv-chemistry/pyvenv.cfg", ".venv-chemistry/lib/python3.12/site-packages/rdkit/Chem/__init__.py"]) {
 				assert.equal(ignored(file(relative)), true, relative);
 			}
 			// The explicit includes remain necessary: this raw ignore still matches SDK data.
@@ -36,10 +38,10 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 		assert.equal(ignore(`${root}/data/private.json`), true);
 		assert.equal(ignore(`${root}/node_modules/gcp-metadata/build/src/index.js`), false);
 	});
-	it("preserves all secret exclusions exactly", () => {
-		assert.deepEqual(patterns, ["**/data/**/*", "auth.json", "chatgpt-credentials.json*", "github-copilot-credentials.json*", "xai-credentials.json*", ".env*"]);
+	it("preserves all secret exclusions and excludes only the additional local chemistry environment", () => {
+		assert.deepEqual(patterns, ["**/data/**/*", "auth.json", "chatgpt-credentials.json*", "github-copilot-credentials.json*", "xai-credentials.json*", ".env*", ".venv-chemistry/**/*"]);
 	});
-	it("retains exactly the narrow native-Turbopack closure workaround and existing runtime includes", () => {
+	it("retains the narrow native-Turbopack closure and adds only the bounded chemistry runtime", () => {
 		assert.deepEqual(nextConfig.outputFileTracingIncludes!["*"], [
 			"node_modules/@puppeteer/browsers/lib/browser-data/**/*.js",
 			"node_modules/pdfjs-dist/legacy/**/*",
@@ -53,15 +55,23 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 			"node_modules/@earendil-works/pi-ai/dist/auth/oauth/{load,github-copilot,xai,device-code}.js",
 			"node_modules/@earendil-works/pi-ai/dist/utils/sleep.js",
 			"node_modules/@earendil-works/pi-agent-core/dist/**/*.json",
-			"node_modules/gcp-metadata/**/*",
-			"node_modules/json-bigint/**/*",
-			"node_modules/bignumber.js/**/*",
+			...nativeClosure,
+			...chemistryRuntime,
 		]);
 	});
 	it("limits the workaround to its three packages, never learner data or unrelated dependencies", () => {
-		const closure = nextConfig.outputFileTracingIncludes!["*"]!.slice(-3);
+		const closure = nextConfig.outputFileTracingIncludes!["*"]!.filter(pattern => nativeClosure.includes(pattern));
+		assert.deepEqual(closure, nativeClosure);
 		const included = picomatch(closure, { dot: true });
 		for (const file of ["node_modules/gcp-metadata/build/src/index.js", "node_modules/json-bigint/lib/parse.js", "node_modules/bignumber.js/bignumber.js"]) assert.equal(included(file), true, file);
 		for (const file of ["data/private.json", "nested/data/private.json", "auth.json", ".env.local", "node_modules/unrelated/runtime.js", "node_modules/gcp-metadata-lookalike/index.js"]) assert.equal(included(file), false, file);
+	});
+	it("chemistry tracing includes its WASM and helper without bundling Python or unrelated scripts", () => {
+		const actual = nextConfig.outputFileTracingIncludes!["*"]!.filter(pattern => chemistryRuntime.includes(pattern));
+		assert.deepEqual(actual, chemistryRuntime);
+		const included = picomatch(actual, { dot: true });
+		for (const file of ["node_modules/@rdkit/rdkit/dist/RDKit_minimal.js", "node_modules/@rdkit/rdkit/dist/RDKit_minimal.wasm", "scripts/chemistry-conformer.py"]) assert.equal(included(file), true, file);
+		for (const file of [".venv-chemistry/bin/python", ".venv-chemistry/pyvenv.cfg", "scripts/unrelated.py", "data/private.json", "auth.json", "node_modules/unrelated/runtime.js", "node_modules/@rdkit/rdkit-lookalike/dist/index.js"]) assert.equal(included(file), false, file);
+		assert.ok(nextConfig.serverExternalPackages!.includes("@rdkit/rdkit"), "RDKit must locate the adjacent WASM at runtime");
 	});
 });

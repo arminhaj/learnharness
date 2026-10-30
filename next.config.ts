@@ -52,6 +52,7 @@ const nextConfig: NextConfig = {
 			"github-copilot-credentials.json*",
 			"xai-credentials.json*",
 			".env*",
+			".venv-chemistry/**/*",
 		],
 	},
 	// Empirically verified gaps (2026-09-17 standalone smoke): the tracer
@@ -101,6 +102,8 @@ const nextConfig: NextConfig = {
 			"node_modules/gcp-metadata/**/*",
 			"node_modules/json-bigint/**/*",
 			"node_modules/bignumber.js/**/*",
+			"node_modules/@rdkit/rdkit/dist/**/*",
+			"scripts/chemistry-conformer.py",
 		],
 	},
 	// Framework-free core lives in src/ (plain TS, imported by routes and CLI alike).
@@ -113,6 +116,7 @@ const nextConfig: NextConfig = {
 		"@napi-rs/canvas", // native binding — bundling breaks the .node require
 		"@silvia-odwyer/photon-node", // CJS loads its adjacent WASM from disk
 		"@resvg/resvg-js", // native binding — same
+		"@rdkit/rdkit", // Emscripten loads its adjacent WASM from disk
 	],
 };
 

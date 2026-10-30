@@ -29,6 +29,7 @@
  */
 
 import type { QuestionAnswerData } from "./question-core.ts";
+import { parseMoleculeDocument, type MoleculeDocument } from "./chemistry.ts";
 import type { LhMessage } from "./native-messages.ts";
 import {
 	activeProblemOf,
@@ -54,7 +55,7 @@ export type ChatInput =
 	 *  thinking on the ACTIVE problem — one lane (owner 2026-10-05):
 	 *  whether it claims an answer is read from the text. One
 	 *  problem may carry many submissions; each is its own turn. */
-	| { type: "thinking"; problemCallId: string; text: string }
+	| { type: "thinking"; problemCallId: string; text: string; molecule?: MoleculeDocument }
 	/** The practice move-on signal (owner round 16): the learner's
 	 *  explicit go-ahead during the between-problems pause — the Next
 	 *  chip or Enter on an empty composer. Practice sessions only, and
@@ -155,6 +156,17 @@ export function dismissAppends(record: { messages: LhMessage[] }, input: Dismiss
 /** A malformed input event (the honest 400 — the orphan-trap discipline). */
 export class ChatInputError extends Error {}
 
+/** Bounds and shape at the request boundary; the server chemistry engine
+ * derives chemical identity again before persisting the submission. */
+function inputMolecule(value: unknown): MoleculeDocument | undefined {
+	if (value === undefined) return undefined;
+	try {
+		return parseMoleculeDocument(value);
+	} catch (error) {
+		throw new ChatInputError(error instanceof Error ? error.message : "Invalid molecular answer");
+	}
+}
+
 /** Parse and validate an input event off a request body. */
 export function parseChatInput(input: unknown): ChatInput {
 	if (typeof input !== "object" || input === null) throw new ChatInputError("input must be an object");
@@ -172,19 +184,28 @@ export function parseChatInput(input: unknown): ChatInput {
 			if (typeof i.answer !== "object" || i.answer === null) {
 				throw new ChatInputError("answer input requires the graded answer object");
 			}
-			return { type: "answer", toolCallId: i.toolCallId, answer: i.answer as QuestionAnswerData };
+			return {
+				type: "answer",
+				toolCallId: i.toolCallId,
+				answer: {
+					...(i.answer as QuestionAnswerData),
+					...((i.answer as QuestionAnswerData).molecule === undefined ? {} : { molecule: inputMolecule((i.answer as QuestionAnswerData).molecule) }),
+				},
+			};
 		case "continue":
 			return { type: "continue" };
 		case "retry":
 			return { type: "retry" };
-		case "thinking":
+		case "thinking": {
 			if (typeof i.problemCallId !== "string" || i.problemCallId.length === 0) {
 				throw new ChatInputError("thinking input requires problemCallId");
 			}
-			if (typeof i.text !== "string" || i.text.trim().length === 0) {
+			const molecule = inputMolecule(i.molecule);
+			if (typeof i.text !== "string" || (i.text.trim().length === 0 && !molecule)) {
 				throw new ChatInputError("thinking input requires non-empty text");
 			}
-			return { type: "thinking", problemCallId: i.problemCallId, text: i.text };
+			return { type: "thinking", problemCallId: i.problemCallId, text: i.text, ...(molecule ? { molecule } : {}) };
+		}
 		case "next":
 			return { type: "next" };
 		default:
@@ -213,6 +234,16 @@ export function inputAppends(
 			if (!pending || pending.toolCallId !== input.toolCallId) {
 				throw new ChatInputError("answer input targets no pending question call");
 			}
+			if (input.answer.molecule) {
+				const kind = toolQuestionKind(pending.tool);
+				const options = (pending.input as { options?: unknown } | null)?.options;
+				if (kind === "quiz" || (kind === "ask" && Array.isArray(options) && options.length > 0)) {
+					throw new ChatInputError("Molecular answers require a free-response question");
+				}
+				if (input.answer.kind !== kind || input.answer.dismissed || input.answer.dontKnow) {
+					throw new ChatInputError("Molecular answer does not match the pending question");
+				}
+			}
 			return [newAnswerResult(input.toolCallId, pending.tool, input.answer)];
 		}
 		case "continue":
@@ -226,7 +257,7 @@ export function inputAppends(
 			if (!active || active.toolCallId !== input.problemCallId) {
 				throw new ChatInputError("thinking input targets no active problem");
 			}
-			return [...dismissalConclusion(record), newThinkingMessage(input.problemCallId, input.text)];
+			return [...dismissalConclusion(record), newThinkingMessage(input.problemCallId, input.text, input.molecule)];
 		}
 		case "next": {
 			// Honest 400s, the thinking gate's discipline: the signal is a

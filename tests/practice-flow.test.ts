@@ -132,6 +132,32 @@ function scripted(steps: FauxResponseStep[]): { engine: PiEngine; calls: string[
 const lastSaw = (calls: string[], needle: string) => calls[calls.length - 1]!.includes(needle);
 
 describe("practice flow (scripted model)", () => {
+	it("normalizes molecular submissions before storage and rejects invalid drawings without appending", async () => {
+		const { normalizeMolecule } = await import("../src/server/chemistry.ts");
+		const chat = createPracticeChat("Test: molecular practice");
+		const { engine, calls } = scripted([
+			() => fauxAssistantMessage([fauxToolCall("problem", { statement: "Draw an alcohol.", mode: "recall", chemistry: {}, modelSolution: "An alcohol such as CCO." }, { id: "call-molecule" })], { stopReason: "toolUse" }),
+			() => fauxAssistantMessage([fauxText("What group makes this an alcohol?")]),
+		]);
+		const factory = practiceFactory(chat.id, engine);
+		await drainTurn(post(chat.id, { type: "text", text: "Practice chemistry" }), factory);
+		const molecule = await normalizeMolecule({ smiles: "CCO" });
+		const before = chatStore.getChat(chat.id)!.messages.length;
+		const rejected = await handleChatRequest(post(chat.id, { type: "thinking", problemCallId: "call-molecule", text: "", molecule: { ...molecule, molfile: "invalid molecule" } }), factory);
+		assert.equal(rejected.status, 400);
+		assert.equal(chatStore.getChat(chat.id)!.messages.length, before);
+		assert.equal(calls.length, 1, "invalid input does not start a tutor turn");
+		await drainTurn(post(chat.id, { type: "thinking", problemCallId: "call-molecule", text: "", molecule: { ...molecule, smiles: "CCN", ket: '{"root":{}}' } }), factory);
+		const stored = chatStore.getChat(chat.id)!.messages.find(m => m.role === "custom" && m.customType === "practice-thinking");
+		assert.ok(stored && stored.role === "custom");
+		const details = stored.details as { molecule: { smiles: string; ket: string } };
+		assert.equal(details.molecule.smiles, "CCO", "Molfile owns chemical identity, not client-supplied SMILES");
+		assert.equal(details.molecule.ket, '{"root":{}}');
+		assert.ok(lastSaw(calls, "Submitted molecular structure"));
+		assert.ok(lastSaw(calls, "CCO"));
+		assert.equal(activeProblemOf(chatStore.getChat(chat.id)!.messages)?.toolCallId, "call-molecule");
+	});
+
 	it("pose → thinking commit → conclude + reveal; the pose ack persists and owes nothing", async () => {
 		const chat = createPracticeChat("Test: practice groups");
 		const { engine, calls } = scripted([

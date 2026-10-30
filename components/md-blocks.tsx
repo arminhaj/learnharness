@@ -43,38 +43,10 @@ import { useAppearance } from "@/components/settings/appearance";
 import { blurAfterPointerClick } from "@/components/focus-hygiene";
 import { chartSize, useSessionMermaid } from "@/components/session-overlay";
 import { Hint } from "@/components/ui/hint";
+import { MoleculeBlock } from "@/components/chemistry/molecule-figure";
+import { copyText } from "@/components/copy-text";
 
 // ─── The one affordance: the hover-reveal corner copy ────────────────────────
-
-/** Clipboard write with a fallback: navigator.clipboard needs the
- *  `clipboard-sanitized-write` permission, which Electron's deny-by-default
- *  handler (electron/main.cjs) must grant from the loopback origin — and
- *  browsers with a stale/absent API reject too. The hidden-textarea
- *  execCommand path is the belt under that: a failed write would otherwise
- *  be a silent no-op, which is exactly what the owner saw. Returns whether
- *  the copy landed (drives the Copied pill). */
-async function copyText(text: string): Promise<boolean> {
-	try {
-		await navigator.clipboard.writeText(text);
-		return true;
-	} catch {
-		/* fall through to the legacy path */
-	}
-	try {
-		const ta = document.createElement("textarea");
-		ta.value = text;
-		ta.setAttribute("readonly", "");
-		ta.style.position = "fixed";
-		ta.style.opacity = "0";
-		document.body.appendChild(ta);
-		ta.select();
-		const ok = document.execCommand("copy");
-		ta.remove();
-		return ok;
-	} catch {
-		return false;
-	}
-}
 
 /** A small muted copy icon for a block's top-right corner. The CONSUMER'S
  *  wrapper carries `group/md relative` (a NAMED group — the message container
@@ -253,6 +225,7 @@ export function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
 	const source = codeSource(children);
 
 	if (language === "mermaid") return <MermaidInline chart={source} />;
+	if (language === "molecule" || language === "smiles") return <MoleculeBlock source={source} language={language} incomplete={incomplete} />;
 
 	const startMatch = /startLine=(\d+)/.exec(meta);
 	const startLine = startMatch ? Number.parseInt(startMatch[1]!, 10) : undefined;

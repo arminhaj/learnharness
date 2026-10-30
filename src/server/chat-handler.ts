@@ -258,6 +258,22 @@ export async function handleChatInput(
 		return Response.json(envelope, { status: 503 });
 	}
 
+	// A drawing is learner evidence. Validate its association before doing
+	// chemistry work, then derive identity from the Molfile on the server.
+	// Client-provided SMILES and editor metadata never establish correctness.
+	const submittedMolecule = input.type === "thinking" ? input.molecule : input.type === "answer" ? input.answer.molecule : undefined;
+	if (submittedMolecule) {
+		try {
+			if (input.type !== "steers") inputAppends(record, input);
+			const { normalizeMoleculeDocument } = await import("./chemistry.ts");
+			const molecule = await normalizeMoleculeDocument(submittedMolecule);
+			if (input.type === "thinking") input = { ...input, molecule };
+			else if (input.type === "answer") input = { ...input, answer: { ...input.answer, molecule } };
+		} catch (error) {
+			return Response.json({ error: error instanceof Error ? error.message : "The molecular answer could not be read." }, { status: 400 });
+		}
+	}
+
 	// THE COMPACTION GATE (owner round 14, 2026-10-05 — the structural
 	// ruling: NOTHING model-facing for this chat interleaves with a
 	// running compaction): await any in-flight compaction (the settle
