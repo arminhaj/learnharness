@@ -60,6 +60,7 @@ import { LearningMomentsProvider, MarkLearningMoment } from "@/components/learni
 import { SourcePassage } from "@/components/source-passage";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { PracticeDock } from "@/components/practice-dock";
+import type { MoleculeDocument } from "@/src/core";
 import { ThinkingCard, type PracticeThinkingData } from "@/components/practice-cards";
 import { GraphContextCard, type GraphContextData } from "@/components/graph-context-card";
 import { TopBar } from "@/components/top-bar";
@@ -540,13 +541,13 @@ export function Chat({
 	// the dock stays mounted (the problem is still active until the agent
 	// concludes).
 	const submitThinking = useCallback(
-		async (text: string, codeRunId?: string) => {
+		async (text: string, codeRunId?: string, molecule?: MoleculeDocument) => {
 			const problem = activeProblemRef.current;
 			if (!problem || explorationPausedRef.current) {
 				if (codeRunId) throw new Error("Resume the active code problem before submitting.");
 				return;
 			}
-			const accepted = await send({ type: "thinking", problemCallId: problem.toolCallId, text, ...(codeRunId ? { codeRunId } : {}) });
+			const accepted = await send({ type: "thinking", problemCallId: problem.toolCallId, text, ...(codeRunId ? { codeRunId } : {}), ...(molecule ? { molecule } : {}) });
 			if (codeRunId && !accepted) throw new Error("The answer was not accepted. Your saved code and check results are still available.");
 		},
 		[send],
@@ -2038,9 +2039,9 @@ function DockOverlay({
 	/** The ACTIVE practice problem (practice sessions, 2026-10-04):
 	 *  {toolCallId, input} — dock ownership exactly like a pending
 	 *  question (the composer is replaced); null in teaching sessions. */
-	practice: { toolCallId: string; input: unknown } | null;
+	practice: { toolCallId: string; key?: string; input: unknown } | null;
 	/** (commit, text) — the practice dock's two submit lanes. */
-	onSubmitThinking: (text: string, codeRunId?: string) => void | Promise<void>;
+	onSubmitThinking: (text: string, codeRunId?: string, molecule?: MoleculeDocument) => void | Promise<void>;
 	/** Teach-phase pending question: arrives collapsed behind the reveal button (W5). */
 	requiresReveal: boolean;
 	/** The reading-thinking draft (owner 2026-10-03) — owned by ChatView so
@@ -2487,6 +2488,7 @@ function DockOverlay({
 									paused={paused}
 									toolName={pending.tool as "quiz" | "probe" | "ask_user_question" | "explain" | "recall"}
 									toolCallId={pending.toolCallId}
+									draftKey={`${chatId}:${pending.key}`}
 									input={pending.input as never}
 									expanded={expanded}
 									reveal={revealPending}
@@ -2501,10 +2503,12 @@ function DockOverlay({
 								/>
 							) : practice ? (
 								<PracticeDock
+									key={`${chatId}:${practice.key ?? practice.toolCallId}`}
 									chatId={chatId}
+									draftKey={`${chatId}:${practice.key ?? practice.toolCallId}`}
 									paused={paused}
 									problemCallId={practice.toolCallId}
-									input={practice.input as { statement: string }}
+									input={practice.input as { statement: string; chemistry?: { startingStructure?: string; instructions?: string } }}
 									expanded={expanded}
 									onExpand={() => {
 										setExpanded(true);

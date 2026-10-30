@@ -52,7 +52,7 @@ test("all methods fail closed for desktop missing/wrong secret; API-only matcher
 		assert(!desktopAPIAuthorized(new Headers(value === undefined ? {} : { [HEADER]: value }), { LH_DESKTOP_SERVER: "1", LH_DESKTOP_API_SECRET: secret }));
 	}
 	assert(desktopAPIAuthorized(new Headers({ [HEADER]: secret }), { LH_DESKTOP_SERVER: "1", LH_DESKTOP_API_SECRET: secret }));
-	for (const pathname of ["/api/events", "/api/chat", "/api/settings/models", "/api/chats/scratch/markdown"]) assert(unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + pathname }));
+	for (const pathname of ["/api/events", "/api/chat", "/api/settings/models", "/api/chats/scratch/markdown", "/api/chemistry/normalize", "/api/chemistry/conformer"]) assert(unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + pathname }));
 	assert(!unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + "/chat/new" }));
 	const originalMarker = process.env.LH_DESKTOP_SERVER;
 	const originalSecret = process.env.LH_DESKTOP_API_SECRET;
@@ -62,6 +62,10 @@ test("all methods fail closed for desktop missing/wrong secret; API-only matcher
 		for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) {
 			assert.equal(proxy(new NextRequest(origin + "/api/settings", { method })).status, 403);
 			assert.equal(proxy(new NextRequest(origin + "/api/settings", { method, headers: { [HEADER]: secret } })).headers.get("x-middleware-next"), "1");
+		}
+		for (const pathname of ["/api/chemistry/normalize", "/api/chemistry/conformer"]) {
+			assert.equal(proxy(new NextRequest(origin + pathname, { method: "POST" })).status, 403);
+			assert.equal(proxy(new NextRequest(origin + pathname, { method: "POST", headers: { [HEADER]: secret } })).headers.get("x-middleware-next"), "1");
 		}
 	} finally {
 		if (originalMarker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = originalMarker;

@@ -45,6 +45,7 @@ import {
 } from "./contracts/chat.ts";
 import { compactAnswerForModel, type QuestionAnswerData } from "./question-core.ts";
 import { activeCompactionOf, keptIndexFor } from "./compaction.ts";
+import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
 
 /** The hard-invariant wording for an aborted turn's unanswered calls —
  *  carried over verbatim from the pre-native era so the model's view
@@ -321,14 +322,15 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
  *  content label is the single "Your thinking"; `details` keeps the raw
  *  payload for the transcript card. One problem may carry many
  *  submissions. */
-export function newThinkingMessage(problemCallId: string, text: string, codeResult?: import("./code-workspace.ts").CodeRunResult): LhMarkerMessage {
+export function newThinkingMessage(problemCallId: string, text: string, codeResult?: import("./code-workspace.ts").CodeRunResult, molecule?: MoleculeDocument): LhMarkerMessage {
+	const snapshot = molecule ? { ...molecule } : undefined;
 	return {
 		id: newMessageId(),
 		role: "custom",
 		customType: "practice-thinking",
-		content: `${THINKING_LABEL}:\n${text}`,
+		content: `${THINKING_LABEL}:\n${text}${snapshot ? `\n\nSubmitted molecular structure:\n${moleculeMarkdown(snapshot)}` : ""}`,
 		display: true,
-		details: { problemCallId, text, ...(codeResult ? { codeResult } : {}) },
+		details: { problemCallId, text, ...(codeResult ? { codeResult } : {}), ...(snapshot ? { molecule: snapshot } : {}) },
 		timestamp: Date.now(),
 	};
 }
@@ -488,7 +490,7 @@ export function problemInputForConclude(
 
 export function activeProblemOf(
 	messages: readonly LhMessage[],
-): { toolCallId: string; input: unknown } | null {
+): { toolCallId: string; key: string; input: unknown } | null {
 	// HONEST ACTIVATION (owner ruling, 2026-10-05 — the BKT incident):
 	// calls count only through their RESULTS — a problem activates on its
 	// clean ack, a conclude frees on its clean ack; errored and dangling
@@ -512,7 +514,18 @@ export function activeProblemOf(
 					continue; // errored/dangling conclude: the free never happened
 				}
 				if (block.name !== PRACTICE_PROBLEM_TOOL) continue;
-				if (cleanCallIds.has(block.id)) return { toolCallId: block.id, input: block.arguments };
+				if (cleanCallIds.has(block.id)) {
+					// Separate drafts for reused legacy call IDs; normal live calls
+					// keep the ID stable across streamed → persisted message stamps.
+					let occurrences = 0;
+					for (const message of messages) {
+						if (message.role !== "assistant" || message.id.startsWith("c_")) continue;
+						for (const call of message.content) {
+							if (call.type === "toolCall" && call.id === block.id) occurrences++;
+						}
+					}
+					return { toolCallId: block.id, key: occurrences > 1 ? JSON.stringify([assistant.id, bi, block.id]) : block.id, input: block.arguments };
+				}
 				// errored/dangling pose — it did not go through; keep scanning
 			}
 			continue;

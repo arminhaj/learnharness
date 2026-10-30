@@ -74,6 +74,70 @@ See the [development guide](docs/development.md), [architecture](docs/architectu
 
 Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/amosblomqvist/learnharness/issues).
 
+## Chemistry interface
+
+This fork renders molecular skeletal drawings directly in lessons, questions, answer options, and explanations. Open **Expand** for a larger drawing, **Copy structure** for chemical source, **Edit a copy** to explore changes, or **View 3D** for a rotatable model. In an active free-response question or chemistry practice problem, **Use in answer** copies the displayed structure into the learner's independent drawing workspace. Changing the copy does not change the question.
+
+**Draw structure** opens the Ketcher editor. Save a drawing to attach it to the answer, then send it with any written reasoning. Drafts survive closing the editor and reloading the same question; each submitted answer retains its own structure. Multiple-choice questions still submit the selected option, while free-response questions and practice problems can submit a molecular document. Parsing establishes that a structure can be represented; the tutor still assesses its chemistry against the problem.
+
+### Authoring structures
+
+Use a `molecule` fence with a JSON source record:
+
+````markdown
+Which functional group is present in this structure?
+
+```molecule
+{"version":1,"smiles":"CC(=O)OCC","label":"Structure A"}
+```
+````
+
+For a plain SMILES source, a `smiles` fence is also supported:
+
+````markdown
+```smiles
+C[C@H](O)CC
+```
+````
+
+Records accept `smiles` or `molfile`, an optional neutral `label` and `caption`, and optional single-molecule `sdf` coordinates. A Molfile takes precedence when both Molfile and SMILES are present. Supplied 3D coordinates must describe the same structure. Keep labels and captions neutral when naming a molecule is part of the question. Preserve formal charges, isotopes, and specified stereochemistry in the source.
+
+For practice tools, include `chemistry: {}` in a `problem` call to offer a blank editor. Optional `chemistry.startingStructure` is a SMILES string for a given starting molecule; `chemistry.instructions` contains public drawing instructions. The expected answer belongs in the hidden `modelSolution`, never in the starting drawing. Submitted structures retain Molfile and editor data, with derived SMILES for interchange. Markdown exports retain portable molecule source fences; they do not embed rendered image files.
+
+### Local setup and 3D
+
+The chemistry dependencies require **Node.js 24.14.1 or newer**. Install dependencies and prepare the locally served drawing/viewer assets:
+
+```bash
+npm install
+npm run chemistry:assets
+npm run dev
+```
+
+`predev` and `prebuild` also prepare the assets automatically. No CDN is needed for rendering or editing. The `/chemistry` page provides examples of graphical questions, drawing answers, and stereochemistry.
+
+Generating a 3D model from a 2D drawing additionally requires local Python RDKit:
+
+```bash
+python3 scripts/setup-chemistry.py
+```
+
+The setup script creates an isolated `.venv-chemistry` environment and installs the pinned RDKit version. It uses `uv` with Python 3.12 when available, or the invoking Python's `venv` and `pip`. Alternatively, set `LH_CHEMISTRY_PYTHON` to the absolute path of a Python interpreter with RDKit installed before starting LearnHarness. Installation downloads dependencies; subsequent rendering, editing, and conformer generation run locally.
+
+Generated models use ETKDG and a supported force field, preserve specified stereochemistry, and are labeled as one possible conformer. Unspecified stereochemistry is called out. Imported valid 3D SDF coordinates can be viewed without the Python generator. Generation supports one connected molecule with up to 200 non-hydrogen atoms; failures remain local to the 3D panel, and the 2D drawing remains available.
+
+Standalone/Electron builds include the JavaScript/WASM assets and Python helper script, **but do not bundle a Python interpreter or `.venv-chemistry`**. Configure `LH_CHEMISTRY_PYTHON` on the machine running the packaged server to enable generated 3D there. The renderer/editor remain available without it.
+
+Focused checks:
+
+```bash
+NODE_ENV=test node --import tsx --test tests/chemistry*.test.ts
+```
+
+The engine tests exercise invalid inputs, charge/isotope/stereo round trips, coordinate-source consistency, and API errors. Real conformer tests run when the configured or project-local Python runtime exists, otherwise they are skipped. Browser checks additionally cover drawing layout, editor save/reopen, keyboard isolation, and 3D interaction.
+
+The chemistry integrations use [RDKit](https://github.com/rdkit/rdkit) (BSD-3-Clause), [Ketcher](https://github.com/epam/ketcher) and its Indigo engine (Apache-2.0), and [3Dmol.js](https://github.com/3dmol/3Dmol.js) (BSD-3-Clause). Asset preparation includes their copyright and license notices. Versioned upstream copies and provenance are in [third-party/chemistry](third-party/chemistry/README.md); preserve these notices when redistributing the application and prepared assets.
+
 ## License
 
 [AGPL-3.0](LICENSE)

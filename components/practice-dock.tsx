@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,9 @@ import { CodeAwareInput } from "@/components/code-aware-input";
 import { CodeWorkbench } from "@/components/code-workbench";
 import type { CodeExercise } from "@/src/core";
 import { cn } from "@/lib/utils";
+import { hasMoleculeBlock, type MoleculeDocument, type MoleculeSource } from "@/src/core";
+import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
+import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
 
 /**
  * The practice dock (practice sessions, owner design 2026-10-04): an
@@ -32,17 +35,18 @@ import { cn } from "@/lib/utils";
  */
 
 export interface PracticeDockProps {
+	chatId?: string;
+	draftKey?: string;
 	/** The active problem's tool-call id (submissions target it). */
 	problemCallId: string;
 	/** The pose's arguments — only the statement is the learner's (the
 	 *  mode badge would edge toward announcing the target; dropped). */
-	input: { statement: string; codeExercise?: CodeExercise };
-	chatId?: string;
+	input: { statement: string; codeExercise?: CodeExercise; chemistry?: { startingStructure?: string; instructions?: string } };
 	/** Collapse state, owned by the DockOverlay. */
 	expanded: boolean;
 	onExpand: () => void;
 	/** text — POST {type:"thinking"} (one lane; the register is read from the text). */
-	onSubmit: (text: string, codeRunId?: string) => void | Promise<void>;
+	onSubmit: (text: string, codeRunId?: string, molecule?: MoleculeDocument) => void | Promise<void>;
 	/** Escape in the thinking field stops dictation (threaded from the page). */
 	onEscape?: () => void;
 	/** Compaction is running for this chat (owner round 14): the thinking
@@ -54,9 +58,16 @@ export interface PracticeDockProps {
 	paused?: boolean;
 }
 
-export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
+export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
 	const [codeThinking, setCodeThinking] = useState(false);
+	const [molecule, setMolecule] = useState<MoleculeDocument>();
+	const [copiedSource, setCopiedSource] = useState<MoleculeSource>();
+	const startingSource = useMemo<MoleculeSource | undefined>(() => input.chemistry?.startingStructure ? { smiles: input.chemistry.startingStructure } : undefined, [input.chemistry?.startingStructure]);
+	const chemistryEnabled = !!input.chemistry || hasMoleculeBlock(input.statement) || !!copiedSource || !!molecule;
+	const useStructure = useCallback((source: MoleculeSource) => {
+		if (!paused && !compactionRunning) setCopiedSource({ ...source });
+	}, [paused, compactionRunning]);
 	// Ref MIRRORS the field ("nothing gets lost", the question-dock
 	// discipline): a submit resuming after `await finishDictation()` reads
 	// the tail, never a stale closure.
@@ -77,10 +88,10 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 	const submit = () => {
 		if (compactionRunning || paused) return;
 		const text = thinkingRef.current.trim();
-		if (text.length === 0) return;
+		if (text.length === 0 && !molecule) return;
 		thinkingRef.current = "";
 		setThinking("");
-		onSubmit(text);
+		onSubmit(text, undefined, molecule ? { ...molecule } : undefined);
 	};
 
 	/* ENTER SUBMITS FROM ANYWHERE (owner round 6, 2026-10-05): dictation
@@ -105,6 +116,7 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 
 	/* ── the expanded form ── */
 	return (
+		<ChemistryAnswerProvider onUse={useStructure}>
 		<div data-testid="practice-dock" data-problem={problemCallId}>
 			{!expanded && collapsedBar}
 			<div hidden={!expanded}>
@@ -130,6 +142,18 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 				<div className="px-2.5 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 					YOUR THINKING
 				</div>
+				{chemistryEnabled && (
+					<div className="max-h-[45vh] overflow-y-auto px-2.5 pt-2">
+						{input.chemistry?.instructions && <ToolContentResponse>{input.chemistry.instructions}</ToolContentResponse>}
+						<ChemistryWorkbench
+							draftKey={`practice:${draftKey ?? `${chatId ?? "session"}:${problemCallId}`}`}
+							initial={copiedSource ?? startingSource}
+							value={molecule}
+							onChange={setMolecule}
+							disabled={paused || compactionRunning}
+						/>
+					</div>
+				)}
 				<CodeAwareInput
 					onCodeSubmit={submit}
 					onCodeModeChange={setCodeThinking}
@@ -170,7 +194,7 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 					<Button
 						type="button"
 						data-testid="practice-send"
-						disabled={thinking.trim().length === 0 || compactionRunning}
+						disabled={(!thinking.trim() && !molecule) || compactionRunning || paused}
 						onClick={() => submit()}
 						className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
 					>
@@ -180,5 +204,6 @@ export function PracticeDock({ problemCallId, input, chatId, expanded, onExpand,
 			</div>}
 			</div>
 		</div>
+		</ChemistryAnswerProvider>
 	);
 }

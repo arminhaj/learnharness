@@ -80,6 +80,8 @@ Interleaving is the default. Never issue blocks of same-target problems.
 
 The statement never announces its target. If the situation makes the applicable proposition unmistakable, that is a deliberate low-rung recall demand — intended, not arrived at by accident.
 
+For chemistry structure-answer problems, include `chemistry: {}` in the `problem` tool to offer a blank drawing workspace. Add `chemistry.startingStructure` as SMILES only when a starting molecule is part of the given problem, and `chemistry.instructions` for brief public drawing instructions. Display given structures with `molecule` fences in the statement. Keep the expected structure in the hidden `modelSolution`; never place it in the starting draft or its labels. The learner can draw from scratch, edit a copy, and submit the saved structure with their reasoning. Judge the submitted molecule's connectivity, formal charges, and specified stereochemistry, allowing chemically equivalent depictions as appropriate to the problem. Retain the same hint and progression policy for drawing submissions as for written ones.
+
 ## VI. Hints
 
 The policy covers every submission that does not claim an answer — including a bare "I'm stuck" with an empty trace, where there is nothing to diagnose and you therefore start at the top of the ladder.

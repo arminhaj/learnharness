@@ -66,6 +66,8 @@ export function useEnterSubmits(submit: () => void, enabled = true): void {
 	enabledRef.current = enabled;
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			if (e.defaultPrevented || document.querySelector("dialog[data-chemistry-dialog][open]")) return;
+			if ((e.target as HTMLElement | null)?.closest?.("[data-chemistry-interactive]")) return;
 			if (!enabledRef.current) return;
 			if (e.key !== "Enter") return;
 			if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;

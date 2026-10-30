@@ -9,9 +9,13 @@ import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
 import { CodeAwareInput } from "@/components/code-aware-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
+import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
+import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
+import type { MoleculeDocument, MoleculeSource } from "@/src/core";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
+	hasMoleculeBlock,
 	repairMathForDisplay,
 	normalizeQuizType,
 	CONFIDENCE_STOPS,
@@ -62,6 +66,7 @@ import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-
  */
 
 export interface QuestionDockProps {
+	draftKey?: string;
 	toolName: "quiz" | "probe" | "ask_user_question" | "explain" | "recall";
 	toolCallId: string;
 	input: QuizToolInput | AskToolInput | ExplainToolInput;
@@ -103,6 +108,7 @@ export interface QuestionDockProps {
 }
 
 export function QuestionDock({
+	draftKey,
 	toolName,
 	toolCallId,
 	input,
@@ -162,6 +168,7 @@ export function QuestionDock({
 			)}
 			<div className={expanded ? "dock-variant" : "invisible h-0 overflow-hidden"}>
 				<QuestionDockForm
+					draftKey={draftKey}
 					toolName={toolName}
 					toolCallId={toolCallId}
 					input={parsed}
@@ -260,6 +267,7 @@ export function QuestionDockBar({
 
 /** The expanded question: label, question, options, and the unified bottom row. */
 function QuestionDockForm({
+	draftKey,
 	toolName,
 	toolCallId,
 	input,
@@ -336,6 +344,8 @@ function QuestionDockForm({
 	const [other, setOther] = useState(initialDraft?.other ?? "");
 	const [text, setText] = useState(initialDraft?.text ?? "");
 	const [codeAnswer, setCodeAnswer] = useState(() => /^`{3,}[a-zA-Z0-9_+-]*\n/.test(initialDraft?.text ?? ""));
+	const [molecule, setMolecule] = useState<MoleculeDocument | undefined>(initialDraft?.molecule);
+	const [moleculeInitial, setMoleculeInitial] = useState<MoleculeSource>();
 	/* Refs MIRROR the two dictation-target fields ("nothing gets lost"
 	 * round, owner 2026-10-01): the run's flush lands via setState, which
 	 * a closure waiting through `await finishDictation()` cannot observe
@@ -381,7 +391,7 @@ function QuestionDockForm({
 
 	const canSubmit =
 		qd.mode === "text"
-			? text.trim().length > 0
+			? text.trim().length > 0 || !!molecule
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 	const dictationActive = useDictationActive();
 	const canFinishSpokenAnswer = qd.mode === "text" && dictationClaim && dictationActive;
@@ -418,12 +428,13 @@ function QuestionDockForm({
 		if (!mountedRef.current || latest.paused || latest.compactionRunning || (requireDictationClaim && !latest.dictationClaim)) return;
 		// State in the pre-finish closure can still be empty. Validate the ref
 		// updated by the transcript flush, and never submit an empty recording.
-		if (qd.mode === "text" ? !answerTextRef.current.trim() : !canSubmit) return;
+		if (qd.mode === "text" ? !answerTextRef.current.trim() && !molecule : !canSubmit) return;
 		const req: AnswerRequest = {
 			dontKnow: sel.dontKnow,
 			values: [...sel.selected].map((i) => qd.options[i]!.value),
 			other: sel.otherSelected ? other : undefined,
 			text: qd.mode === "text" ? answerTextRef.current : undefined,
+			molecule: qd.mode === "text" ? molecule : undefined,
 			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
 			// Always sent on quiz answers (owner: 50 must mean 50, never
 			// "untouched"); buildAnswer drops it on "I don't know".
@@ -436,6 +447,7 @@ function QuestionDockForm({
 			thinking: thinkingTextRef.current,
 			other,
 			text: answerTextRef.current,
+			molecule,
 			confidenceIndex: confIdx,
 		});
 		onSubmit(buildAnswer(qd, req, toolName));
@@ -509,6 +521,7 @@ function QuestionDockForm({
 		if (!active || rowCount === 0) return;
 		const onKeyDown = (e: KeyboardEvent) => {
 			const t = e.target as HTMLElement | null;
+			if (e.defaultPrevented || document.querySelector("dialog[data-chemistry-dialog][open]") || t?.closest?.("[data-chemistry-interactive]")) return;
 			// A TYPING field is where keys mean text (owner round 4): the
 			// thinking/answer fields, search boxes, renames — never a range
 			// input, whose focus after a click or drag must not kill the
@@ -588,6 +601,7 @@ function QuestionDockForm({
 	}, [kbdIdx]);
 
 	return (
+		<ChemistryAnswerProvider onUse={qd.mode === "text" ? setMoleculeInitial : undefined}>
 		<div ref={rootRef} data-testid="question-dock">
 			{/* Question area — scrolls internally if very tall; the bottom row stays put.
 			    Capped by the measured column (--dock-max-h; the old fixed 55dvh cut
@@ -620,6 +634,14 @@ function QuestionDockForm({
 					<div className="flex flex-col gap-2 pb-2" role={qd.mode === "multi-select" ? "group" : "radiogroup"}>
 						{qd.options.map((opt, i) => {
 							const isSel = sel.selected.has(i);
+							if (hasMoleculeBlock(opt.label)) {
+								return <div key={opt.value} data-testid="molecular-option" className={cn("min-w-0 rounded-lg border px-3 py-2", isSel ? "border-primary bg-accent" : "border-border")}>
+									<button type="button" data-kbdrow={i} role={qd.mode === "multi-select" ? "checkbox" : "radio"} aria-checked={isSel} onClick={() => toggle(i)} className={cn("flex items-center gap-2 rounded px-2 py-1 text-sm focus-visible:outline-2 focus-visible:outline-ring", i === kbdIdx && "bg-accent")}>
+										<span aria-hidden="true">{isSel ? "●" : "○"}</span> Select structure {i + 1}
+									</button>
+									<ToolContentResponse>{opt.label}</ToolContentResponse>
+								</div>;
+							}
 							return (
 								<button
 									key={opt.value}
@@ -872,6 +894,7 @@ function QuestionDockForm({
 					submit();
 				}}
 			>
+				{qd.mode === "text" && <ChemistryWorkbench draftKey={`question:${draftKey ?? toolCallId}`} initial={moleculeInitial} value={molecule} onChange={setMolecule} disabled={paused || compactionRunning} />}
 				<div
 					data-testid={qd.mode === "text" ? "answer-field" : "thinking-field"}
 					className="rounded-[10px] border border-border/70 bg-background/60 transition-colors focus-within:border-primary/50"
@@ -958,5 +981,6 @@ function QuestionDockForm({
 				</div>
 			</form>
 		</div>
+		</ChemistryAnswerProvider>
 	);
 }

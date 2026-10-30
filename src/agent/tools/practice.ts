@@ -103,6 +103,16 @@ export const problemInputObject = Type.Object({
 			"REQUIRED — the problem as the learner sees it (markdown + LaTeX). Must be self-contained and " +
 			"solvable from the session's material. NEVER announces the target proposition.",
 	}),
+	chemistry: Type.Optional(Type.Object({
+		startingStructure: Type.Optional(Type.String({
+			maxLength: 10000,
+			description: "Optional starting molecule as SMILES for the learner's editable answer draft. Omit to start with a blank drawing. Never put the hidden expected answer here.",
+		})),
+		instructions: Type.Optional(Type.String({
+			maxLength: 2000,
+			description: "Optional public instructions for drawing the molecular answer.",
+		})),
+	}, { description: "Enable the molecular drawing workspace for a structure-answer problem." })),
 	mode: Type.Union([Type.Literal("recall"), Type.Literal("discrimination"), Type.Literal("composition")], {
 		description: "REQUIRED — the demand mode: recall, discrimination, or composition (bare words, no quotes).",
 	}),

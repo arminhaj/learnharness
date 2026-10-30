@@ -3,6 +3,8 @@
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
 import { fenceCode, type ArtifactPartProps, type CodeRunResult } from "@/src/core";
+import type { MoleculeDocument } from "@/src/core";
+import { MoleculeFigure } from "@/components/chemistry/molecule-figure";
 
 /**
  * The practice transcript cards (practice sessions, owner design
@@ -54,6 +56,7 @@ export interface PracticeThinkingData {
 	commit?: boolean;
 	text: string;
 	codeResult?: CodeRunResult;
+	molecule?: MoleculeDocument;
 }
 
 export function ProblemCard({ part }: ArtifactPartProps) {
@@ -308,5 +311,15 @@ export function ThinkingCard({ data }: { data: PracticeThinkingData }) {
 	// 50%-italic quote block on expand. Legacy records' commit flag is
 	// deliberately unread (one lane now). A TRANSCRIPT row (owner round,
 	// 2026-10-07): full-width band + rail, arriving expanded.
-	return <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={data.text} defaultOpen />;
+	return (
+		<>
+			{data.text && <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={data.text} defaultOpen />}
+			{data.molecule && (
+				<div className="my-3" data-testid="thinking-molecule">
+					<div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your structure</div>
+					<MoleculeFigure source={data.molecule} />
+				</div>
+			)}
+		</>
+	);
 }

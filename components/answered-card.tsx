@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import type { QuestionAnswerData } from "@/src/core";
 import { answerForPresentation, parseAskInput, parseQuizInput } from "@/src/core";
+import { MoleculeFigure } from "@/components/chemistry/molecule-figure";
 
 /**
  * Static rendering of an answered question (tool part in `output-available`).
@@ -162,6 +163,12 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 			)}
 
 			{answer.text && <div className="lh-prose mt-2 whitespace-pre-wrap">{/^`{3,}/.test(answer.text) ? <LearnerText text={answer.text} /> : <>“<PathText text={answer.text} />”</>}</div>}
+			{answer.molecule && (
+				<div className="mt-3" data-testid="answered-molecule">
+					<div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your structure</div>
+					<MoleculeFigure source={answer.molecule} />
+				</div>
+			)}
 
 			{/* The confidence record (owner round 6): the slider's rail, disc
 			    removed — the missing handle itself says "this is a record, not a

@@ -76,6 +76,19 @@ describe("PracticeDock", () => {
 		assert.match(html, /data-testid="practice-dock-bar"/);
 		assert.match(html, /Show that the sum is even\./);
 	});
+
+	it("molecular statements enable answer drawing with either Markdown fence style", () => {
+		for (const fence of ["```", "````", "~~~", "~~~~"]) {
+			for (const language of ["molecule", "smiles"]) {
+				const source = language === "molecule" ? '{"smiles":"CCO","label":"Structure A"}' : "CCO";
+				const html = renderToStaticMarkup(
+					<PracticeDock problemCallId="molecule-fence" input={{ statement: `Modify this structure.\n\n${fence}${language}\n${source}\n${fence}` }} expanded onExpand={() => {}} onSubmit={() => {}} />,
+				);
+				assert.match(html, /data-testid="molecule-figure"/, `${fence}${language} renders the given molecule`);
+				assert.match(html, /Draw structure/, `${fence}${language} enables the answer workbench`);
+			}
+		}
+	});
 });
 
 // ── the transcript cards ─────────────────────────────────────────────────────

@@ -96,3 +96,4 @@ export * from "./api-code-demo.ts";
 export * from "./code-completion.ts";
 export * from "./code-diagnostics.ts";
 export * from "./api-code-completion.ts";
+export * from "./chemistry.ts";

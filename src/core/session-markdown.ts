@@ -30,6 +30,7 @@ import {
 	userFacingTextOf,
 } from "./native-messages.ts";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
 
 /** The practice join context (owner-approved, 2026-10-06 export round):
  *  practice tool RESULTS are acks — the statement, outcome, and verdict
@@ -81,6 +82,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 				answers: string[];
 				other: string;
 				dismissed: boolean;
+				molecule: MoleculeDocument;
 		  }>
 		| undefined;
 
@@ -105,6 +107,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 		else if (out?.correct === true) body.push("The learner answered correctly.");
 		else if (out?.correct === false) body.push("The learner answered incorrectly.");
 		else if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner answered in his own words: ${out.text.trim()}`);
+		if (out?.molecule) body.push(`Submitted molecular structure:\n\n${moleculeMarkdown(out.molecule)}`);
 		if (typeof out?.note === "string" && out.note) body.push(`*(his thinking: ${out.note})*`);
 		return { heading, body };
 	}
@@ -142,6 +145,7 @@ function toolResultBody(result: ToolResultMessage, ctx?: MarkdownContext): { hea
 		if (typeof out?.text === "string" && out.text.trim()) body.push(`The learner answered: ${out.text.trim()}`);
 		else if (chosen.length > 0) body.push(`The learner chose: ${chosen.join(", ")}`);
 		else if (out?.dismissed === true) body.push("The learner skipped this question.");
+		if (out?.molecule) body.push(`Submitted molecular structure:\n\n${moleculeMarkdown(out.molecule)}`);
 		if (typeof out?.note === "string" && out.note) body.push(`*(his thinking: ${out.note})*`);
 		return { heading: "Question", body };
 	}
@@ -178,9 +182,16 @@ export function messageMarkdown(
 		if (result.isError || result.toolName === SEND_TO_USER_TOOL) return null; // retry context or output ack, not learning evidence
 		const { heading, body } = toolResultBody(result, ctx);
 		parts.push(`### ${heading}${anchor}\n\n${body.join("\n\n")}`);
+	} else if (message.role === "custom" && message.customType === "practice-thinking") {
+		const data = message.details as { text?: string; molecule?: MoleculeDocument } | undefined;
+		if (data?.molecule) {
+			const text = typeof data.text === "string" ? data.text.trim() : "";
+			parts.push(`### Learner${anchor}\n\n${text ? `${text}\n\n` : ""}${moleculeMarkdown(data.molecule)}`);
+		}
 	}
 
-	// custom markers are invisible, same as the extraction view.
+	// Operational custom markers remain invisible. Molecular submissions
+	// carry learner-authored evidence that must survive a portable export.
 	return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
