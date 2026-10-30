@@ -170,6 +170,53 @@ test("collapsing and reopening preserves the iframe, selected model, and render 
 	}
 });
 
+test("chair summaries show compact orientations and switch with the selected geometry", async () => {
+	const result = ensemble();
+	const low = result.conformers![1]!;
+	low.rings[0]!.substituents = [
+		{ atomIndex: 0, substituentAtomIndex: 6, label: "Br", orientation: "equatorial" },
+		{ atomIndex: 1, substituentAtomIndex: 7, label: "Me", orientation: "equatorial" },
+	];
+	result.conformers!.push({
+		...low, id: "flipped-chair", sdf: "flipped-chair-geometry", energy: -0.94, relativeEnergy: 0.46,
+		rings: [{ ...low.rings[0]!, chairBasin: "negative", substituents: low.rings[0]!.substituents.map(group => ({ ...group, orientation: "axial" })) }],
+	});
+	mockFetch(() => Response.json(result));
+	await mount({ smiles: "Br[C@H]1[C@H](C)CCCC1" });
+	const frame = await connectFrame();
+	assert.deepEqual([...host!.querySelectorAll('[role="radio"]')].map(row => row.textContent), [
+		"ΔE 0.00Br eq., Me eq.", "ΔE 0.46Br ax., Me ax.", "ΔE 5.20non-chair",
+	]);
+	assert.equal(conformerRow("sample-low").getAttribute("aria-label"), "ΔE 0.00 kcal/mol, Br equatorial, Me equatorial");
+	assert.equal(conformerRow("sample-low").querySelector("[title]")!.getAttribute("title"), "Br equatorial, Me equatorial");
+	assert.match(host!.querySelector('[data-testid="conformer-details"]')!.textContent!, /ΔE 0.00 kcal\/mol · chair/);
+	await pressConformerKey("sample-low", "ArrowDown");
+	assert.equal(conformerRow("flipped-chair").getAttribute("aria-checked"), "true");
+	assert.equal(conformerRow("flipped-chair").getAttribute("aria-label"), "ΔE 0.46 kcal/mol, Br axial, Me axial");
+	assert.equal(latestModel(frame).sdf, "flipped-chair-geometry");
+	assert.match(host!.querySelector('[data-testid="conformer-details"]')!.textContent!, /ΔE 0.46 kcal\/mol · chair/);
+	assert.equal(requests.length, 1);
+});
+
+test("empty summaries, non-chairs, and multiple rings retain their shape labels", async () => {
+	const result = ensemble();
+	const groups = [{ atomIndex: 0, substituentAtomIndex: 6, label: "Me", orientation: "axial" as const }];
+	const high = result.conformers![0]!;
+	const low = result.conformers![1]!;
+	low.rings[0]!.substituents = [];
+	high.rings[0]!.substituents = groups;
+	result.conformers!.push({
+		...low, id: "multiple-rings", relativeEnergy: 6.2,
+		rings: [{ ...low.rings[0]!, substituents: groups }, { ...low.rings[0]!, atomIndices: [7, 8, 9, 10, 11, 12], substituents: groups }],
+	});
+	mockFetch(() => Response.json(result));
+	await mount({ smiles: "C1CCCCC1" });
+	assert.deepEqual([...host!.querySelectorAll('[role="radio"]')].map(row => row.textContent), [
+		"ΔE 0.00chair", "ΔE 5.20non-chair", "ΔE 6.202 chair rings",
+	]);
+	assert.doesNotMatch(host!.textContent!, /Me ax\./);
+});
+
 test("conformer radio navigation moves focus and selection with arrows, Home, and End", async () => {
 	mockFetch(() => Response.json(ensemble()));
 	await mount({ smiles: "C1CCCCC1" });

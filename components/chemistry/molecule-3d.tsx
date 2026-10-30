@@ -19,6 +19,16 @@ function ringLabel(conformer: MoleculeConformer): string {
 		.join(", ");
 }
 
+/** The backend owns group recognition and geometry. Never extend a chair
+ * summary to other shapes or imply atom numbering from its stable indices. */
+function substituentLabel(conformer: MoleculeConformer, abbreviated = true): string {
+	const ring = conformer.rings.length === 1 ? conformer.rings[0] : undefined;
+	if (ring?.shape !== "chair" || !ring.substituents?.length) return "";
+	return ring.substituents.map(({ label, orientation }) =>
+		`${label} ${abbreviated ? orientation === "axial" ? "ax." : "eq." : orientation}`,
+	).join(", ");
+}
+
 type SearchResponse = { sourceKey: string; requestId: number; result: ConformerResult };
 type ViewerError = { sourceKey: string; message: string };
 
@@ -173,10 +183,15 @@ export default function Molecule3D({ source }: { source: MoleculeSource }) {
 						</Button>
 					</div>
 					<div id={`${id}-conformers`} hidden={!sidebarOpen} role="radiogroup" aria-label="Conformers by increasing relative energy" aria-describedby={`${id}-conformer-details`} className="min-h-0 max-h-40 overflow-y-auto px-1 pb-1 sm:max-h-none sm:flex-1">
-						{candidates.map((candidate, index) => <button key={candidate.id} type="button" role="radio" aria-checked={candidate.id === selected?.id} tabIndex={candidate.id === selected?.id ? 0 : -1} data-conformer-id={candidate.id} ref={element => { if (element) choiceRefs.current.set(candidate.id, element); else choiceRefs.current.delete(candidate.id); }} onClick={() => chooseConformer(candidate.id)} onKeyDown={event => walkConformers(event, index)} className={`block w-full min-w-0 rounded-md px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${candidate.id === selected?.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"}`}>
-							<span className="block tabular-nums">ΔE {candidate.relativeEnergy.toFixed(2)}</span>
-							{ringLabel(candidate) && <span className="block break-words text-xs text-muted-foreground">{ringLabel(candidate)}</span>}
-						</button>)}
+						{candidates.map((candidate, index) => {
+							const summary = substituentLabel(candidate);
+							const expandedSummary = summary ? substituentLabel(candidate, false) : undefined;
+							const label = summary || ringLabel(candidate);
+							return <button key={candidate.id} type="button" role="radio" aria-label={expandedSummary ? `ΔE ${candidate.relativeEnergy.toFixed(2)} kcal/mol, ${expandedSummary}` : undefined} aria-checked={candidate.id === selected?.id} tabIndex={candidate.id === selected?.id ? 0 : -1} data-conformer-id={candidate.id} ref={element => { if (element) choiceRefs.current.set(candidate.id, element); else choiceRefs.current.delete(candidate.id); }} onClick={() => chooseConformer(candidate.id)} onKeyDown={event => walkConformers(event, index)} className={`block w-full min-w-0 rounded-md px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${candidate.id === selected?.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"}`}>
+								<span className="block tabular-nums">ΔE {candidate.relativeEnergy.toFixed(2)}</span>
+								{label && <span title={expandedSummary} className="block break-words text-xs text-muted-foreground">{label}</span>}
+							</button>;
+						})}
 					</div>
 				</aside>}
 				<div key="molecular-viewport" data-testid="molecular-viewport" className="relative h-[min(52vh,420px)] min-h-[260px] min-w-0 flex-none overflow-hidden sm:h-full sm:min-h-0 sm:flex-1" aria-busy={!rendered && !error}>

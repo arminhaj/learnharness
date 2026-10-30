@@ -127,6 +127,26 @@ function generatedResult(value: unknown): ConformerResult {
 				|| (ring.shape === "chair" ? !["positive", "negative"].includes(ring.chairBasin ?? "") : ring.chairBasin !== undefined)) {
 				throw new Error("Invalid ring classification.");
 			}
+			if (ring.substituents !== undefined) {
+				if (ring.shape !== "chair" || conformer.rings.length !== 1 || !Array.isArray(ring.substituents)
+					|| ring.substituents.length < 1 || ring.substituents.length > 12) {
+					throw new Error("Invalid chair substituent summary.");
+				}
+				const externalAtoms = new Set<number>();
+				const occupiedDirections = new Set<string>();
+				for (const group of ring.substituents) {
+					if (!group || !ring.atomIndices.includes(group.atomIndex)
+						|| !Number.isInteger(group.substituentAtomIndex) || group.substituentAtomIndex < 0 || group.substituentAtomIndex >= MAX_MOLECULE_ATOMS
+						|| ring.atomIndices.includes(group.substituentAtomIndex) || externalAtoms.has(group.substituentAtomIndex)
+						|| !["F", "Cl", "Br", "I", "Me", "Et", "OH", "OMe", "NH2"].includes(group.label)
+						|| !["axial", "equatorial"].includes(group.orientation)
+						|| occupiedDirections.has(`${group.atomIndex}:${group.orientation}`)) {
+						throw new Error("Invalid chair substituent summary.");
+					}
+					externalAtoms.add(group.substituentAtomIndex);
+					occupiedDirections.add(`${group.atomIndex}:${group.orientation}`);
+				}
+			}
 		}
 	}
 	if (result.sdf !== result.conformers[0]!.sdf) throw new Error("The default conformer must have the lowest sampled energy.");

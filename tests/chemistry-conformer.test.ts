@@ -30,8 +30,16 @@ test("ranked search fixes the cyclohexane local-minimum regression and retains b
 	const chairs = conformers.filter(conformer => conformer.rings[0]?.shape === "chair");
 	assert.deepEqual(new Set(chairs.map(conformer => conformer.rings[0]!.chairBasin)), new Set(["positive", "negative"]));
 	assert.ok(chairs[1]!.relativeEnergy > 0.3 && chairs[1]!.relativeEnergy < 0.7);
+	assert.deepEqual(chairs.map(conformer => conformer.rings[0]!.substituents?.map(group => [group.label, group.orientation])), [
+		[["Br", "equatorial"], ["Me", "equatorial"]],
+		[["Br", "axial"], ["Me", "axial"]],
+	]);
+	assert.deepEqual(chairs[0]!.rings[0]!.substituents?.map(group => [group.atomIndex, group.substituentAtomIndex]),
+		chairs[1]!.rings[0]!.substituents?.map(group => [group.atomIndex, group.substituentAtomIndex]));
 	const nonChair = conformers.find(conformer => conformer.rings[0]?.shape === "non-chair")!;
 	assert.ok(nonChair.relativeEnergy > 4 && nonChair.relativeEnergy < 5, "The previous non-chair minimum belongs above the chairs");
+	assert.ok(conformers.filter(conformer => conformer.rings[0]?.shape !== "chair")
+		.every(conformer => conformer.rings[0]?.substituents === undefined));
 	assert.equal(new Set(conformers.map(conformer => conformer.id)).size, conformers.length);
 	for (let i = 0; i < conformers.length; i++) {
 		assert.ok(Number.isFinite(conformers[i]!.energy));
@@ -47,6 +55,7 @@ test("symmetry dedup retains two pedagogical chair basins in unsubstituted cyclo
 	assert.equal(chairs.length, 2);
 	assert.notEqual(chairs[0]!.rings[0]!.chairBasin, chairs[1]!.rings[0]!.chairBasin);
 	assert.ok(Math.abs(chairs[0]!.energy - chairs[1]!.energy) < 1e-5);
+	assert.ok(chairs.every(conformer => conformer.rings[0]?.substituents === undefined));
 });
 
 test("every ranked geometry preserves specified E/Z and one consistent unspecified stereoisomer", { skip: !hasPython }, async () => {
@@ -81,7 +90,7 @@ test("UFF fallback labels the whole ensemble and imported coordinates require an
 	assert.equal((await chemistryConformerResponse(request({ ...source, search: "yes" }))).status, 400);
 });
 
-test("independent geometry fixtures and stereo/convergence/alignment rejection checks", { skip: !hasPython }, () => {
+test("independent geometry, substituent orientation, and stereo/convergence/alignment rejection checks", { skip: !hasPython }, () => {
 	const output = execFileSync(chemistryPython(), ["tests/chemistry-conformer-fixtures.py"], { encoding: "utf8", timeout: 30_000 });
 	assert.match(output, /Geometry fixtures.*passed/);
 });

@@ -10,6 +10,12 @@ import sys
 REQUESTED = 128
 SEED = 0xC0DE
 RMSD_THRESHOLD = 0.25
+# Exact attachment fragments, rather than guesses based on the first atom.
+# The wildcard is the severed bond to the ring; ordinary hydrogens are implicit.
+SIMPLE_SUBSTITUENTS = {
+    "*F": "F", "*Cl": "Cl", "*Br": "Br", "*I": "I",
+    "*C": "Me", "*CC": "Et", "*O": "OH", "*OC": "OMe", "*N": "NH2",
+}
 
 
 def ring_geometry(points):
@@ -83,6 +89,94 @@ def eligible_rings(mol):
         reverse = (forward[0],) + tuple(reversed(forward[1:]))
         rings.append(min(forward, reverse))
     return sorted(rings)
+
+
+def simple_ring_substituents(mol, ring):
+    """Complete, stable group identities for one simple cyclohexane, or None.
+
+    Atom indices identify the same attachment across this ensemble; they are
+    not course numbering. An unknown group suppresses the whole summary, so a
+    partial list cannot look like a complete account of the substituents.
+    """
+    from rdkit import Chem
+
+    if mol.GetRingInfo().NumRings() != 1 or tuple(ring) not in eligible_rings(mol):
+        return None
+    # Abbreviations must not hide isotope labels, charges, or radicals.
+    if any(atom.GetIsotope() or atom.GetFormalCharge() or atom.GetNumRadicalElectrons()
+           for atom in mol.GetAtoms()):
+        return None
+    groups = []
+    for index in ring:
+        for neighbor in mol.GetAtomWithIdx(index).GetNeighbors():
+            external = neighbor.GetIdx()
+            if external in ring or neighbor.GetAtomicNum() == 1:
+                continue
+            bond = mol.GetBondBetweenAtoms(index, external)
+            if bond.GetBondType() != Chem.BondType.SINGLE:
+                return None
+            fragments = Chem.FragmentOnBonds(mol, [bond.GetIdx()], dummyLabels=[(0, 0)])
+            mappings = []
+            parts = Chem.GetMolFrags(fragments, asMols=True, fragsMolAtomMapping=mappings)
+            part = next(part for part, indices in zip(parts, mappings) if external in indices)
+            if any(atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED for atom in part.GetAtoms()):
+                return None
+            # Atom maps identify source atoms; they do not change group identity.
+            # Clear them only on this detached copy, preserving the input/SDF.
+            for atom in part.GetAtoms():
+                atom.SetAtomMapNum(0)
+            label = SIMPLE_SUBSTITUENTS.get(Chem.MolToSmiles(Chem.RemoveHs(part), isomericSmiles=True))
+            if label is None:
+                return None
+            groups.append({"atomIndex": index, "substituentAtomIndex": external, "label": label})
+    return sorted(groups, key=lambda group: (group["atomIndex"], group["substituentAtomIndex"])) or None
+
+
+def chair_substituent_summary(mol, conf, ring, groups):
+    """Conservative axial/equatorial assignment, independent of camera axes.
+
+    Bond angles are measured from the Cremer-Pople ring mean plane: <=35
+    degrees is equatorial, >=60 is axial, and the gap is intentionally unknown.
+    Both external bonds at every carbon (including H) must agree on one of
+    each. These are conformational orientations, never cis/trans assignments.
+    """
+    import numpy as np
+
+    if not groups:
+        return None
+    points = np.asarray([list(conf.GetAtomPosition(i)) for i in ring])
+    geometry = ring_geometry(points)
+    if not geometry or geometry["shape"] != "chair":
+        return None
+    positions = points - points.mean(axis=0)
+    phase = np.arange(6) * 2 * np.pi / 6
+    normal = np.cross((positions * np.sin(phase)[:, None]).sum(axis=0),
+                      (positions * np.cos(phase)[:, None]).sum(axis=0))
+    normal /= np.linalg.norm(normal)
+    orientations = {}
+    for index in ring:
+        external = [neighbor.GetIdx() for neighbor in mol.GetAtomWithIdx(index).GetNeighbors()
+                    if neighbor.GetIdx() not in ring]
+        # Generation adds explicit H before this function; incomplete imported
+        # geometry must not bypass the paired-bond consistency check.
+        if len(external) != 2:
+            return None
+        pair = []
+        for neighbor in external:
+            vector = np.asarray(conf.GetAtomPosition(neighbor)) - np.asarray(conf.GetAtomPosition(index))
+            length = np.linalg.norm(vector)
+            if not np.isfinite(vector).all() or length < 1e-8:
+                return None
+            angle = math.degrees(math.asin(float(np.clip(abs(vector @ normal) / length, 0, 1))))
+            orientation = "equatorial" if angle <= 35 else "axial" if angle >= 60 else None
+            if orientation is None:
+                return None
+            orientations[(index, neighbor)] = orientation
+            pair.append(orientation)
+        if set(pair) != {"axial", "equatorial"}:
+            return None
+    return [{**group, "orientation": orientations[(group["atomIndex"], group["substituentAtomIndex"])]}
+            for group in groups]
 
 
 def stereo_signature(mol):
@@ -160,6 +254,7 @@ def generate(payload):
         raise ValueError("A 3D conformer could not be generated for this structure.")
     method, optimized = optimize(mol)
     rings = eligible_rings(mol)
+    ring_groups = {ring: simple_ring_substituents(mol, ring) for ring in rings}
     converged = 0
     stereo_rejected = 0
     candidates = []
@@ -177,6 +272,9 @@ def generate(payload):
         for ring in rings:
             geometry = ring_geometry([list(conf.GetAtomPosition(i)) for i in ring])
             if geometry:
+                substituents = chair_substituent_summary(mol, conf, ring, ring_groups[ring])
+                if substituents:
+                    geometry["substituents"] = substituents
                 classifications.append({"atomIndices": list(ring), **geometry})
         candidates.append({"conf_id": conf_id, "energy": float(energy), "rings": classifications})
     if not candidates:
