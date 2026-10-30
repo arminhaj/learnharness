@@ -52,3 +52,4 @@ export { claudeCodeInstallationResponse } from "./claude-code.ts";
 export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
 export * from "./code-workspaces.ts";
+export { apiCodeDemoResponse } from "./api-code-demo.ts";

@@ -10,6 +10,14 @@ Run `npm run dev`, then open `/code-demo`, or follow **Try C++ checks** from a c
 
 **Open in editor** opens the real workspace file in VS Code, Cursor, or the system text editor. The workspace also contains `compile_flags.txt` for C++20-aware tools such as clangd. Rich autocomplete in an external editor comes from that editor's installed C++ extension. Save there, then choose **Reload saved file** or **Check** in LearnHarness. If both editors have changed the file, LearnHarness preserves the in-app draft and offers an explicit choice before replacement.
 
+## API exercise demo
+
+Open `/code-demo/api` for a multi-file C++ example. Implement `borrow_book` against a **simulated library API**. The editor focuses on `solution.cpp`; the API reference and supporting files remain inspectable. The simulation never contacts a real service or creates a real loan. Clang/GCC still compiles and executes the learner's actual saved code, linked with the supplied API implementation and driver.
+
+**Run** executes a selected scenario or custom standard input without grading it. Input is `book_id copies online`, for example `dune 2 1`; copies must be 0–10 and online must be 0 or 1. Each process starts with fresh state. Standard output shows the function's return value and resulting loan/stock counts; standard error includes API activity and runtime diagnostics. **Check exercise** runs five fixed cases, checking both the return value and the resulting state. Successful execution alone is not a passing check, and passing simulated cases does not establish integration with a real library.
+
+**Open in editor** opens the complete local project. The generated `README.md`, `CMakeLists.txt`, and `compile_flags.txt` support building and editing independently. Save external changes to `solution.cpp`, then reload, run, or check in the demo. Supporting files are fixed for this exercise; changing them is reported instead of silently replacing them. This demo is separate from model-authored practice exercises, whose schema still supports one complete source file.
+
 ## Coding practice
 
 The practice agent can attach optional `codeExercise` data to a problem:

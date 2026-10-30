@@ -87,3 +87,4 @@ export * from "./coverage.ts";
 export * from "./session-markdown.ts";
 export * from "./code-text.ts";
 export * from "./code-workspace.ts";
+export * from "./api-code-demo.ts";

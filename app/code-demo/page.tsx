@@ -10,6 +10,7 @@ export default function CodeDemoPage() {
 			<div className="mb-6 flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground"><Code2Icon className="size-4" />Code workspace · C++</div>
 			<h1 className="font-title text-3xl tracking-tight sm:text-4xl">From snippet to working solution.</h1>
 			<p className="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground">The starter file includes the headers, entry point, and input handling. Work in the code box or open the same file in your editor, then check your saved solution.</p>
+			<Link href="/code-demo/api" className="mt-3 inline-block text-xs underline underline-offset-4 hover:text-muted-foreground">Try the library API exercise →</Link>
 			<div className="mt-8 grid items-start gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
 				<aside className="space-y-5 text-sm">
 					<div>
