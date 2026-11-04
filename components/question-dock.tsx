@@ -12,6 +12,7 @@ import { TopicFeedbackControl } from "@/components/topic-feedback";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
+	dismissedAnswer,
 	repairMathForDisplay,
 	normalizeQuizType,
 	CONFIDENCE_STOPS,
@@ -430,33 +431,43 @@ function QuestionDockForm({
 			? sel.dontKnow || text.trim().length > 0 || (choicesShown && sel.selected.size > 0)
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 
-	const submit = () => {
-		if (!canSubmit || compactionRunning || paused) return;
+	const submissionStateRef = useRef({ paused, compactionRunning, dictationClaim });
+	submissionStateRef.current = { paused, compactionRunning, dictationClaim };
+	const finishingSubmissionRef = useRef(false);
+	const mountedRef = useRef(true);
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => { mountedRef.current = false; };
+	}, []);
+
+	const submit = (moveOn = false) => {
+		if (compactionRunning || paused || finishingSubmissionRef.current) return;
+		const recording = isDictationActive();
+		// A voice-only free response is still buffered until finish(). Only
+		// the current target may finish it; select questions still need a choice.
+		if (recording && !dictationClaim) return;
+		if (!moveOn && !canSubmit && !(qd.mode === "text" && recording)) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
 		 * build the answer — the spoken reasoning is never lost to a
 		 * forgotten stop. The field values below come from the REF mirrors
 		 * because the flush lands via setState after an await. */
-		if (!isDictationActive()) {
-			doSubmit();
+		if (!recording) {
+			doSubmit(moveOn);
 			return;
 		}
-		void finishDictation().then(doSubmit);
+		finishingSubmissionRef.current = true;
+		void finishDictation().then(() => doSubmit(moveOn, true)).finally(() => { finishingSubmissionRef.current = false; });
 	};
-	const doSubmit = () => {
-		if (!canSubmit || paused) return;
-		const req: AnswerRequest = {
-			dontKnow: sel.dontKnow,
-			values: [...sel.selected].map((i) => qd.options[i]!.value),
-			other: sel.otherSelected ? other : undefined,
-			text: qd.mode === "text" && !sel.dontKnow ? answerTextRef.current : undefined,
-			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
-			choicesShown: choicesShown ? true : undefined,
-			topicFeedback,
-			// The resting confidence is a real 50. buildAnswer drops it on "I don't know".
-			confidence: hasConfidence ? CONFIDENCE_STOPS[confIdx] : undefined,
-		};
+	const doSubmit = (moveOn: boolean, requireDictationClaim = false) => {
+		const latest = submissionStateRef.current;
+		if (!mountedRef.current || latest.paused || latest.compactionRunning || (requireDictationClaim && !latest.dictationClaim)) return;
+		// State in the pre-finish closure can still be empty. Validate the ref
+		// updated by the transcript flush, and never submit an empty recording.
+		if (!moveOn && (qd.mode === "text"
+			? !sel.dontKnow && !answerTextRef.current.trim() && !(choicesShown && sel.selected.size > 0)
+			: !canSubmit)) return;
 		// Snapshot before optimistic submission unmounts the form. Ref values
 		// include the dictation finals that just landed, unlike stale closures.
 		onSaveDraft?.({
@@ -468,6 +479,21 @@ function QuestionDockForm({
 			choicesShown,
 			topicFeedback: feedback,
 		});
+		if (moveOn) {
+			onSubmit(dismissedAnswer(qd.kind, qd.question));
+			return;
+		}
+		const req: AnswerRequest = {
+			dontKnow: sel.dontKnow,
+			values: [...sel.selected].map((i) => qd.options[i]!.value),
+			other: sel.otherSelected ? other : undefined,
+			text: qd.mode === "text" && !sel.dontKnow ? answerTextRef.current : undefined,
+			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
+			choicesShown: choicesShown ? true : undefined,
+			topicFeedback,
+			// The resting confidence is a real 50. buildAnswer drops it on "I don't know".
+			confidence: hasConfidence ? CONFIDENCE_STOPS[confIdx] : undefined,
+		};
 		onSubmit(buildAnswer(qd, req, toolName));
 	};
 
@@ -655,6 +681,12 @@ function QuestionDockForm({
 								<Button type="button" variant={sel.dontKnow ? "secondary" : "outline"} size="sm" aria-pressed={sel.dontKnow}
 									onClick={() => setSel((previous) => ({ ...emptyDockSelection(), dontKnow: !previous.dontKnow }))}>
 									I don’t know
+								</Button>
+							)}
+							{(focused || hasChoiceHints) && (
+								<Button type="button" variant="ghost" size="sm" disabled={paused || compactionRunning}
+									onClick={() => submit(true)}>
+									Move on
 								</Button>
 							)}
 						</div>
