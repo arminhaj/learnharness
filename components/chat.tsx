@@ -15,7 +15,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { LearnerText } from "@/components/learner-text";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
+import { Reasoning, ReasoningContent, ReasoningStatus, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { LiveToolCard } from "@/components/artifacts/live-tool-card";
@@ -263,7 +263,7 @@ export function Chat({
 	// (core/view.ts projectView); sends are ONE explicit input event each
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
+	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, reconcileTurn, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStreamIfIdle, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initialQuestionDraft: initialDraft?.question, initialError, initiallyInFlight });
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
@@ -498,9 +498,8 @@ export function Chat({
 	const turnInFlightRef = useRef(turnInFlight);
 	turnInFlightRef.current = turnInFlight;
 	const attachToRunningTurn = useCallback(() => {
-		setTurnInFlight(true);
-		void resumeStream();
-	}, [resumeStream]);
+		if (resumeStreamIfIdle()) setTurnInFlight(true);
+	}, [resumeStreamIfIdle]);
 
 	// The practice dock's send (ONE lane, owner 2026-10-05): POSTs the
 	// thinking against the ACTIVE problem — whether it claims an answer is
@@ -799,22 +798,24 @@ export function Chat({
 	useEnterSubmits(sendNext, !explorations.paused);
 
 	const syncFromServer = useCallback(async () => {
-		const res = await fetch(`/api/chats/${chatId}`);
-		if (!res.ok) return;
-		const record = (await res.json()) as { messages?: LhMessage[]; turns?: TurnUsage[]; pricing?: SessionPricing; turnError?: string };
-		if (Array.isArray(record.turns)) setTurns(record.turns);
-		setPricing(record.pricing);
-		if (!Array.isArray(record.messages)) return;
-		setMessages(record.messages, record.turnError);
-		// The continuation seam (contracts.ts protocol §4): a job result
-		// landing in the record leaves the agent owing a continuation — the
-		// record ENDS on un-consumed results, the dock owns no question, and
-		// nothing runs. The native fold (needsContinuation) is the old SDK
-		// lastAssistantMessageIsCompleteWithToolCalls check.
-		// Current model truth also guards retained/live failures: canonical
-		// sync must never automatically replace a reply that failed to save.
-		if (!explorationPausedRef.current) continueIfOwed(record.messages);
-	}, [chatId, setMessages, continueIfOwed]);
+		// The model verifies request ownership and server liveness before
+		// replacing the transcript, including when a terminal frame was lost.
+		const result = await reconcileTurn();
+		if (result === "running") {
+			if (!localStreamRef.current) attachToRunningTurn();
+			return;
+		}
+		if (result !== "settled") return;
+		setTurnInFlight(false);
+		if (!explorationPausedRef.current) continueIfOwed();
+		try {
+			const res = await fetch(`/api/chats/${chatId}`);
+			if (!res.ok) return;
+			const record = (await res.json()) as { turns?: TurnUsage[]; pricing?: SessionPricing };
+			if (Array.isArray(record.turns)) setTurns(record.turns);
+			setPricing(record.pricing);
+		} catch { /* Usage stays on the last known figures. */ }
+	}, [chatId, reconcileTurn, continueIfOwed, attachToRunningTurn]);
 
 	// The settled terminal's other half (stream-reattach wave): the
 	// transport resolved turn-settled — no turn running, the record is
@@ -963,17 +964,9 @@ export function Chat({
 	useEffect(() => {
 		void syncTurns();
 	}, [syncTurns]);
-	// After the learner's own turn ends the log has a fresh entry — and the
-	// Post-turn settle (the SLIMMED watch — push-architecture S3,
-	// 2026-10-02): our own stream just ended. Two instant LOCAL actions
-	// only — the turns-only refetch lands the log entry while the server's
-	// persist/endTurn lags by milliseconds, and the coverage ring re-reads
-	// (this turn's messages just joined the uncovered mass). The ADOPTION
-	// LOOP and the HANDOFF WATCH that lived here are RETIRED: a
-	// server-initiated turn (the probe→teach handoff, a job wake, another
-	// tab) is now ANNOUNCED on the events channel — the turn-started
-	// subscription (below the jobs poll) attaches to it live. No polling
-	// window can expire; the freeze class is gone.
+	// A normal stream completion also reconciles canonical messages and
+	// usage. The independent notification and quiet-stream watchdog cover
+	// a lost completion marker; none of these paths resubmits the input.
 	const prevStatusRef = useRef(status);
 	useEffect(() => {
 		const transitioned = prevStatusRef.current !== "ready" && status === "ready";
@@ -981,32 +974,13 @@ export function Chat({
 		// branch — the re-fire-on-dep-churn wart, fixed S3).
 		prevStatusRef.current = status;
 		if (!transitioned) return;
-		// immediate: turns-only refetch — the stats bar updates even while
-		// the server's persist/endTurn lags the client by milliseconds
-		void syncTurns();
 		// The coverage ring re-reads at turn settle too (extraction-UX
 		// redesign, 2026-09-24); the ring's own running-poll handles runs.
 		setCoverageTick((t) => t + 1);
-		// CANONIZATION (fix B, the duplicate-previous-message bug, 2026-10-02):
-		// turn-settled for OUR OWN turn arrives while the stream is still open
-		// (endTurn emits from onFinish before the response terminates, so the
-		// SSE frame reliably beats [DONE]) — the handler below cannot sync
-		// there, it flags instead, and THIS flip consumes the flag: the record
-		// reflects durable truth (a failed settlement retains its notice,
-		// not its unsaved reply), so replacing the view absorbs the tail's
-		// streamed c_-id copies into base under their server ids. Without
-		// this the tail kept those copies forever and the next send's
-		// steer-adoption window rendered them a second time. The wake handoff
-		// cannot be missed by this sync: the wake fires only after the idle
-		// gates + grace (≥750ms past this flip), so its turn-started event
-		// lands at an idle, already-canonical view and attaches normally.
-		if (settleAnnouncedRef.current) {
-			settleAnnouncedRef.current = false;
-			void syncFromServer();
-		}
-		// (The extraction-discovery nudges that lived here died at S5: the
-		// pipeline announces every phase on the events channel.)
-	}, [status, syncTurns, syncFromServer]);
+		// Reconcile even when the independent settle notification was missed.
+		// Ownership checks prevent this read from replacing a newer turn.
+		void syncFromServer();
+	}, [status, syncFromServer]);
 
 	// A stream that died MID-FLIGHT (network): the runner decoupled the turn
 	// from its view, so the server turn runs ON behind the error banner —
@@ -1150,11 +1124,7 @@ export function Chat({
 	// between renders, and a ref holds the live value at event time.
 	const statusRef = useRef(status);
 	statusRef.current = status;
-	/** Fix B (2026-10-02): turn-settled arrived for OUR OWN turn — the
-	 * record is durable (endTurn fires only after persistTurn); the ready
-	 * flip consumes this flag to canonize the view onto the record. See the
-	 * settle effect and the turn-settled handler below. */
-	const settleAnnouncedRef = useRef(false);
+
 	useServerEvent("turn-started", (p) => {
 		// Known non-issue: beginTurn emits before registerTurn in the same
 		// synchronous request flow; a GET /stream inside that sub-ms window
@@ -1167,33 +1137,12 @@ export function Chat({
 	});
 	useServerEvent("turn-settled", (p) => {
 		if (p.chatId !== chatId) return;
-		if (localStreamRef.current) {
-			// Our own [DONE] path owns the BUSY settle — but not a no-op (fix B,
-			// 2026-10-02): the event is the record-durable guarantee (endTurn
-			// fires only after persistTurn), and it reliably beats [DONE] here
-			// (endTurn emits from onFinish before the response terminates). Flag
-			// it; the ready flip consumes the flag and canonizes the view onto
-			// the record. (If [DONE] somehow won this race instead, this branch
-			// didn't run and the fully-idle branch below already synced.)
-			settleAnnouncedRef.current = true;
-			return;
-		}
-		if (turnInFlightRef.current) {
-			// The attached stream's terminal frame owns the normal settle —
-			// syncing HERE would swap a stale snapshot mid-stream (the
-			// continuation-coalescing law, see the jobs poll above). Only
-			// the error case heals: the attached stream died, and the settle
-			// says persistTurn has made the record durable truth.
-			if (statusRef.current === "error") {
-				setTurnInFlight(false);
-				clearError();
-				void syncFromServer();
-			}
-			return;
-		}
-		// Fully idle — a turn we never saw (every window missed): adopt now.
+		// This notification is independent of the response stream. Do not
+		// wait for a missing [DONE] before checking durable server truth.
 		void syncFromServer();
 	});
+	useServerResync(() => { void syncFromServer(); });
+
 	useServerEvent("compaction-changed", (p) => {
 		// The settle-kick's background summary: while it runs, sends gate
 		// (the next turn's server-side ensureCompacted awaits it anyway —
@@ -1551,7 +1500,6 @@ export function Chat({
 									<Message from="assistant" className="max-w-full">
 									<MessageContent className="w-full">
 											{m.parts.map((part, pi) => {
-												const isLastPart = mi === messages.length - 1 && pi === m.parts.length - 1;
 												// The step boundary where teaching begins (round 8): when
 												// the teach flip happens in a LATER step, its PhaseDivider
 												// replaces this boundary's plain hairline.
@@ -1592,8 +1540,9 @@ export function Chat({
 														);
 													}
 													case "reasoning":
+														if (!part.text?.trim()) return part.state === "streaming" ? <ReasoningStatus key={part.id || pi} className="mb-2" /> : null;
 														return (
-															<Reasoning key={pi} isStreaming={status === "streaming" && isLastPart} className="mb-2">
+															<Reasoning key={pi} isStreaming={part.state === "streaming"} className="mb-2">
 																<ReasoningTrigger />
 																<ReasoningContent>{part.text ?? ""}</ReasoningContent>
 															</Reasoning>
@@ -1654,21 +1603,8 @@ export function Chat({
 								</Fragment>
 							))}
 
-							{/* THE placeholder, ACTION-gated (owner, optimistic round
-							    3, 2026-10-02): spinner + shimmered Thinking… from the
-							    instant of any action that produces tokens — send,
-							    answer, session start, reattach (status flips to
-							    submitted SYNCHRONOUSLY with the action) — until the
-							    turn's first APPLIED event, where the stream takes over
-							    with the same look: an arrived-but-empty message renders
-							    the thinking ROW (view.ts projects one empty reasoning
-							    part), so submitted ⟺ placeholder and streaming ⟺ a
-							    rendered row, mutually exclusive by construction.
-							    Protocol events (agent_start) apply nothing and release
-							    nothing — the placeholder covers the whole
-							    provider-connect gap. turnInFlight: the same state
-							    entered by external discovery (wake) / the poll
-							    fallback. Never collapsible itself. */}
+							{/* Show observed work while no summary or tool already owns
+							    the activity line, including gaps between model steps. */}
 							{/* Compaction (owner round 15): the same register as the
 						    thinking placeholder — a visible session-wide state while
 						    the summarizer holds the model gate. Mutually exclusive with
@@ -1680,13 +1616,8 @@ export function Chat({
 									<Shimmer duration={1}>COMPACTING CONTEXT…</Shimmer>
 								</span>
 							)}
-							{(status === "submitted" || turnInFlight) && (
-								<span className="flex items-center gap-2 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground">
-									<BrailleSpinner label="Thinking" />
-									<Shimmer duration={1}>
-										THINKING…
-									</Shimmer>
-								</span>
+							{busy && !messages.at(-1)?.parts.some(part => part.state === "streaming" || part.state === "input-streaming") && (
+								<ReasoningStatus />
 							)}
 							{explorations.error && <div role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">
 								{explorations.error} {!explorations.ready && <button type="button" className="ml-2 underline" onClick={() => { void explorations.load(); }}>Retry</button>}

@@ -21,6 +21,7 @@ import {
 	needsContinuation,
 	pendingQuestionOf,
 	failedResponseAtEnd,
+	failedResponseMessage,
 	measuredContextTokens,
 	newAnswerResult,
 	newNextMessage,
@@ -43,6 +44,9 @@ export type SessionStatus = "ready" | "submitted" | "streaming" | "error";
 export const TURN_POLL_MS = 500;
 /** Give up waiting (a wake turn can run long) and surface the 409. */
 export const TURN_WAIT_MAX_MS = 30_000;
+/** A quiet view checks persisted completion; it never times out inference. */
+export const STREAM_SILENCE_MS = 15_000;
+export type TurnReconciliation = "settled" | "running" | "superseded" | "unavailable";
 
 export interface SessionModelDeps {
 	/** Injectable fetch (tests); defaults to the global. */
@@ -50,6 +54,10 @@ export interface SessionModelDeps {
 	/** Injectable retry timing (tests). */
 	pollMs?: number;
 	waitMaxMs?: number;
+	/** Time without a stream event before checking server liveness (tests). */
+	streamSilenceMs?: number;
+	/** Bounds only the recovery GET, never the running inference. */
+	reconciliationTimeoutMs?: number;
 }
 
 /** A local optimistic id (never a server stamp — absorption and the
@@ -199,6 +207,8 @@ export interface SessionState {
 export interface SteerQueueItem {
 	id: string;
 	text: string;
+	/** Retained locally when delivery was refused or could not be confirmed. */
+	error?: string;
 }
 
 /** The indicator's fold (pure): a queued steer stays visible until its id
@@ -235,6 +245,8 @@ export class SessionModel {
 	private steerQueueValue: SteerQueueItem[] = [];
 	private readonly pollMs: number;
 	private readonly waitMaxMs: number;
+	private readonly streamSilenceMs: number;
+	private readonly reconciliationTimeoutMs: number;
 	private onReattachSettled?: () => void;
 	/** The hook's re-render trigger (set by the adapter). */
 	onChange?: () => void;
@@ -264,6 +276,10 @@ export class SessionModel {
 	// The single live consume (POST response or reattach stream): a newer
 	// consume cancels the older — one reader at a time.
 	private consumeAbort: AbortController | null = null;
+	/** Only an attached reader can be recovered while busy, never a pending POST. */
+	private activeConsumer: AbortController | null = null;
+	private requestRevision = 0;
+	private reconciliation: { revision: number; promise: Promise<TurnReconciliation> } | null = null;
 	/** Retain the latest request across stop(): an opening POST still owns
 	 * its refusal after view detachment, but never after a newer request. */
 	private latestRequest: AbortController | null = null;
@@ -287,6 +303,8 @@ export class SessionModel {
 		this.fetch = opts.fetch ?? ((...args) => globalThis.fetch(...args));
 		this.pollMs = opts.pollMs ?? TURN_POLL_MS;
 		this.waitMaxMs = opts.waitMaxMs ?? TURN_WAIT_MAX_MS;
+		this.streamSilenceMs = opts.streamSilenceMs ?? STREAM_SILENCE_MS;
+		this.reconciliationTimeoutMs = opts.reconciliationTimeoutMs ?? 15_000;
 		this.onChange = opts.onChange;
 		this.onReattachSettled = opts.onReattachSettled;
 	}
@@ -299,7 +317,7 @@ export class SessionModel {
 	getState(): SessionState {
 		const live =
 			this.statusValue === "submitted" || this.statusValue === "streaming"
-				? { executions: this.executions, inFlight: true, streamingIds: this.streamingIds }
+				? { executions: this.executions, inFlight: true, streamingIds: this.streamingIds, activeMessageId: this.streamingMessageId }
 				: undefined;
 		const messages = [...this.base, ...this.tail];
 		const latest = failedResponseAtEnd(messages);
@@ -309,7 +327,7 @@ export class SessionModel {
 		const providerError =
 			latest !== undefined &&
 			!this.incompleteUsageIds.has(latest.id) && (!live || latest.id === this.liveFailureId)
-				? { message: latest.errorMessage ?? "An error occurred." }
+				? { message: failedResponseMessage(latest) }
 				: null;
 		return {
 			messages: projectView(messages, live),
@@ -433,12 +451,6 @@ export class SessionModel {
 				const withId = { ...message, id } as LhMessage;
 				if (agent.type === "message_end") {
 					this.incompleteUsageIds.delete(id);
-					if (message.role === "assistant" && message.stopReason === "error") {
-						this.liveFailureId = id;
-						// A newer provider failure replaces an earlier connection/loop
-						// error, just as the live message_end did before restoration.
-						this.errorValue = null;
-					}
 				} else this.incompleteUsageIds.add(id);
 				if (agent.type === "message_start") {
 					this.streamingMessageId = id;
@@ -450,10 +462,16 @@ export class SessionModel {
 					this.mutate(() => {
 						const idx = this.tail.findIndex((m) => m.id === id);
 						this.tail = idx === -1 ? [...this.tail, withId] : this.tail.with(idx, withId);
+						if (agent.type === "message_end") {
+							this.streamingMessageId = null; // slot done — next start mints fresh
+							if (failedResponseAtEnd([...this.base, ...this.tail])?.id === id) {
+								this.liveFailureId = id;
+								// Completed empty replies use the same banner as provider
+								// failures, derived from saved input and the complete reply.
+								this.errorValue = null;
+							}
+						}
 					});
-				}
-				if (agent.type === "message_end") {
-					this.streamingMessageId = null; // slot done — next start mints fresh
 				}
 				return true; // a message event is view work, even empty content
 			}
@@ -491,13 +509,92 @@ export class SessionModel {
 		}
 	}
 
+	/** Read-only settlement recovery. A late notification/GET cannot replace a
+	 * newer request, and server silence alone never starts or cancels inference. */
+	reconcileTurn(): Promise<TurnReconciliation> {
+		const revision = this.requestRevision;
+		if (this.reconciliation?.revision === revision) return this.reconciliation.promise;
+		const controller = this.consumeAbort;
+		if ((this.statusValue === "submitted" || this.statusValue === "streaming") &&
+			(!controller || this.activeConsumer !== controller)) return Promise.resolve("unavailable");
+		const promise = this.readTurnSettlement(revision, controller).finally(() => {
+			if (this.reconciliation?.promise === promise) this.reconciliation = null;
+		});
+		this.reconciliation = { revision, promise };
+		return promise;
+	}
+
+	private async readTurnSettlement(revision: number, controller: AbortController | null): Promise<TurnReconciliation> {
+		const current = () => this.requestRevision === revision && this.consumeAbort === controller;
+		const readAbort = new AbortController();
+		const cancelRead = () => readAbort.abort();
+		controller?.signal.addEventListener("abort", cancelRead, { once: true });
+		const timedOut = new Promise<never>((_resolve, reject) => {
+			readAbort.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+		});
+		const deadline = setTimeout(cancelRead, this.reconciliationTimeoutMs);
+		try {
+			const reading = (async () => {
+				const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, { signal: readAbort.signal });
+				if (!res.ok) { await res.body?.cancel().catch(() => {}); return null; }
+				return await res.json() as { messages?: LhMessage[]; turnInFlight?: boolean; turnError?: string };
+			})();
+			// Race as well as abort: a stalled body/transport must not hold the
+			// recovery slot indefinitely even when it ignores cancellation.
+			const record = await Promise.race([reading, timedOut]);
+			if (!current()) return "superseded";
+			if (!record || !Array.isArray(record.messages) || typeof record.turnInFlight !== "boolean") return "unavailable";
+			if (record.turnInFlight) return "running";
+			// Detach only this view. Its reader may never deliver DONE, but the
+			// authoritative record says the server-owned turn has already ended.
+			controller?.signal.removeEventListener("abort", cancelRead);
+			this.consumeAbort = null;
+			controller?.abort();
+			this.mutate(() => {
+				this.base = record.messages!;
+				this.tail = [];
+				this.forgetResolvedDrafts(record.messages!);
+				this.incompleteUsageIds.clear();
+				this.streamingIds.clear();
+				this.executions.clear();
+				this.streamingMessageId = null;
+				this.errorValue = record.turnError === undefined ? null : { message: record.turnError };
+				if (record.turnError !== undefined || failedResponseAtEnd(record.messages!)) this.automaticContinuationBlocked = true;
+				this.statusValue = "ready";
+				this.readyRef = true;
+			});
+			return "settled";
+		} catch {
+			return current() ? "unavailable" : "superseded";
+		} finally {
+			clearTimeout(deadline);
+			controller?.signal.removeEventListener("abort", cancelRead);
+		}
+	}
+
 	/** Consume one SSE body to its [DONE] terminal. The turn-settled
 	 *  terminal (stream-route only) fires the settle hook and ends. */
 	async consumeStream(res: Response, controller = this.consumeAbort, allowRecovery = true): Promise<void> {
 		if (!res.body) throw new Error("The turn stream body is empty.");
 		const reader = res.body.getReader();
+		this.activeConsumer = controller;
 		let sawEvent = false;
 		let sawDone = false;
+		let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+		let silenceRevision = 0;
+		const cancelReader = () => { void reader.cancel().catch(() => {}); };
+		controller?.signal.addEventListener("abort", cancelReader, { once: true });
+		const armSilenceCheck = () => {
+			clearTimeout(silenceTimer);
+			const revision = ++silenceRevision;
+			if (this.streamSilenceMs <= 0 || !controller || controller.signal.aborted) return;
+			silenceTimer = setTimeout(async () => {
+				if (this.consumeAbort !== controller || this.activeConsumer !== controller || controller.signal.aborted) return;
+				await this.reconcileTurn();
+				if (revision === silenceRevision && this.consumeAbort === controller && !controller.signal.aborted) armSilenceCheck();
+			}, this.streamSilenceMs);
+		};
+		armSilenceCheck();
 		try {
 			const events = sseEvents(reader);
 			for (;;) {
@@ -509,6 +606,7 @@ export class SessionModel {
 				}
 				if (this.consumeAbort !== controller) return;
 				if (next.done) { sawDone = next.value; break; }
+				armSilenceCheck();
 				const event = next.value;
 				if (event.type === "turn-settled") {
 					// The raced-settle terminal: no turn to attach to — the
@@ -524,13 +622,18 @@ export class SessionModel {
 				}
 			}
 		} finally {
+			clearTimeout(silenceTimer);
+			silenceRevision++;
+			controller?.signal.removeEventListener("abort", cancelReader);
 			await reader.cancel().catch(() => {});
 			reader.releaseLock();
+			if (this.activeConsumer === controller) this.activeConsumer = null;
 			// A cancelled consume may finish after its replacement has entered
 			// Thinking. Only the current owner can settle shared state.
 			if (this.consumeAbort === controller) {
 				this.streamingIds = new Set();
 				this.executions = new Map();
+				this.streamingMessageId = null;
 				if (sawDone && this.statusValue !== "error") this.setStatus("ready");
 			}
 		}
@@ -566,6 +669,7 @@ export class SessionModel {
 	 * through the SAME consume path.
 	 */
 	async resumeStream(refetchRecordFirst = true, allowRecovery = true): Promise<void> {
+		this.requestRevision++;
 		this.consumeAbort?.abort();
 		const controller = new AbortController();
 		this.consumeAbort = controller;
@@ -619,6 +723,7 @@ export class SessionModel {
 							this.forgetResolvedDrafts(record.messages!);
 							this.incompleteUsageIds.clear();
 							this.tail = [];
+							this.streamingMessageId = null;
 						});
 					}
 				} else {
@@ -663,6 +768,7 @@ export class SessionModel {
 		if (input.type === "answer" && questionKey !== undefined &&
 			(subject?.key !== questionKey || subject.toolCallId !== input.toolCallId)) return false;
 		const expectedKey = questionKey ?? (input.type === "answer" && subject?.toolCallId === input.toolCallId ? subject.key : undefined);
+		this.requestRevision++;
 		this.consumeAbort?.abort();
 		const controller = new AbortController();
 		this.consumeAbort = controller;
@@ -810,18 +916,24 @@ export class SessionModel {
 	 *  When pi drains it at the next response boundary, the verbatim
 	 *  message events upsert the real card (the client-minted id is the
 	 *  key) and the indicator's fold drops the line. A 409 means the turn
-	 *  settled mid-send (the race): fall back to the plain text send —
-	 *  the entry is dropped and send() pushes its own optimistic card.
+	 *  may have settled mid-send: verify that before a plain text send.
+	 *  Retain the original text until a positive acknowledgement arrives.
 	 */
 	async steer(text: string): Promise<void> {
 		const t = text.trim();
 		if (!t) return;
 		const id = `steer_${localId()}`;
+		const revision = this.requestRevision;
 		this.steerQueueValue = [...this.steerQueueValue, { id, text: t }];
 		this.onChange?.();
 		const dropSteer = () => {
 			this.steerQueueValue = this.steerQueueValue.filter((s) => s.id !== id);
 			this.onChange?.();
+		};
+		const retainSteer = (error: string, preserveError = false) => {
+			this.steerQueueValue = this.steerQueueValue.map(s => s.id === id ? { ...s, error } : s);
+			if (this.requestRevision === revision && !preserveError) this.setError(error);
+			else this.onChange?.();
 		};
 		try {
 			const res = await this.fetch(`/api/chats/${this.chatId}/steer`, {
@@ -831,15 +943,29 @@ export class SessionModel {
 			});
 			if (res.ok) return; // parked or delivered — the stream lands the card
 			if (res.status === 409) {
-				dropSteer();
-				await this.send({ type: "text", text: t }); // the settle race: plain send
+				await res.body?.cancel().catch(() => {});
+				if (this.requestRevision !== revision) {
+					retainSteer("The session changed before this message could be sent. Your text has been kept.");
+					return;
+				}
+				const result = await this.reconcileTurn();
+				if (result !== "settled" || this.requestRevision !== revision || !this.readyRef) {
+					retainSteer("This message was not sent because the turn's completion could not be confirmed. Your text has been kept.");
+					return;
+				}
+				// A new dock question or failed turn needs the learner's explicit
+				// next action, not a stale steer reinterpreted as its answer/retry.
+				if (pendingQuestionOf(this.base) || this.getState().error) {
+					retainSteer("The turn ended with a question or an error before this message was sent. Your text has been kept.", this.getState().error !== null);
+					return;
+				}
+				const accepted = await this.send({ type: "text", text: t }, dropSteer);
+				if (!accepted) retainSteer(this.getState().error?.message ?? "Message delivery could not be confirmed. Your text has been kept.");
 				return;
 			}
-			dropSteer();
-			this.setError((await res.text()) || `The steer failed (${res.status}).`);
+			retainSteer((await res.text()) || `The message was not sent (${res.status}). Your text has been kept.`);
 		} catch (err) {
-			dropSteer();
-			this.setError((err as Error).message);
+			retainSteer(`Message delivery could not be confirmed. Your text has been kept. ${(err as Error).message}`);
 		}
 	}
 
@@ -900,6 +1026,7 @@ export class SessionModel {
 	/** Local detach: cancel the consume, keep the partial tail. The page's
 	 *  settle watch adopts the record when the server turn finishes. */
 	stop(): void {
+		this.requestRevision++;
 		this.consumeAbort?.abort();
 		this.consumeAbort = null;
 		this.streamingIds = new Set();

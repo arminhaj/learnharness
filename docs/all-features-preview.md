@@ -1,6 +1,6 @@
 # All-features preview
 
-`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, inline lesson branches with dictation controls, subject-aware learning maps, learning history, the code snippet workbench, the chemistry interface, and problem-set teaching.
+`codex/all-features-preview` includes upstream LearnHarness 0.4.0, Light/Dark/System appearance modes, nested lesson explorations with dictation controls, subject-aware learning maps, learning history, the code snippet workbench, the chemistry interface, problem-set teaching, and feedback-first teaching with research and reply recovery.
 
 The node graph overhaul is merged into `main`. Learning history, the code snippet workbench, the chemistry interface, and problem-set teaching retain their own experimental branches; completed commits from those branches are integrated here and remain outside `main`.
 
@@ -10,8 +10,9 @@ The node graph overhaul is merged into `main`. Learning history, the code snippe
 - Open **Settings → Providers → External CLI** to configure the optional Claude Code integration. Upstream custom endpoints and file-path attachments are included too.
 - On Home, open a concept from the prerequisite dots or the iceberg. Try its metadata, subject correction, **Learn this concept**, and **Test my understanding** actions.
 - In Iceberg, change **Subject**. Concepts, study groups, progress counts, unlocks, and search results stay within that subject.
-- In a **teaching session**, choose **Explore this** beneath a completed tutor explanation. Follow the tangent, then choose **Return to lesson** to resume the original question and draft. Inline explorations are not available in practice sessions.
+- In a **teaching session**, choose **Explore this** beneath a completed tutor explanation. Choose **Explore this** again inside the tangent to go deeper. Use **Return to parent** or **Return to lesson** to resume the question and draft one level up. Inline explorations are not available in practice sessions.
 - To work through an assignment, start a **Teaching** session with its file path and ask to work through every question. The teacher starts at Question 1, labels original assigned questions, teaches prerequisites as needed, and retains checked guided solutions and unfinished subparts. See [problem-set teaching](problem-set-teaching.md).
+- After submitting an answer, look for feedback on your reasoning before optional research or preparation for the next question.
 - After answering, inspect automatic understanding updates and their source links. Evidence from an inline exploration should open the exact passage inside its parent lesson. Reading an explanation alone does not mark a concept understood.
 - Open **Learning history** in the sidebar, or select a passage in a teaching session and choose **Mark this moment**. See [learning history](learning-history.md) for analysis, speech cleanup, and source attribution.
 - Choose **Write code** in a supported input, or open `/code-demo` and `/code-demo/api` to try C++ exercises, Vim controls, completion, and F1 diagnostics. See [code workspaces](code-workspaces.md) for compiler and local execution requirements.

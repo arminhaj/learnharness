@@ -108,7 +108,8 @@ export function useChatSession({ chatId, initialMessages, initialQuestionDraft, 
 	);
 
 	const send = useCallback((input: ChatInput, onAccepted?: () => void) => model.send(input, onAccepted), [model]);
-	const continueIfOwed = useCallback((record: readonly LhMessage[]) => void model.continueIfOwed(record), [model]);
+	const continueIfOwed = useCallback((record: readonly LhMessage[] = model.getState().nativeMessages) => void model.continueIfOwed(record), [model]);
+	const reconcileTurn = useCallback(() => model.reconcileTurn(), [model]);
 	const steer = useCallback((text: string) => void model.steer(text), [model]);
 	const submitAnswer = useCallback(
 		(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string) =>
@@ -130,6 +131,12 @@ export function useChatSession({ chatId, initialMessages, initialQuestionDraft, 
 	const stop = useCallback(() => model.stop(), [model]);
 	const clearError = useCallback(() => model.clearError(), [model]);
 	const resumeStream = useCallback(() => void model.resumeStream(), [model]);
+	const resumeStreamIfIdle = useCallback(() => {
+		// Notification callbacks can outrun React's busy-state render.
+		if (model.status === "submitted" || model.status === "streaming") return false;
+		void model.resumeStream();
+		return true;
+	}, [model]);
 
 	return {
 		messages: state.messages,
@@ -141,6 +148,7 @@ export function useChatSession({ chatId, initialMessages, initialQuestionDraft, 
 		steerQueue: state.steerQueue,
 		send,
 		continueIfOwed,
+		reconcileTurn,
 		steer,
 		submitAnswer,
 		dismissQuestion,
@@ -152,6 +160,7 @@ export function useChatSession({ chatId, initialMessages, initialQuestionDraft, 
 		stop,
 		clearError,
 		resumeStream,
+		resumeStreamIfIdle,
 		setReattachSettled,
 	};
 }

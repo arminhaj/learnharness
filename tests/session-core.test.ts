@@ -816,22 +816,388 @@ describe("truncated stream recovery", () => {
 
 	it("a superseded consume cannot recover or overwrite its replacement's state", async () => {
 		let streams = 0;
-		let closeFirst!: () => void;
+		let cancelled = false;
 		let beganReading!: () => void;
 		const reading = new Promise<void>(resolve => { beganReading = resolve; });
 		const m = model({ fetch: dietFetch({ stream: () => ++streams === 1 ? new Response(new ReadableStream({
-			start(controller) { closeFirst = () => controller.close(); },
 			pull() { beganReading(); },
+			cancel() { cancelled = true; },
 		}, { highWaterMark: 0 })) : completed() }) });
 		const first = m.resumeStream(false);
 		await reading;
 		await m.resumeStream(false);
-		closeFirst();
 		await first;
+		assert.equal(cancelled, true, "replacing the view releases even a reader that never sends another byte");
 		assert.equal(streams, 2);
 		assert.equal(m.status, "ready");
 		assert.equal(m.getState().error, null);
 		assert.equal(m.getState().messages.at(-1)!.parts.at(-1)!.text, "complete");
+	});
+});
+
+/** An attached view that can remain silent forever despite a settled server. */
+function heldView(...events: unknown[]) {
+	let controller!: ReadableStreamDefaultController<Uint8Array>;
+	let reading!: () => void;
+	let cancellations = 0;
+	const started = new Promise<void>(resolve => { reading = resolve; });
+	const response = new Response(new ReadableStream<Uint8Array>({
+		start(value) { controller = value; },
+		pull() { reading(); },
+		cancel() { cancellations++; },
+	}, { highWaterMark: 0 }));
+	if (events.length) controller.enqueue(new TextEncoder().encode(sse(...events)));
+	return {
+		response, started,
+		get cancellations() { return cancellations; },
+		finish() { controller.enqueue(new TextEncoder().encode(sse("[DONE]"))); controller.close(); },
+	};
+}
+
+describe("empty completed foreground replies", () => {
+	const notice = "The model finished without an answer. Your input is saved.";
+	const question = { ...assistantMsg("preference", ""), stopReason: "toolUse", content: [{ type: "toolCall", id: "choice", name: "ask_user_question", arguments: { question: "What should we explore?", options: [{ label: "Continue the derivation", value: "continue" }] } }] } as LhMessage;
+	const answer = newAnswerResult("choice", "ask_user_question", buildAnswer({ id: "choice", kind: "ask", question: "What should we explore?", mode: "single-select", options: [{ label: "Continue the derivation", value: "continue" }], createdAt: "fixture" }, { values: ["continue"] }));
+	const savedInput = [newUserMessage("Help me understand this derivation."), question, answer];
+	const empty = { ...assistantMsg("empty", ""), content: [{ type: "thinking", thinking: "" }, { type: "text", text: "" }] } as LhMessage;
+
+	it("shows the completed failure on live delivery, reopen, sync and adoption without losing the saved choice", async () => {
+		let posts = 0;
+		const m = model({ initialMessages: savedInput, fetch: async () => { posts++; throw new Error("No automatic retry."); } });
+		m.applyWireEvent({ type: "message_start", message: empty });
+		m.applyWireEvent({ type: "message_update", message: empty });
+		assert.equal(m.getState().error, null, "empty partials are normal during generation");
+		m.applyWireEvent({ type: "message_end", message: empty });
+		const record = m.getState().nativeMessages;
+		assert.equal(m.getState().error?.message, notice);
+		assert.ok(endsInFailedTurn(record));
+		assert.deepEqual(record.slice(0, -1), savedInput);
+		assert.deepEqual(record.at(-1), empty, "the raw successful stop and empty output stay unchanged");
+		assert.equal(model({ initialMessages: record }).getState().error?.message, notice);
+		const synced = model(); synced.setMessages(record);
+		assert.equal(synced.getState().error?.message, notice);
+		const adopted = model({ initialMessages: savedInput }); adopted.adoptRecord(record);
+		assert.equal(adopted.getState().error?.message, notice);
+		await m.continueIfOwed(record);
+		assert.equal(posts, 0);
+	});
+
+	it("hides the old notice during an explicit retry and exposes a new empty completion before DONE", async () => {
+		const view = heldView({ type: "message_start", message: { ...empty, id: "retry-empty" } });
+		const inputs: ChatInput[] = [];
+		const m = model({ initialMessages: [...savedInput, empty], fetch: async (url, init) => {
+			if (String(url) === "/api/chat") { inputs.push(JSON.parse(String(init?.body)).input); return Response.json({ ok: true }); }
+			if (String(url).endsWith("/stream")) return view.response;
+			return Response.json({ messages: [...savedInput, empty], turnInFlight: true });
+		} });
+		assert.equal(m.getState().error?.message, notice);
+		const retrying = m.send({ type: "retry" });
+		assert.equal(m.getState().error, null, "the old failure does not look like failure of the retry");
+		await view.started;
+		assert.equal(m.getState().error, null, "a new empty partial is still working");
+		m.applyWireEvent({ type: "message_end", message: { ...empty, id: "retry-empty" } });
+		assert.equal(m.status, "streaming");
+		assert.equal(m.getState().error?.message, notice, "the completed new failure is visible before the stream terminal");
+		assert.deepEqual(inputs, [{ type: "retry" }]);
+		assert.equal(m.getState().nativeMessages.filter(message => message.id === answer.id).length, 1);
+		view.finish();
+		await retrying;
+	});
+
+	it("canonical recovery of an empty completion blocks inference until explicit learner action", async () => {
+		const view = heldView();
+		const record = JSON.parse(JSON.stringify([...savedInput, empty])) as LhMessage[];
+		let posts = 0;
+		const m = model({ initialMessages: savedInput, fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			if (String(url) === "/api/chat") posts++;
+			return Response.json({ messages: record, turnInFlight: false });
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		assert.equal(await m.reconcileTurn(), "settled");
+		await consuming;
+		assert.equal(m.getState().error?.message, notice);
+		assert.deepEqual(m.getState().nativeMessages, record);
+		m.clearError();
+		await m.continueIfOwed(savedInput);
+		assert.equal(posts, 0, "even an earlier answered-question snapshot cannot trigger a retry");
+	});
+});
+
+describe("authoritative settlement recovery", () => {
+	it("recovers a reader that never emits DONE, adopts once, and never POSTs", async () => {
+		const view = heldView(partial([{ type: "text", text: "incomplete" }]));
+		const complete = [assistantMsg("saved", "complete feedback")];
+		let reads = 0;
+		const m = model({ fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			assert.equal(String(url), "/api/chats/chat_x", "recovery is a record GET, not a new turn");
+			reads++;
+			return Response.json({ messages: complete, turnInFlight: false });
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		const first = m.reconcileTurn();
+		const second = m.reconcileTurn();
+		assert.equal(first, second, "simultaneous completion notifications share one read");
+		assert.equal(await first, "settled");
+		await consuming;
+		assert.equal(reads, 1);
+		assert.equal(view.cancellations, 1);
+		assert.equal(m.status, "ready");
+		assert.equal(m.readyRef, true);
+		assert.deepEqual(m.getState().nativeMessages, complete);
+		assert.equal(m.getState().error, null);
+	});
+
+	it("a silent view recovers persisted completion without another learner message", { timeout: 2_000 }, async () => {
+		const view = heldView();
+		let reads = 0;
+		const m = model({ streamSilenceMs: 5, fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			assert.equal(String(url), "/api/chats/chat_x");
+			reads++;
+			return Response.json({ messages: [assistantMsg("saved", "feedback")], turnInFlight: false });
+		} });
+		await m.resumeStream(false);
+		assert.equal(reads, 1);
+		assert.equal(m.status, "ready");
+		assert.equal(view.cancellations, 1);
+		assert.equal(m.getState().nativeMessages[0]?.id, "saved");
+	});
+
+	it("a legitimately quiet running turn keeps its reader and partial through repeated checks", { timeout: 2_000 }, async () => {
+		const view = heldView(partial([{ type: "text", text: "partial" }]));
+		let reads = 0;
+		let checkedTwice!: () => void;
+		const checked = new Promise<void>(resolve => { checkedTwice = resolve; });
+		const m = model({ streamSilenceMs: 5, fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			assert.equal(String(url), "/api/chats/chat_x");
+			if (++reads === 2) checkedTwice();
+			return Response.json({ messages: [], turnInFlight: true });
+		} });
+		const consuming = m.resumeStream(false);
+		await checked;
+		assert.equal(view.cancellations, 0);
+		assert.equal(m.status, "streaming");
+		assert.equal(m.getState().messages.at(-1)!.parts.at(-1)!.text, "partial");
+		view.finish();
+		await consuming;
+		assert.equal(m.status, "ready");
+	});
+
+	it("a timed-out recovery read preserves the live view and later silence checks can recover", { timeout: 2_000 }, async () => {
+		const view = heldView();
+		let reads = 0;
+		const readSignals: AbortSignal[] = [];
+		let checkedRunning!: () => void;
+		const checked = new Promise<void>(resolve => { checkedRunning = resolve; });
+		const m = model({ streamSilenceMs: 5, reconciliationTimeoutMs: 5, fetch: async (url, init) => {
+			if (String(url).endsWith("/stream")) return view.response;
+			assert.equal(String(url), "/api/chats/chat_x");
+			readSignals.push(init!.signal!);
+			if (++reads === 1) return new Promise<Response>(() => {}); // transport ignores abort
+			if (reads === 2) checkedRunning();
+			return Response.json({ messages: [assistantMsg("saved", "feedback")], turnInFlight: reads === 2 });
+		} });
+		const consuming = m.resumeStream(false);
+		await checked;
+		assert.equal(readSignals[0]?.aborted, true, "only the hung recovery GET was cancelled");
+		assert.equal(view.cancellations, 0);
+		assert.equal(m.status, "submitted");
+		await consuming;
+		assert.equal(reads, 3);
+		assert.equal(m.status, "ready");
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.equal(readSignals[1]?.aborted, false, "successful reads clear their deadlines");
+		assert.equal(readSignals[2]?.aborted, false);
+	});
+
+	it("detaching the owner aborts a hung recovery GET without waiting for its deadline", async () => {
+		const view = heldView();
+		let signal: AbortSignal | undefined;
+		const m = model({ fetch: async (url, init) => {
+			if (String(url).endsWith("/stream")) return view.response;
+			signal = init!.signal!;
+			return new Promise<Response>(() => {});
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		const reconciling = m.reconcileTurn();
+		m.stop();
+		assert.equal(await reconciling, "superseded");
+		await consuming;
+		assert.equal(signal?.aborted, true);
+		assert.equal(m.status, "ready");
+	});
+
+	for (const change of ["stop", "resume", "send"] as const) {
+		it(`a delayed settlement cannot overwrite a newer ${change}`, async () => {
+			const original = heldView();
+			let streams = 0;
+			let release!: (response: Response) => void;
+			const record = new Promise<Response>(resolve => { release = resolve; });
+			let records = 0;
+			const m = model({ fetch: async url => {
+				if (String(url) === "/api/chat") return Response.json({ ok: true });
+				if (String(url).endsWith("/stream")) return ++streams === 1 ? original.response : sseResponse(partial([{ type: "text", text: "new turn" }]), "[DONE]");
+				if (++records === 1) return record;
+				return Response.json({ messages: [] });
+			} });
+			const consuming = m.resumeStream(false);
+			await original.started;
+			const reconciling = m.reconcileTurn();
+			if (change === "resume") await m.resumeStream(false);
+			else {
+				m.stop();
+				if (change === "send") await m.send({ type: "text", text: "new input" });
+			}
+			const before = m.getState().nativeMessages;
+			release(Response.json({ messages: [assistantMsg("old", "stale")], turnInFlight: false }));
+			assert.equal(await reconciling, "superseded");
+			await consuming;
+			assert.deepEqual(m.getState().nativeMessages, before);
+			assert.equal(m.status, "ready");
+		});
+	}
+
+	it("does not reconcile false liveness while a new input is awaiting admission", async () => {
+		let accept!: (response: Response) => void;
+		const pending = new Promise<Response>(resolve => { accept = resolve; });
+		const calls: string[] = [];
+		const m = model({ fetch: async url => {
+			calls.push(String(url));
+			if (String(url) === "/api/chat") return pending;
+			if (String(url).endsWith("/stream")) return sseResponse("[DONE]");
+			return Response.json({ messages: [], turnInFlight: false });
+		} });
+		const sending = m.send({ type: "text", text: "keep my input" });
+		assert.equal(await m.reconcileTurn(), "unavailable");
+		assert.deepEqual(calls, ["/api/chat"]);
+		assert.equal(m.status, "submitted");
+		accept(Response.json({ ok: true }));
+		assert.equal(await sending, true);
+	});
+
+	for (const response of [() => new Response("offline", { status: 503 }), () => Response.json({ messages: [] }), () => { throw new Error("offline"); }]) {
+		it("unavailable or unverified liveness leaves the attached view intact", async () => {
+			const view = heldView();
+			const m = model({ fetch: async url => String(url).endsWith("/stream") ? view.response : response() });
+			const consuming = m.resumeStream(false);
+			await view.started;
+			assert.equal(await m.reconcileTurn(), "unavailable");
+			assert.equal(m.status, "submitted");
+			assert.equal(view.cancellations, 0);
+			view.finish();
+			await consuming;
+		});
+	}
+
+	it("idle reconciliation preserves a canonical failure and blocks automatic continuation", async () => {
+		const question = { ...assistantMsg("question", ""), content: [{ type: "toolCall", id: "q1", name: "quiz", arguments: { question: "Q?" } }] } as LhMessage;
+		const answer = buildAnswer({ id: "q1", kind: "quiz", question: "Q?", mode: "single-select", options: [], createdAt: "fixture" }, { dontKnow: true });
+		const record = [question, newAnswerResult("q1", "quiz", answer)];
+		let posts = 0;
+		const m = model({ fetch: async url => {
+			if (String(url) === "/api/chat") posts++;
+			return Response.json({ messages: record, turnInFlight: false, turnError: "The reply could not be saved." });
+		} });
+		assert.equal(await m.reconcileTurn(), "settled");
+		assert.equal(m.getState().error?.message, "The reply could not be saved.");
+		m.clearError();
+		await m.continueIfOwed(record);
+		assert.equal(posts, 0);
+	});
+});
+
+describe("followup delivery after a stale view", () => {
+	it("a rejected steer recovers the completed turn and sends its original text exactly once", async () => {
+		const view = heldView();
+		let streams = 0;
+		let accept!: (response: Response) => void;
+		let posted!: () => void;
+		const posting = new Promise<void>(resolve => { posted = resolve; });
+		const acknowledgement = new Promise<Response>(resolve => { accept = resolve; });
+		const inputs: ChatInput[] = [];
+		const m = model({ fetch: async (url, init) => {
+			if (String(url).endsWith("/stream")) return ++streams === 1 ? view.response : sseResponse("[DONE]");
+			if (String(url).endsWith("/steer")) return new Response("settled", { status: 409 });
+			if (String(url) === "/api/chat") {
+				inputs.push(JSON.parse(String(init?.body)).input);
+				posted();
+				return acknowledgement;
+			}
+			return Response.json({ messages: [assistantMsg("saved", "completed feedback")], turnInFlight: false });
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		const steering = m.steer("Please explain that again.");
+		await posting;
+		assert.deepEqual(m.getState().steerQueue.map(item => item.text), ["Please explain that again."], "keep text until accepted");
+		accept(Response.json({ ok: true }));
+		await steering;
+		await consuming;
+		assert.deepEqual(inputs, [{ type: "text", text: "Please explain that again." }]);
+		assert.equal(m.getState().steerQueue.length, 0);
+		assert.equal(view.cancellations, 1);
+	});
+
+	for (const state of ["running", "unavailable", "timeout", "question", "turn-error", "send-failure", "steer-failure", "network-failure"] as const) {
+		it(`retains followup text when delivery ends in ${state}`, async () => {
+			const view = heldView();
+			let posts = 0;
+			const question = { ...assistantMsg("question", ""), content: [{ type: "toolCall", id: "q1", name: "quiz", arguments: { question: "Q?" } }] } as LhMessage;
+			const m = model({ reconciliationTimeoutMs: 5, fetch: async url => {
+				if (String(url).endsWith("/stream")) return view.response;
+				if (String(url).endsWith("/steer")) {
+					if (state === "network-failure") throw new Error("offline");
+					return new Response("refused", { status: state === "steer-failure" ? 503 : 409 });
+				}
+				if (String(url) === "/api/chat") { posts++; return new Response("not accepted", { status: 503 }); }
+				if (state === "unavailable") throw new Error("offline");
+				if (state === "timeout") return new Promise<Response>(() => {});
+				return Response.json({ messages: state === "question" ? [question] : [], turnInFlight: state === "running", ...(state === "turn-error" ? { turnError: "Save failed." } : {}) });
+			} });
+			const consuming = m.resumeStream(false);
+			await view.started;
+			await m.steer("Keep this exact followup.");
+			assert.equal(posts, state === "send-failure" ? 1 : 0);
+			assert.equal(m.getState().steerQueue[0]?.text, "Keep this exact followup.");
+			assert.ok(m.getState().steerQueue[0]?.error);
+			if (state === "question") assert.equal(pendingQuestionOf(m.getState().nativeMessages)?.toolCallId, "q1");
+			if (state === "turn-error") assert.equal(m.getState().error?.message, "Save failed.");
+			m.stop();
+			await consuming;
+		});
+	}
+
+	it("a delayed steer refusal never sends into a newer owner", async () => {
+		const view = heldView();
+		let refuse!: (response: Response) => void;
+		const response = new Promise<Response>(resolve => { refuse = resolve; });
+		let reads = 0;
+		let posts = 0;
+		const m = model({ fetch: async url => {
+			if (String(url).endsWith("/stream")) return view.response;
+			if (String(url).endsWith("/steer")) return response;
+			if (String(url) === "/api/chat") posts++;
+			else reads++;
+			return Response.json({ messages: [], turnInFlight: false });
+		} });
+		const consuming = m.resumeStream(false);
+		await view.started;
+		const steering = m.steer("Retain me.");
+		m.stop();
+		refuse(new Response("settled", { status: 409 }));
+		await steering;
+		await consuming;
+		assert.equal(posts, 0);
+		assert.equal(reads, 0);
+		assert.equal(m.getState().steerQueue[0]?.text, "Retain me.");
+		assert.ok(m.getState().steerQueue[0]?.error);
+		assert.equal(m.getState().error, null, "an old refusal cannot replace the new owner's banner");
 	});
 });
 

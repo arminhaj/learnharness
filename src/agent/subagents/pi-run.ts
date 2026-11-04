@@ -29,7 +29,8 @@ export interface SubagentRunOptions {
 	messages?: AgentMessage[];
 	/** Fresh-run prompt text (mutually exclusive with a continuation). */
 	prompt?: string;
-	/** Max model calls (the old stepCountIs safety net). */
+	/** Max agent-loop steps. Some transports split one model response into
+	 * multiple tool handoffs, so this is not a count of billed requests. */
 	maxTurns: number;
 	/** Abort mid-model-call (the real-kill semantics). */
 	abortSignal?: AbortSignal;
@@ -85,6 +86,11 @@ export function modelProgressEvent(event: AgentEvent): ModelProgressEvent | null
 
 export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRunOptions): Promise<SubagentRunResult> {
 	const engine = subagentEngine(opts.role, opts.engine);
+	// A subagent invocation owns its provider resources even if it stops at
+	// a tool boundary. Pi clears its active run on settlement without aborting
+	// that signal; a CLI can otherwise remain parked waiting for a continuation
+	// this invocation will never make. Do not share this lifetime across runs.
+	const lifetime = new AbortController();
 	let turns = 0;
 	// Debug recorder (owner, 2026-10-04): raw provider events per job run.
 	const providerEvents = opts.chatId ? providerEventObserver(opts.chatId, `job:${opts.role}`) : undefined;
@@ -99,7 +105,14 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 			tools,
 			messages: opts.messages ?? [],
 		},
-		streamFn: engine.streamFn,
+		streamFn: (model, context, options) => engine.streamFn(model, context, {
+			...options,
+			signal: AbortSignal.any([
+				lifetime.signal,
+				...(options?.signal ? [options.signal] : []),
+				...(opts.abortSignal ? [opts.abortSignal] : []),
+			]),
+		}),
 		...(providerEvents ? { onProviderStreamEvent: providerEvents } : {}),
 		// 0.87.1: shouldStopAfterTurn → finishTurn (same call point; "end"
 		// exits before the steering poll, exactly the old boolean-true).
@@ -159,6 +172,7 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 		else await agent.continue();
 	} finally {
 		opts.abortSignal?.removeEventListener("abort", onAbort);
+		lifetime.abort();
 	}
 
 	if (aborted || opts.abortSignal?.aborted) {

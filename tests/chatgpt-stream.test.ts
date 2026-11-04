@@ -170,6 +170,127 @@ test("case-insensitive Authorization overrides including null are refused before
 	assert.equal(requests.length, before);
 });
 
+const textItem = (id: string, text: string, phase: "commentary" | "final_answer" = "final_answer") => ({
+	type: "message", id, role: "assistant", status: "completed", phase,
+	content: [{ type: "output_text", text, annotations: [] }],
+});
+const itemAdded = (item: unknown, output_index = 0) => ({ type: "response.output_item.added", output_index, item });
+const itemDone = (item: unknown, output_index = 0) => ({ type: "response.output_item.done", output_index, item });
+const textDelta = (delta: string, output_index = 0) => ({ type: "response.output_text.delta", output_index, content_index: 0, delta });
+const finalAnswer = textItem("msg_final_fixture", "Visible fixture answer.");
+const blankAnswer = { ...finalAnswer, content: [] };
+for (const [name, events] of Object.entries({
+	"completed output alone": [complete([finalAnswer])],
+	"empty started message": [itemAdded(blankAnswer), complete([finalAnswer])],
+	"text and content done without item done": [itemAdded(blankAnswer), { type: "response.output_text.done", output_index: 0, content_index: 0, text: "Visible fixture answer." }, { type: "response.content_part.done", output_index: 0, content_index: 0, part: finalAnswer.content[0] }, complete([finalAnswer])],
+	"item done without deltas": [itemDone(finalAnswer), complete([finalAnswer])],
+	"empty item done erasing streamed text": [itemAdded(blankAnswer), textDelta("Visible fixture answer."), itemDone(blankAnswer), complete([finalAnswer])],
+	"partial deltas": [itemAdded(blankAnswer), textDelta("Visible"), complete([finalAnswer])],
+	"normal complete streaming": [itemAdded(blankAnswer), textDelta("Visible fixture answer."), itemDone(finalAnswer), complete([finalAnswer])],
+})) test(`completed answer preservation: ${name}`, async () => {
+	responseEvents = events;
+	const before = requests.length;
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	const stream = engine.streamFn(engine.model, context());
+	const emitted = [];
+	for await (const event of stream) emitted.push(event);
+	const result = await stream.result();
+	assert.deepEqual(result.content, [{ type: "text", text: "Visible fixture answer.", textSignature: JSON.stringify({ v: 1, id: finalAnswer.id, phase: "final_answer" }) }]);
+	assert.equal(result.stopReason, "stop"); assert.equal(result.rawStopReason, "completed");
+	assert.equal(result.usage.input, usage.input_tokens); assert.equal(result.usage.output, usage.output_tokens);
+	assert.equal(emitted.filter(event => event.type === "done").length, 1);
+	assert.equal(emitted.filter(event => event.type === "error").length, 0);
+	assert.equal(requests.length - before, 1, "completion repair never dispatches another request");
+	assert.equal(emitted.filter(event => event.type === "text_delta").length, name === "normal complete streaming" || name === "partial deltas" || name === "empty item done erasing streamed text" ? 1 : 0, "native streaming events are neither fabricated nor duplicated");
+});
+
+test("completed message IDs preserve multiple equal texts, final phase, and native reasoning/tool identity", async () => {
+	const reasoning = { type: "reasoning", id: "rs_final_fixture", summary: [], encrypted_content: "opaque-fixture" };
+	const preview = textItem("msg_preview_fixture", "Same text.", "commentary");
+	const tool = { type: "function_call", id: "fc_final_fixture", call_id: "call_final_fixture", name: "scratch_tool", namespace: "learnharness", arguments: '{"value":"yes"}', status: "completed" };
+	const second = textItem("msg_second_fixture", "Same text.");
+	const streamedFinal = textItem("msg_phase_fixture", "Final text.", "commentary");
+	const final = { ...streamedFinal, phase: "final_answer" };
+	responseEvents = [itemAdded(reasoning, 0), itemDone(reasoning, 0), itemDone(preview, 1), itemAdded(tool, 2), itemDone(tool, 2), itemDone(streamedFinal, 4), complete([reasoning, preview, tool, second, final])];
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	const stream = engine.streamFn(engine.model, context());
+	let nativeThinking: unknown, nativeTool: unknown;
+	for await (const event of stream) {
+		if (event.type === "thinking_end") nativeThinking = event.partial.content[event.contentIndex];
+		if (event.type === "toolcall_end") nativeTool = event.toolCall;
+	}
+	const result = await stream.result();
+	assert.deepEqual(result.content.map(block => block.type), ["thinking", "text", "toolCall", "text", "text"]);
+	assert.equal(result.content[0], nativeThinking, "opaque reasoning block retains identity");
+	assert.equal(result.content[2], nativeTool, "tool block retains identity");
+	assert.equal(result.stopReason, "toolUse");
+	const texts = result.content.filter(block => block.type === "text");
+	assert.deepEqual(texts.map(block => block.text), ["Same text.", "Same text.", "Final text."]);
+	assert.deepEqual(texts.map(block => JSON.parse(block.textSignature!)), [{ v: 1, id: preview.id, phase: "commentary" }, { v: 1, id: second.id, phase: "final_answer" }, { v: 1, id: final.id, phase: "final_answer" }]);
+	const call = result.content.find(block => block.type === "toolCall")!;
+	responseEvents = [complete()];
+	await engine.streamFn(engine.model, normalizeContext({ messages: [...context().messages, result, { role: "toolResult", toolCallId: call.id, toolName: call.name, isError: false, content: [{ type: "text", text: "Fixture tool result." }], timestamp: 2 }] })).result();
+	const replay = requests.at(-1)!.body.input;
+	assert.deepEqual(replay.filter((item: any) => item.type === "message" && item.role === "assistant").map((item: any) => ({ id: item.id, phase: item.phase })), [{ id: preview.id, phase: "commentary" }, { id: second.id, phase: "final_answer" }, { id: final.id, phase: "final_answer" }]);
+	assert(replay.some((item: any) => item.type === "function_call" && item.id === tool.id && item.arguments === tool.arguments));
+	assert(replay.some((item: any) => item.type === "reasoning" && item.encrypted_content === reasoning.encrypted_content));
+});
+
+test("unrelated message IDs never overwrite native text, and missing final output leaves it intact", async () => {
+	const other = textItem("msg_unrelated_fixture", "Existing text.");
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	for (const terminal of [complete(), { type: "response.completed", response: { status: "completed", usage } }]) {
+		responseEvents = [itemDone(other), terminal];
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.deepEqual(result.content, [{ type: "text", text: "Existing text.", textSignature: JSON.stringify({ v: 1, id: other.id, phase: other.phase }) }]);
+	}
+	responseEvents = [itemDone(other), complete([finalAnswer])];
+	const result = await engine.streamFn(engine.model, context()).result();
+	assert.deepEqual(result.content.filter(block => block.type === "text").map(block => block.text), ["Existing text.", "Visible fixture answer."]);
+});
+
+test("completion repair never recovers failed/incomplete output or invents final-only tool calls", async () => {
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	for (const terminal of [
+		{ type: "response.incomplete", response: { status: "incomplete", output: [finalAnswer], incomplete_details: { reason: "max_output_tokens" }, usage } },
+		{ type: "response.failed", response: { status: "failed", output: [finalAnswer], error: { code: "fixture_failure", message: "Fixture failure" }, usage } },
+	]) {
+		responseEvents = [itemAdded(blankAnswer), terminal];
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.equal(result.stopReason, "error");
+		assert(!result.content.some(block => block.type === "text" && block.text.length > 0));
+	}
+	responseEvents = [complete([finalAnswer]), { type: "error", code: "fixture_failure", message: "Fixture failure" }];
+	assert.equal((await engine.streamFn(engine.model, context()).result()).stopReason, "error");
+	responseEvents = [complete([{ type: "function_call", id: "fc_unstreamed", call_id: "call_unstreamed", name: "scratch_tool", arguments: '{"value":"must-not-run"}', status: "completed" }, finalAnswer])];
+	const result = await engine.streamFn(engine.model, context()).result();
+	assert.equal(result.content.filter(block => block.type === "toolCall").length, 0);
+	assert.deepEqual(result.content.filter(block => block.type === "text").map(block => block.text), ["Visible fixture answer."]);
+	assert.equal(result.stopReason, "stop");
+});
+
+test("invalid or ambiguous completed message items cannot replace existing text", async () => {
+	const existing = textItem(finalAnswer.id, "Existing text.");
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	for (const output of [
+		[{ ...finalAnswer, role: "user" }], [{ ...finalAnswer, status: "in_progress" }],
+		[{ ...finalAnswer, id: undefined }], [{ ...finalAnswer, content: [{ type: "output_text", text: 42 }] }],
+		[finalAnswer, { ...finalAnswer, content: [{ type: "output_text", text: "Conflicting text.", annotations: [] }] }],
+		[blankAnswer],
+	]) {
+		responseEvents = [itemDone(existing), complete(output)];
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.deepEqual(result.content.filter(block => block.type === "text").map(block => block.text), ["Existing text."]);
+	}
+});
+
+test("completed refusal text uses the same native signature and visible message contract", async () => {
+	responseEvents = [complete([{ ...finalAnswer, content: [{ type: "refusal", refusal: "Fixture refusal." }] }])];
+	const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+	const result = await engine.streamFn(engine.model, context()).result();
+	assert.deepEqual(result.content, [{ type: "text", text: "Fixture refusal.", textSignature: JSON.stringify({ v: 1, id: finalAnswer.id, phase: finalAnswer.phase }) }]);
+});
+
 test("full credential-storage invalidation aborts foreground and background controllers and clears capabilities", () => {
 	const foreground = chatGPTAbortController(false), background = chatGPTAbortController(true);
 	ipc({ channel: "lh:chatgpt", kind: "state", stamp: { epoch: 2, authorityRevision: 2, revision: 3 }, status: { ...status, available: false }, invalidate: "all" });

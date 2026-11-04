@@ -14,6 +14,7 @@
 export interface QueuedSteerLine {
 	id: string;
 	text: string;
+	error?: string;
 }
 
 /** The pure body (SSR-pinnable): one right-aligned truncated line per
@@ -25,9 +26,13 @@ export function QueuedSteersBody({ steers }: { steers: QueuedSteerLine[] }) {
 			{steers.map((s) => (
 				<span
 					key={s.id}
-					title={s.text}
-					className="block max-w-[240px] truncate font-ui text-[11px] text-muted-foreground/60"
+					title={s.error ?? s.text}
+					role={s.error ? "status" : undefined}
+					className={s.error
+						? "block max-w-full whitespace-pre-wrap break-words font-ui text-xs text-foreground"
+						: "block max-w-[240px] truncate font-ui text-[11px] text-muted-foreground/60"}
 				>
+					{s.error && <span className="block text-muted-foreground">Message kept — delivery unconfirmed</span>}
 					{s.text}
 				</span>
 			))}
