@@ -15,25 +15,30 @@
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import type { ChatInput, LhMessage, QuestionAnswerData } from "@/src/core";
+import { serializeQuestionDraft, type ChatInput, type LhMessage, type QuestionAnswerData, type SavedChatDraft } from "@/src/core";
+import { persistChatDraft } from "@/components/chat-drafts";
 import { SessionModel, type SessionState } from "@/components/session-core";
 
 export interface UseChatSessionOptions {
 	chatId: string;
 	/** The native record seed (server-rendered page or a full sync). */
 	initialMessages: LhMessage[];
+	initialQuestionDraft?: SavedChatDraft["question"];
 	/** Transient settlement failure retained by the server, not the transcript. */
 	initialError?: string;
 	/** Reattach on mount: a turn is running server-side with no live view. */
 	initiallyInFlight?: boolean;
 }
 
-export function useChatSession({ chatId, initialMessages, initialError, initiallyInFlight }: UseChatSessionOptions) {
+export function useChatSession({ chatId, initialMessages, initialQuestionDraft, initialError, initiallyInFlight }: UseChatSessionOptions) {
 	// The model is per-mount (chatId-keyed component); onChange forces the
 	// re-render. The ref pattern keeps it stable across renders.
 	const modelRef = useRef<SessionModel | null>(null);
 	if (modelRef.current === null) {
-		modelRef.current = new SessionModel({ chatId, initialMessages, initialError });
+		modelRef.current = new SessionModel({
+			chatId, initialMessages, initialError, initialQuestionDraft,
+			onQuestionDraftChange: (key, draft) => persistChatDraft(chatId, { field: "question", value: { key, draft: serializeQuestionDraft(draft) } }),
+		});
 	}
 	const model = modelRef.current;
 	// The render VERSION — bumped by every model change, so the state memo

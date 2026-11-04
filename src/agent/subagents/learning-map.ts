@@ -344,7 +344,7 @@ export async function runLearningMap(options: {
 			},
 		},
 		neverSubmitted: "Learning-map updater did not submit a valid map",
-		validate: (input) => validateLearningSubmit(input, nodes, passages, record.id, groups, exploration?.parentChatId),
+		validate: (input) => validateLearningSubmit(input, nodes, passages, record.id, groups, exploration?.rootChatId ?? exploration?.parentChatId),
 	});
-	return parseLearningContribution(learningContribution(value, record.id, passages, new Date().toISOString(), nodes, exploration?.parentChatId));
+	return parseLearningContribution(learningContribution(value, record.id, passages, new Date().toISOString(), nodes, exploration?.rootChatId ?? exploration?.parentChatId));
 }

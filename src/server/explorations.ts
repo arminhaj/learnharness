@@ -17,16 +17,29 @@ export function listExplorations(parentChatId: string): ChatRecord[] {
 		.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
+/** The chain from the root lesson to this record, including both endpoints. */
+export function explorationPath(chatId: string): string[] {
+	const path = new Set<string>();
+	let id: string | undefined = chatId;
+	while (id) {
+		const chat: ChatRecord | null = stores.chatStore.getChat(id);
+		if (!chat || path.has(id)) return [];
+		path.add(id);
+		id = chat.exploration?.parentChatId;
+	}
+	return [...path].reverse();
+}
+
 /** Used before every transcript mutation, including automatic wakes. */
 export function explorationPauseReason(chatId: string): string | null {
-	const record = stores.chatStore.getChat(chatId);
-	if (record?.exploration) {
-		if (!stores.chatStore.getChat(record.exploration.parentChatId)) return "The original lesson is no longer available.";
-		return record.exploration.status === "closed" ? "Reopen this exploration before continuing it." : null;
+	const path = explorationPath(chatId);
+	if (!path.length) return "The original lesson is no longer available.";
+	if (path.some(id => stores.chatStore.getChat(id)?.exploration?.status === "closed")) {
+		return "Reopen this exploration and its parents before continuing it.";
 	}
 	return stores.chatStore.listChats().some((chat) =>
 		chat.exploration?.parentChatId === chatId && chat.exploration.status === "active")
-		? "Return to the lesson before continuing it. An exploration is open."
+		? "Return from the open exploration before continuing here."
 		: null;
 }
 
@@ -66,7 +79,7 @@ function seedContext(parent: ChatRecord, sourceMessageId: string): LhMessage {
 export function createExploration(parentChatId: string, input: { sourceMessageId?: unknown; topic?: unknown }): ExplorationOutcome {
 	const parent = stores.chatStore.getChat(parentChatId);
 	if (!parent) return { ok: false, status: 404, error: "No such lesson" };
-	if (parent.exploration || parent.kind === "practice") return { ok: false, status: 400, error: "Start an exploration from a teaching lesson." };
+	if (parent.kind === "practice") return { ok: false, status: 400, error: "Start an exploration from a teaching lesson." };
 	if (typeof input?.sourceMessageId !== "string" || typeof input?.topic !== "string" || !input.topic.trim() || input.topic.trim().length > 2000) {
 		return { ok: false, status: 400, error: "Choose a passage and enter an exploration question (up to 2,000 characters)." };
 	}
@@ -85,7 +98,10 @@ export function createExploration(parentChatId: string, input: { sourceMessageId
 	// One synchronous create: no transient sidebar entry or partially seeded
 	// child can be observed, and the parent record is never rewritten.
 	const chat = stores.chatStore.createChat(titleFromPrompt(topic), undefined, {
-		exploration: { parentChatId, sourceMessageId: source.id, parentTitle: parent.title, topic, status: "active" },
+		exploration: {
+			parentChatId, sourceMessageId: source.id, parentTitle: parent.title, topic, status: "active",
+			...(parent.exploration ? { rootChatId: parent.exploration.rootChatId ?? parent.exploration.parentChatId } : {}),
+		},
 		messages: [seedContext(parent, source.id)],
 		...(settings ? { settings } : {}),
 	});
@@ -99,7 +115,9 @@ export function updateExploration(parentChatId: string, childId: string, action:
 	if (action !== "close" && action !== "reopen") return { ok: false, status: 400, error: "Choose close or reopen." };
 	const status = action === "close" ? "closed" : "active";
 	if (child.exploration.status === status) return { ok: true, chat: child };
-	const blocked = busyReason(childId) ?? (action === "reopen" ? busyReason(parentChatId) ?? explorationPauseReason(parentChatId) : null);
+	const blocked = busyReason(childId) ?? (action === "reopen"
+		? busyReason(parentChatId) ?? explorationPauseReason(parentChatId)
+		: explorationPauseReason(childId));
 	if (blocked) return { ok: false, status: 409, error: blocked };
 	return { ok: true, chat: stores.chatStore.setExplorationStatus(childId, status) };
 }

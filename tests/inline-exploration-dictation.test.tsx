@@ -89,7 +89,9 @@ async function fixture(tool: "explain" | "quiz" = "explain") {
 		fetch: async (url: string, init?: RequestInit) => {
 			if (url === "/api/stt/token") return Response.json({ token: "test-token" });
 			if (url === "/api/settings") return Response.json({ settings: { version: 1, dictation: { language: "en" } } });
+			if (url.endsWith("/draft")) return new Response(null, { status: 204 });
 			if (url.startsWith("/api/jobs")) return Response.json({ jobs: [] });
+			if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
 			if (url === "/api/chat") {
 				requests.push(JSON.parse(String(init?.body)));
 				return Response.json({ error: "Offline for this test." }, { status: 503 });

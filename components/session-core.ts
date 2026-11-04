@@ -1,3 +1,5 @@
+import type { SavedChatDraft } from "@/src/core";
+import { restoreQuestionDraft } from "@/src/core";
 /**
  * THE SESSION MODEL (Wave D): the chat session's state machine, extracted
  * PURE — no React, one injectable fetch — so the attach/replay/settle/
@@ -214,6 +216,8 @@ export function visibleQueuedSteers(
 export interface SessionModelOptions extends SessionModelDeps {
 	chatId: string;
 	initialMessages: LhMessage[];
+	initialQuestionDraft?: SavedChatDraft["question"];
+	onQuestionDraftChange?: (key: string, draft: QuestionDraft) => void;
 	/** Retained, memory-only server failure when reopening a session. */
 	initialError?: string;
 	/** Fires on every state change (the hook re-renders). */
@@ -241,6 +245,7 @@ export class SessionModel {
 	private base: LhMessage[];
 	private tail: LhMessage[] = [];
 	private questionDrafts = new Map<string, QuestionDraft>();
+	private readonly onQuestionDraftChange?: SessionModelOptions["onQuestionDraftChange"];
 	/** Only learner answers submitted through send(), never silent dismissals. */
 	private unconfirmedAnswers = new Map<string, string>();
 	// The live turn's execution layer (view model mid-turn states):
@@ -268,6 +273,11 @@ export class SessionModel {
 	constructor(opts: SessionModelOptions) {
 		this.chatId = opts.chatId;
 		this.base = opts.initialMessages;
+		this.onQuestionDraftChange = opts.onQuestionDraftChange;
+		const saved = opts.initialQuestionDraft;
+		if (saved && saved.key === pendingQuestionOf(this.base)?.key) {
+			this.questionDrafts.set(saved.key, restoreQuestionDraft(saved.draft));
+		}
 		this.errorValue = opts.initialError === undefined ? null : { message: opts.initialError };
 		this.automaticContinuationBlocked = opts.initialError !== undefined;
 		// BOUND: the browser's native fetch is a Window method — storing it
@@ -898,13 +908,14 @@ export class SessionModel {
 		this.setStatus("ready");
 	}
 
-	/** Submission snapshots outlive the dock, not the session mount. */
 	questionDraft(questionKey: string): QuestionDraft | undefined {
 		return this.questionDrafts.get(questionKey);
 	}
 
 	saveQuestionDraft(questionKey: string, draft: Partial<QuestionDraft>): void {
-		this.questionDrafts.set(questionKey, { ...this.questionDrafts.get(questionKey), ...draft });
+		const merged = { ...this.questionDraft(questionKey), ...draft };
+		this.questionDrafts.set(questionKey, merged);
+		this.onQuestionDraftChange?.(questionKey, merged);
 	}
 
 	private forgetResolvedDrafts(record: readonly LhMessage[]): void {

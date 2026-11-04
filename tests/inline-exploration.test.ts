@@ -21,7 +21,7 @@ fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 
 const { chatStore } = await import("../src/store/chats.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
-const { createExploration, listExplorations, updateExploration } = await import("../src/server/explorations.ts");
+const { createExploration, explorationPath, explorationPauseReason, listExplorations, updateExploration } = await import("../src/server/explorations.ts");
 const { handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
 const { createExplorationAgent, composeInstructions } = await import("../src/agent/teacher-agent.ts");
 const { promptOverrides } = await import("../src/store/prompt-overrides.ts");
@@ -31,6 +31,7 @@ const { danglingQuestionOf, newUserMessage } = await import("../src/core/native-
 const { buildAnswer, dismissedAnswer, normalizeOptions, resolveCorrect } = await import("../src/core/question-core.ts");
 const { compactionInFlight, ensureCompacted } = await import("../src/server/compaction.ts");
 const explorationRoute = await import("../app/api/chats/[id]/explorations/route.ts");
+const draftRoute = await import("../app/api/chats/[id]/draft/route.ts");
 const explorationActionRoute = await import("../app/api/chats/[id]/explorations/[explorationId]/route.ts");
 const chatsRoute = await import("../app/api/chats/route.ts");
 const dismissRoute = await import("../app/api/chats/[id]/dismiss/route.ts");
@@ -223,7 +224,7 @@ describe("inline exploration lifecycle", () => {
 		assert.deepEqual(chatStore.getChat(chat.id), chat);
 	});
 
-	it("rejects missing anchors, learner-message anchors, empty topics, and nested explorations", () => {
+	it("rejects missing anchors, learner-message anchors, empty topics, and anchors from another session", () => {
 		const { chat, sourceId } = lesson();
 		for (const input of [
 			{ sourceMessageId: "missing", topic: "A tangent" },
@@ -236,6 +237,57 @@ describe("inline exploration lifecycle", () => {
 		const child = open(chat.id, sourceId);
 		assert.equal(createExploration(child.id, { sourceMessageId: sourceId, topic: "Nested tangent" }).ok, false);
 		assert.deepEqual(chatStore.getChat(chat.id), chat);
+	});
+
+	it("pauses every ancestor and returns one level at a time, keeping anchors and graph subject distinct", async () => {
+		const { chat, sourceId } = lesson();
+		const child = open(chat.id, sourceId);
+		const childSource = { ...fauxAssistantMessage([fauxText("Why database pages split.")]), id: "child_source" };
+		chatStore.saveMessages(child.id, [...child.messages, childSource]);
+		const leaf = open(child.id, childSource.id, "What triggers a page split?");
+		assert.deepEqual(explorationPath(leaf.id), [chat.id, child.id, leaf.id]);
+		assert.equal(leaf.exploration?.sourceMessageId, childSource.id);
+		assert.equal(leaf.exploration?.rootChatId, chat.id);
+		assert.ok(explorationPauseReason(chat.id));
+		assert.ok(explorationPauseReason(child.id));
+		assert.equal(explorationPauseReason(leaf.id), null);
+		assert.equal(updateExploration(chat.id, child.id, "close").ok, false);
+		assert.equal(createExploration(child.id, { sourceMessageId: childSource.id, topic: "Competing child" }).ok, false);
+
+		created(updateExploration(child.id, leaf.id, "close"));
+		assert.equal(explorationPauseReason(child.id), null);
+		assert.ok(explorationPauseReason(chat.id));
+		created(updateExploration(chat.id, child.id, "close"));
+		assert.equal(explorationPauseReason(chat.id), null);
+		assert.equal(updateExploration(child.id, leaf.id, "reopen").ok, false);
+
+		const url = `http://test/api/chats/${chat.id}/explorations?target=${leaf.id}`;
+		const response = await explorationRoute.GET(new Request(url), { params: Promise.resolve({ id: chat.id }) });
+		assert.equal((await response.json()).requestedChildId, child.id);
+		assert.equal(listExplorations(child.id)[0]?.id, leaf.id);
+		assert.deepEqual(chatStore.getChat(chat.id), chat);
+	});
+
+	it("reloads a nested branch's draft across app origins and keeps newer edits", async () => {
+		const { chat, sourceId } = lesson();
+		const child = open(chat.id, sourceId);
+		const childSource = { ...fauxAssistantMessage([fauxText("A branch passage.")]), id: "draft_source" };
+		chatStore.saveMessages(child.id, [...child.messages, childSource]);
+		const leaf = open(child.id, childSource.id);
+		const params = Promise.resolve({ id: leaf.id });
+		const write = (body: object) => draftRoute.PATCH(new Request(`http://localhost:48112/api/chats/${leaf.id}/draft`, {
+			method: "PATCH", body: JSON.stringify(body),
+		}), { params });
+		assert.equal((await write({ field: "composer", value: "Latest unsent text", revision: 2 })).status, 204);
+		assert.equal((await write({ field: "composer", value: "Old text", revision: 1 })).status, 204);
+		const draft = { key: "pending-key", draft: { readingThinking: "Working notes" } };
+		assert.equal((await write({ field: "question", value: draft, revision: 1 })).status, 204);
+		const response = await explorationRoute.GET(new Request(`http://localhost:48292/api/chats/${child.id}/explorations`), {
+			params: Promise.resolve({ id: child.id }),
+		});
+		const list = await response.json();
+		assert.deepEqual(list.explorations[0]?.draft, { composer: "Latest unsent text", question: draft });
+		assert.deepEqual(chatStore.getChat(leaf.id), leaf, "draft writes do not touch the transcript or timestamps");
 	});
 
 	it("does not let a different parent close or reopen another lesson's exploration", () => {

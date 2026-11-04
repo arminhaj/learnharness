@@ -60,7 +60,7 @@ export function createLearningHistoryService(deps: Dependencies) {
 			const sourceInputs = historyInputPassages(chat), source = currentSource(chat.id, state, sourceInputs);
 			for (const p of Object.values(source.passages)) passages[historyPassageKey(chat.id, p.id)] = p;
 			for (const batch of Object.values(source.batches)) for (const e of batch.episodes) if (!episodes.some(other => other.id === e.id)) episodes.push(e);
-			return { id: chat.id, title: chat.title, parentId: chat.exploration?.parentChatId, updatedAt: chat.updatedAt, analyzedAt: source.analyzedAt, error: source.error, pending: source.fingerprint !== signature(chat.id, state, sourceInputs) };
+			return { id: chat.id, title: chat.title, parentId: chat.exploration?.rootChatId ?? chat.exploration?.parentChatId, updatedAt: chat.updatedAt, analyzedAt: source.analyzedAt, error: source.error, pending: source.fingerprint !== signature(chat.id, state, sourceInputs) };
 		});
 		const live = new Set(sessions.map(s => s.id));
 		const moments = Object.values(state.moments).filter(m => live.has(m.chatId) && deps.chatStore.getChat(m.chatId)?.messages.some(p => p.id === m.messageId));

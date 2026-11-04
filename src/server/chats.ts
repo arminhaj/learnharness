@@ -108,13 +108,21 @@ function runningWorkBlocker(chatId: string): Extract<ChatDeleteOutcome, { status
 	return null;
 }
 
-/** The store enumerates every chat; only the sidebar hides explorations.
- * A direct exploration deletion affects itself. A lesson deletion includes
- * its embedded explorations, with the same graph choice for every source. */
+/** Apply the same graph choice to every source in the deleted subtree. */
 function deletionGroup(chatId: string): string[] {
-	return [chatId, ...stores.chatStore.listChats()
-		.filter((chat) => chat.exploration?.parentChatId === chatId)
-		.map((chat) => chat.id)];
+	const children = new Map<string, string[]>();
+	for (const chat of stores.chatStore.listChats()) {
+		if (!chat.exploration) continue;
+		const parent = chat.exploration.parentChatId;
+		const siblings = children.get(parent) ?? [];
+		siblings.push(chat.id);
+		children.set(parent, siblings);
+	}
+	const group = new Set([chatId]);
+	for (const id of group) {
+		for (const child of children.get(id) ?? []) group.add(child);
+	}
+	return [...group].reverse();
 }
 
 export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): Promise<ChatDeleteOutcome> {

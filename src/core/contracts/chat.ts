@@ -31,6 +31,8 @@ export type ChatKind = "teach" | "practice";
  * transcript, plan, or pending question. */
 export interface ExplorationContext {
 	parentChatId: string;
+	/** The graph subject of a nested branch. Older direct children use their parent. */
+	rootChatId?: string;
 	sourceMessageId: string;
 	parentTitle: string;
 	topic: string;

@@ -9,6 +9,7 @@ export { chemistryNormalizeResponse, chemistryConformerResponse } from "./chemis
 export * from "./events-stream.ts";
 export * from "./chats.ts";
 export * from "./explorations.ts";
+export { readChatDraft, saveChatDraft } from "../store/chat-drafts.ts";
 export * from "./graph.ts";
 export * from "./learning-graph.ts";
 export * from "./learning-history.ts";

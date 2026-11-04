@@ -15,7 +15,6 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { LearnerText } from "@/components/learner-text";
-import { readPathSelection, restorePathSelection, type TextSelection } from "@/components/path-input-dom";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { BrailleSpinner } from "@/components/braille-spinner";
@@ -87,7 +86,9 @@ import {
 	questionNeedsReveal,
 } from "@/src/core";
 import { ReadingThinkingField } from "@/components/reading-thinking";
-import { ExplorationStarter, InlineExploration, useInlineExplorations } from "@/components/inline-exploration";
+import { persistChatDraft } from "@/components/chat-drafts";
+import type { SavedChatDraft } from "@/src/core";
+import { ExplorationControls, useExplorationReturn, useInlineExplorations } from "@/components/inline-exploration";
 import { currentUserThinkingOpen, setAllUserThinkingOpen } from "@/components/thinking-block";
 
 /** One width for everything: transcript, cards, and the bottom blob share this column. */
@@ -219,6 +220,7 @@ export function Chat({
 	chatId,
 	title,
 	initialMessages,
+	initialDraft,
 	initialError,
 	initialPrompt,
 	initiallyInFlight,
@@ -229,6 +231,7 @@ export function Chat({
 	chatId: string;
 	title: string;
 	initialMessages: LhMessage[];
+	initialDraft?: SavedChatDraft;
 	/** Memory-only settlement notice supplied on reopening. */
 	initialError?: string;
 	/** The session kind (practice sessions, owner 2026-10-04): practice
@@ -261,50 +264,14 @@ export function Chat({
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
 	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
-		useChatSession({ chatId, initialMessages, initialError, initiallyInFlight });
+		useChatSession({ chatId, initialMessages, initialQuestionDraft: initialDraft?.question, initialError, initiallyInFlight });
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const scrollContextRef = useRef<StickToBottomContext | null>(null);
 	const explorations = useInlineExplorations(chatId);
 	const explorationPausedRef = useRef(explorations.paused);
 	explorationPausedRef.current = explorations.paused;
-	const lastLessonFieldRef = useRef<HTMLElement | null>(null);
-	const returnPlaceRef = useRef<{
-		scrollTop: number;
-		element: HTMLElement | null;
-		selectionStart: number | null;
-		selectionEnd: number | null;
-		pathSelection: TextSelection | null;
-	} | null>(null);
-	const rememberLessonPlace = () => {
-		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-		const element = focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement || focused?.hasAttribute("data-file-path-input") ? focused : lastLessonFieldRef.current ?? focused;
-		const field = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement ? element : null;
-		returnPlaceRef.current = {
-			scrollTop: scrollContextRef.current?.scrollRef.current?.scrollTop ?? 0,
-			element,
-			selectionStart: field?.selectionStart ?? null,
-			selectionEnd: field?.selectionEnd ?? null,
-			pathSelection: element?.hasAttribute("data-file-path-input") ? readPathSelection(element) : null,
-		};
-		scrollContextRef.current?.stopScroll();
-	};
-	const restoreLessonPlace = () => {
-		const saved = returnPlaceRef.current;
-		returnPlaceRef.current = null;
-		requestAnimationFrame(() => {
-			scrollContextRef.current?.stopScroll();
-			if (saved?.element?.isConnected) {
-				saved.element.focus({ preventScroll: true });
-				if (saved.selectionStart !== null && saved.selectionEnd !== null && (saved.element instanceof HTMLTextAreaElement || saved.element instanceof HTMLInputElement)) {
-					saved.element.setSelectionRange(saved.selectionStart, saved.selectionEnd);
-				}
-				if (saved.pathSelection) restorePathSelection(saved.element, saved.pathSelection);
-			}
-			const scroller = scrollContextRef.current?.scrollRef.current;
-			if (scroller && saved) scroller.scrollTop = saved.scrollTop;
-		});
-	};
+	const explorationReturn = useExplorationReturn(chatId, sessionFindScopeRef, scrollContextRef);
 	const sourceTextParts = useMemo(() => firstSourceTextParts(messages), [messages]);
 
 	// The reattach settled terminal → the sync-and-continue seam (below).
@@ -601,16 +568,17 @@ export function Chat({
 	// session's current phase.
 	const phases = useMemo(() => phaseTimeline(messages), [messages]);
 
-	const [text, setText] = useState("");
+	const [text, setText] = useState(initialDraft?.composer ?? "");
 	/* The composer's value MIRROR ("nothing gets lost" round, owner
 	 * 2026-10-01): a dictation flush lands via setState, which a closure
 	 * waiting through `await finish()` cannot observe in time. Kept
 	 * current at every write site via applyText. */
-	const textRef = useRef("");
+	const textRef = useRef(text);
 	const applyText = useCallback((v: string) => {
 		textRef.current = v;
 		setText(v);
-	}, []);
+		persistChatDraft(chatId, { field: "composer", value: v });
+	}, [chatId]);
 	// Saved slot completeness is live, but the session's selected route
 	// comes from its own ordinary model control, never today's Strong pin.
 	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);
@@ -1299,29 +1267,11 @@ export function Chat({
 		}
 		doSend();
 	};
-	const renderSourceExplorations = (sourceId: string) => <>
-		<button type="button" data-testid="explore-message" disabled={busy || compacting || explorations.paused}
-			onPointerDown={rememberLessonPlace}
-			onClick={() => {
-				if (!returnPlaceRef.current) rememberLessonPlace();
-				void finishDictation().then(() => explorations.setDraftSourceId(sourceId));
-			}}
-			className="mt-2 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">Explore this</button>
-		{explorations.draftSourceId === sourceId && <ExplorationStarter busy={explorations.changing}
-			dictationSlot={<DictationBar dictation={dictation} />}
-			onStart={topic => { void explorations.create(sourceId, topic); }}
-			onCancel={() => { explorations.setDraftSourceId(null); restoreLessonPlace(); }} />}
-		{explorations.records.filter(chat => chat.exploration.sourceMessageId === sourceId).map(child => <InlineExploration key={child.id}
-			dictationSlot={<DictationBar dictation={dictation} />}
-			chat={child} expanded={explorations.isExpanded(child)} changing={explorations.changing}
-			canReopen={!busy && !compacting && !explorations.active && !explorations.draftSourceId}
-			initialPrompt={explorations.opening?.id === child.id ? explorations.opening.text : undefined}
-			onInitialDelivered={explorations.openingDelivered}
-			onToggle={() => { if (explorations.isExpanded(child)) setExplorationPlan(null); explorations.toggle(child.id); }}
-			onClose={() => { void finishDictation().then(() => explorations.change(child, "close")).then(closed => { if (closed) { setExplorationPlan(null); restoreLessonPlace(); } }); }}
-			onOpenPlan={branchMessages => setExplorationPlan({ chatId: child.id, messages: branchMessages })}
-			onReopen={() => { rememberLessonPlace(); void explorations.change(child, "reopen"); }} />)}
-	</>;
+	const renderSourceExplorations = (sourceId: string) => <ExplorationControls
+		sourceId={sourceId} explorations={explorations} place={explorationReturn} scroller={scrollContextRef}
+		enabled={kind !== "practice"} busy={busy || compacting} dictationSlot={<DictationBar dictation={dictation} />}
+		trail={[title]} onClearPlan={() => setExplorationPlan(null)}
+		onOpenPlan={(branchId, branchMessages) => setExplorationPlan({ chatId: branchId, messages: branchMessages })} />;
 
 	return (
 		<ChatActionsContext.Provider
@@ -1472,7 +1422,7 @@ export function Chat({
 				<SessionFind scopeRef={sessionFindScopeRef} scrollContextRef={scrollContextRef} />
 				<div ref={sessionFindScopeRef} className="relative flex min-h-0 flex-1" onFocusCapture={event => {
 					const element = event.target;
-					if (element instanceof HTMLElement && (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement || element.hasAttribute("data-file-path-input")) && element.closest("[data-lesson-dock]")) lastLessonFieldRef.current = element;
+					if (element.closest("[data-lesson-dock]")) explorationReturn.trackField(element);
 				}}>
 				<Conversation className="h-full min-w-0 flex-1" initial="instant" contextRef={scrollContextRef}>
 					<SessionMessageNavigation />
@@ -1781,7 +1731,10 @@ export function Chat({
 					onOpenPlan={() => setPlanOpen(true)}
 					requiresReveal={requiresReveal}
 					readingThinking={readingThinking}
-					onReadingThinking={applyReadingThinking}
+					onReadingThinking={value => {
+						applyReadingThinking(value);
+						if (pending) saveQuestionDraft(pending.key, { readingThinking: value });
+					}}
 					phase={phases.at(-1) ?? "probe"}
 					turns={turns}
 					contextTokens={contextTokens}
@@ -2089,14 +2042,14 @@ function DockOverlay({
 	// frame too late. Assigned per render like the other refs below.
 	const atBottomRef = useRef(isAtBottom);
 	atBottomRef.current = isAtBottom;
-	// Teach-phase mount (session reload with a pending check): the dock starts
-	// as the collapsed invitation too — the check must not pop open on reload.
-	const [expanded, setExpanded] = useState(!requiresReveal);
+	// A draft belongs to a check the learner already revealed. Otherwise the
+	// reloaded check starts as a collapsed invitation.
+	const [expanded, setExpanded] = useState(!requiresReveal || !!initialQuestionDraft);
 	// Reveal state (W5): false until the learner clicks the invitation. While
 	// false, the scroll machine must NOT auto-expand at the bottom — the
 	// learner reads the teaching first and opens the check when ready. Once
 	// revealed, the normal collapse machine rules apply untouched.
-	const [revealed, setRevealed] = useState(false);
+	const [revealed, setRevealed] = useState(!!initialQuestionDraft);
 	const revealPending = requiresReveal && !revealed;
 	const pauseSnapshotRef = useRef({ paused, expanded, revealed });
 	const returnGeometryUntilRef = useRef(0);

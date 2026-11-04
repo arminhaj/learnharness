@@ -141,3 +141,15 @@ test("a pending exploration summary blocks deletion of its parent lesson", async
 		assert.ok(stores.chatStore.getChat(child.id));
 	} finally { release(); await run; }
 });
+
+test("deleting an exploration removes its descendants and leaves the lesson intact", async () => {
+	const { parent, child } = lesson();
+	const leaf = stores.chatStore.createChat("Nested exploration", undefined, {
+		exploration: { parentChatId: child.id, rootChatId: parent.id, sourceMessageId: "child-source", parentTitle: child.title, topic: "Details", status: "active" },
+	});
+	const result = await deleteChatSession(child.id, "delete-nodes");
+	assert.ok(result.ok);
+	assert.ok(stores.chatStore.getChat(parent.id));
+	assert.equal(stores.chatStore.getChat(child.id), null);
+	assert.equal(stores.chatStore.getChat(leaf.id), null);
+});

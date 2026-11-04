@@ -1403,7 +1403,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								const foldedAt = new Date().toISOString();
 								const batchStats = mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
 									foldedAt,
-									subjectId: record.exploration?.parentChatId,
+									subjectId: record.exploration?.rootChatId ?? record.exploration?.parentChatId,
 									coverage: batch
 										.filter((slot) => slot.tokens > 0)
 										.map((slot) => ({ chatId, fp: slot.fp, tokens: slot.tokens, foldedAt })),

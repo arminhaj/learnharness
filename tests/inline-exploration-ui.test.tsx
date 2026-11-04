@@ -13,6 +13,7 @@ import type { LhViewMessage } from "../src/core/view.ts";
 import { QuestionDock } from "../components/question-dock.tsx";
 import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
+import type { StickToBottomContext } from "use-stick-to-bottom";
 import { messageIdFromHash, propositionSessionHref } from "../src/core/session-navigation.ts";
 
 const chat: ExplorationRecord = {
@@ -128,6 +129,8 @@ async function withExplorationDOM(run: (host: HTMLElement, root: ReturnType<type
 	const dom = parseHTML("<html><body></body></html>");
 	const saved = new Map<string, PropertyDescriptor | undefined>();
 	for (const [key, value] of Object.entries({ window: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent,
+		HTMLTextAreaElement: dom.window.HTMLTextAreaElement, HTMLInputElement: dom.window.HTMLInputElement,
+		requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0),
 		location: { href: "http://localhost/chat/lesson", hash: "" }, IS_REACT_ACT_ENVIRONMENT: true })) {
 		saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
 		Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
@@ -185,6 +188,7 @@ describe("exploration request races", () => {
 			const activeChat: ExplorationRecord = { ...chat, exploration: { ...chat.exploration, status: "active" } };
 			const inputs: unknown[] = [];
 			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
 				if (url === "/api/chat") {
 					inputs.push(JSON.parse(String(init?.body)));
 					return Response.json({ error: "Models are not configured." }, { status: 503 });
@@ -225,6 +229,7 @@ function renderBranch(root: ReturnType<typeof createRoot>, record: ExplorationRe
 function mockBranchRequests(record: ExplorationRecord, inputs: Array<{ chatId: string; input: { type: string; toolCallId?: string } }> = []) {
 	globalThis.fetch = (async (url: string, init?: RequestInit) => {
 		if (url.startsWith("/api/jobs")) return Response.json({ jobs: [] });
+		if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
 		if (url === "/api/chat") {
 			inputs.push(JSON.parse(String(init?.body)));
 			return Response.json({ error: "Offline for this test." }, { status: 503 });
@@ -268,6 +273,70 @@ describe("exploration teaching controls", () => {
 		});
 	});
 
+	it("returns from a nested exploration to its parent's exact scroll and cursor, or to the saved passage after remount", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const parent = teachingBranch("explain", "predict");
+			const leaf: ExplorationRecord = { ...chat, id: "leaf", messages: [
+				{ id: "leaf_user", role: "user", content: [{ type: "text", text: "Why normalize?" }], timestamp: 1 },
+				{ ...fauxAssistantMessage([fauxText("Normalization puts the curves on the same scale.")]), id: "leaf_teacher" },
+			], exploration: { parentChatId: parent.id, rootChatId: "lesson", parentTitle: parent.title, sourceMessageId: "child_teacher", status: "active", topic: "Why normalize?" } };
+			let savedLeaf: ExplorationRecord = { ...leaf, exploration: { ...leaf.exploration, status: "closed" } };
+			const scroll = { scrollTop: 417 };
+			const scroller = { current: { scrollRef: { current: scroll }, stopScroll() {} } as unknown as StickToBottomContext };
+			const rootProps = { expanded: true, changing: false, canReopen: false, onInitialDelivered() {}, onToggle() {}, onClose() {}, onReopen() {}, scroller };
+			const render = (key: string) => act(async () => root.render(<ServerEventsProvider connect={quietEvents}>
+				<InlineExploration key={key} chat={parent} {...rootProps} />
+			</ServerEventsProvider>));
+			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				if (url.endsWith("/draft")) return new Response(null, { status: 204 });
+				if (url.startsWith("/api/jobs")) return Response.json({ jobs: [] });
+				if (url === "/api/chats/child/explorations") return Response.json({ explorations: [savedLeaf] });
+				if (url === "/api/chats/child/explorations/leaf") {
+					const { action } = JSON.parse(String(init?.body));
+					savedLeaf = { ...leaf, exploration: { ...leaf.exploration, status: action === "reopen" ? "active" : "closed" } };
+					return Response.json({ chat: savedLeaf });
+				}
+				if (url === "/api/chats/leaf/explorations") return Response.json({ explorations: [] });
+				return Response.json(url === "/api/chats/leaf" ? leaf : parent);
+			}) as typeof fetch;
+			const button = (name: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(element => element.textContent === name)!;
+			const waitForFrame = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 1)); });
+
+			await render("first");
+			const answer = host.querySelector<HTMLElement>('[data-testid="answer-field"] [data-file-path-input]')!;
+			answer.textContent = "My draft answer";
+			let selected = -1;
+			let focused = false;
+			answer.focus = () => { focused = true; };
+			Object.defineProperty(document, "activeElement", { configurable: true, get: () => answer });
+			Object.defineProperty(document, "getSelection", { configurable: true, value: () => ({
+				anchorNode: answer.firstChild, anchorOffset: 3, focusNode: answer.firstChild, focusOffset: 8,
+				setBaseAndExtent: (_node: Node, start: number) => { selected = start; },
+			}) });
+			await act(async () => host.querySelector<HTMLElement>('#exploration-leaf button[aria-expanded="false"]')!.click());
+			await act(async () => button("Continue exploring").click());
+			assert.match(host.textContent ?? "", /Django › Why does this happen\? › Why normalize\?/);
+			assert.equal(button("Return to lesson").disabled, true, "only the leaf can return");
+			scroll.scrollTop = 990;
+			await act(async () => button("Return to parent").click());
+			await waitForFrame();
+			assert.equal(scroll.scrollTop, 417);
+			assert.equal(selected, 3);
+			assert.equal(focused, true);
+			assert.ok(host.querySelector('#exploration-leaf button[aria-expanded="true"]'), "return retains the archive layout it started from");
+			assert.equal(host.querySelector('[data-testid="answer-field"] [data-file-path-input]'), answer);
+
+			savedLeaf = leaf;
+			await render("restarted");
+			let anchored = false;
+			const passage = host.querySelector<HTMLElement>("#message-child_teacher")!;
+			passage.scrollIntoView = () => { anchored = true; };
+			await act(async () => button("Return to parent").click());
+			await waitForFrame();
+			assert.equal(anchored, true);
+		});
+	});
+
 	it("opens predictions immediately and uses the same reveal for free-response checks", async () => {
 		await withExplorationDOM(async (host, root) => {
 			const prediction = teachingBranch("explain", "predict");
@@ -292,6 +361,7 @@ describe("exploration teaching controls", () => {
 			const calls: Array<{ url: string; body: unknown }> = [];
 			globalThis.fetch = (async (url: string, init?: RequestInit) => {
 				if (init?.method === "POST") { calls.push({ url, body: JSON.parse(String(init.body)) }); return Response.json({ ok: true }); }
+				if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
 				return Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : record);
 			}) as typeof fetch;
 			await renderBranch(root, record);
@@ -336,6 +406,7 @@ describe("exploration teaching controls", () => {
 			const writes: string[] = [];
 			globalThis.fetch = (async (url: string, init?: RequestInit) => {
 				if (init?.method === "POST") writes.push(url);
+				if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
 				return Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : record);
 			}) as typeof fetch;
 			await renderBranch(root, record);
@@ -347,7 +418,10 @@ describe("exploration teaching controls", () => {
 	it("shows a compaction pause and blocks return while the child history is compacting", async () => {
 		await withExplorationDOM(async (host, root) => {
 			const record = teachingBranch();
-			globalThis.fetch = (async (url: string) => Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : { ...record, compacting: true })) as typeof fetch;
+			globalThis.fetch = (async (url: string) => {
+				if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
+				return Response.json(url.startsWith("/api/jobs") ? { jobs: [] } : { ...record, compacting: true });
+			}) as typeof fetch;
 			await renderBranch(root, record);
 			assert.match(host.textContent ?? "", /Compacting this exploration/);
 			const returnButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Return to lesson"));

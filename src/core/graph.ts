@@ -515,7 +515,7 @@ export function deriveView(graph: DerivedGraph): {
 function subjectLabelsOf(chatStore: ChatStore): Record<string, string> {
 	const labels: Record<string, string> = {};
 	for (const chat of chatStore.listChats()) {
-		const id = chat.exploration?.parentChatId ?? chat.id;
+		const id = chat.exploration?.rootChatId ?? chat.exploration?.parentChatId ?? chat.id;
 		labels[id] ??= chat.exploration?.parentTitle ?? chat.title;
 	}
 	for (const id of Object.keys(labels)) {
@@ -661,7 +661,7 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 	const sources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
 	const entries: GraphSessionEntry[] = [];
 	for (const [id, propositions] of counts) {
-		const members = [...chats.values()].filter((chat) => (chat.exploration?.parentChatId ?? chat.id) === id);
+		const members = [...chats.values()].filter((chat) => (chat.exploration?.rootChatId ?? chat.exploration?.parentChatId ?? chat.id) === id);
 		const chat = chats.get(id) ?? members[0];
 		if (chat) {
 			entries.push({
@@ -704,7 +704,8 @@ export interface GraphSessionProposition {
 /** The propositions BORN in one session — what that session first
  *  articulated. Members sorted by node id — deterministic. */
 export function graphSessionPropositions(deps: GraphDeps, sessionId: string): GraphSessionProposition[] {
-	const subjectId = deps.chatStore.getChat(sessionId)?.exploration?.parentChatId ?? sessionId;
+	const exploration = deps.chatStore.getChat(sessionId)?.exploration;
+	const subjectId = exploration?.rootChatId ?? exploration?.parentChatId ?? sessionId;
 	const born = getGraph(deps.graphStore).nodes.filter((node) => birthSessionOf(node) === subjectId);
 	return born
 		.map((node) => ({ nodeId: node.id, name: node.name }))

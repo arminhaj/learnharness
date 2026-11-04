@@ -515,8 +515,7 @@ export interface DockSelection {
 
 export const emptyDockSelection = (): DockSelection => ({ selected: new Set(), otherSelected: false, dontKnow: false });
 
-/** In-memory submission snapshot: survives the question form's optimistic
- * unmount, never written to storage. Indices use the call's stable shuffle. */
+/** An unanswered question's editable form. Indices use the call's stable shuffle. */
 export interface QuestionFormDraft {
 	selection: DockSelection;
 	thinking: string;
