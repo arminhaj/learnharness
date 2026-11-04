@@ -338,24 +338,24 @@ export const explainInputObject = Type.Object({
 	...explainInputBase.properties,
 });
 
-const choiceHintsProperty = {
-	choiceHints: Type.Optional(Type.Array(Type.Object(quizOptionProps), {
-		minItems: 2,
-		maxItems: 6,
-		description: "Optional alternatives for the same question, including one correct option. The learner can reveal them if stuck. Omit when they would give away the reasoning you need to assess.",
-	})),
-};
+const choiceHintsSchema = Type.Array(Type.Object(quizOptionProps), {
+	minItems: 2,
+	maxItems: 6,
+	description: "Hidden alternatives for the same question, including exactly one correct option. Use parallel bare answers without explanations. The learner can reveal them if stuck.",
+});
 
-export const focusedRecallInputSchema = Type.Object({ ...explainInputBase.properties, ...choiceHintsProperty });
-export const focusedExplainInputSchema = Type.Object({ ...explainInputObject.properties, ...choiceHintsProperty });
+export const focusedRecallInputSchema = Type.Object({ ...explainInputBase.properties, choiceHints: choiceHintsSchema });
+export const focusedExplainInputSchema = Type.Object({ ...explainInputObject.properties, choiceHints: choiceHintsSchema });
 
 /** The DISPLAY parse for persisted explain calls (tool-parts.ts): the
  *  base + `type` as an OPTIONAL plain string — exactly the quiz display
  *  pattern. Old records carry none; questionNeedsReveal treats them as
  *  checks (the standing default). nodeId stays stripped (unknown key).
- *  The PROBE recall parses against the bare base. */
+ *  Choice hints are optional in stored questions, including old Focused
+ *  questions authored before the tools started requiring them. */
 export const explainDisplayInputSchema = Type.Object({
-	...focusedRecallInputSchema.properties,
+	...explainInputBase.properties,
+	choiceHints: Type.Optional(choiceHintsSchema),
 	type: Type.Optional(Type.String()),
 });
 
@@ -406,7 +406,7 @@ export const askInputSchema = Type.Object({
 
 export type QuizToolInput = Static<typeof quizInputObject>;
 export type AskToolInput = Static<typeof askInputSchema>;
-export type ExplainToolInput = Static<typeof focusedExplainInputSchema>;
+export type ExplainToolInput = Static<typeof explainInputObject> & Pick<Static<typeof explainDisplayInputSchema>, "choiceHints">;
 export type ProbeExplainToolInput = Static<typeof explainInputBase>;
 
 
