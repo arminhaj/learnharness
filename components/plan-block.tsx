@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { MaximizeIcon, MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 // The placement engine — literally mermaid's: dagre-d3-es, the fork
@@ -747,7 +748,7 @@ const POPUP_PAD = GLOW_REACH;
  * territory. Surface 80% + blur (owner decision): the transcript ghosts
  * through while the focus owns the session area.
  */
-export function PlanPopup({ messages, onClose }: { messages: readonly PopupMessage[]; onClose: () => void }) {
+export function PlanPopup({ messages, onClose, chatId }: { messages: readonly PopupMessage[]; onClose: () => void; chatId?: string }) {
 	const tree = useMemo(() => latestTree(messages), [messages]);
 	const statuses = useMemo(
 		() => (tree ? derivePlanStatuses(tree, messages as Parameters<typeof derivePlanStatuses>[1]) : null),
@@ -988,6 +989,46 @@ export function PlanPopup({ messages, onClose }: { messages: readonly PopupMessa
 					</div>
 				)}
 			</div>
+			{chatId && tree && <PlanCodingExercises chatId={chatId} nodes={tree.nodes} />}
 		</div>
+	);
+}
+
+function PlanCodingExercises({ chatId, nodes }: { chatId: string; nodes: PlanTree["nodes"] }) {
+	const recommended = nodes.filter(node => node.coding);
+	const other = nodes.filter(node => !node.coding);
+	function links(steps: PlanTree["nodes"]) {
+		return (
+			<ul className="space-y-1 px-3 pb-2">
+				{steps.map(node => (
+					<li key={node.id}>
+						<Link
+							href={`/code-demo/teaching/${encodeURIComponent(chatId)}/${encodeURIComponent(node.id)}`}
+							prefetch={false}
+							className="block rounded-md px-2 py-1.5 text-sm underline underline-offset-4 hover:bg-accent"
+						>
+							{node.title}
+						</Link>
+					</li>
+				))}
+			</ul>
+		);
+	}
+	return (
+		<details open={recommended.length > 0} className="mt-2 max-h-[35%] shrink-0 overflow-y-auto rounded-lg border bg-background">
+			<summary className="cursor-pointer px-3 py-2 text-sm font-medium">Coding exercises</summary>
+			<p className="px-3 pb-2 text-xs text-muted-foreground">Choose a step to generate or resume its exercise.</p>
+			{recommended.length > 0 ? (
+				<>
+					{links(recommended)}
+					{other.length > 0 && (
+						<details>
+							<summary className="cursor-pointer px-3 pb-2 text-xs text-muted-foreground">Choose another step</summary>
+							{links(other)}
+						</details>
+					)}
+				</>
+			) : links(other)}
+		</details>
 	);
 }

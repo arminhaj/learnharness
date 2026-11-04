@@ -1,14 +1,36 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PATHS } from "../../config.ts";
-import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, CODING_LANGUAGES, type CodingGoal, type CodingProjectFile, type CodingSession, type CodingSessionSummary } from "../core/coding-session.ts";
+import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, CODING_LANGUAGES, type CodingGoal, type CodingProjectFile, type CodingSession, type CodingSessionSummary, type TeachingCodingStep } from "../core/coding-session.ts";
 import { CODE_SOURCE_LIMIT, parseCodeExercise } from "../core/code-workspace.ts";
 import { codeFilename } from "./code-runner.ts";
+import { chatStore } from "../store/chats.ts";
 
 const sessionDirectory = path.join(PATHS.data, "coding-sessions");
 const sessionSizeLimit = 1024 * 1024;
-const validId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+const validId = /^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|step-[0-9a-f]{64})$/;
+const stepPart = /^[a-zA-Z0-9_-]{1,200}$/;
+
+export function parseTeachingCodingStep(value: unknown): TeachingCodingStep {
+	const step = object(value);
+	if (typeof step.chatId !== "string" || !stepPart.test(step.chatId) || typeof step.nodeId !== "string" || !stepPart.test(step.nodeId)) {
+		throw new Error("Choose a step from a Teaching plan.");
+	}
+	return { chatId: step.chatId, nodeId: step.nodeId };
+}
+
+export function getTeachingCodingStep(step: TeachingCodingStep) {
+	if (!stepPart.test(step.chatId) || !stepPart.test(step.nodeId)) return null;
+	const chat = chatStore.getChat(step.chatId);
+	if (!chat || chat.kind === "practice" || !chat.tree) return null;
+	const node = chat.tree.nodes.find(node => node.id === step.nodeId);
+	return node ? { node, lesson: chat.title } : null;
+}
+
+export function teachingCodingSessionId(step: TeachingCodingStep): string {
+	return "step-" + createHash("sha256").update(JSON.stringify([step.chatId, step.nodeId])).digest("hex");
+}
 
 export function codingLanguages() {
 	return CODING_LANGUAGES.filter(({ id }) => codeFilename(id) !== "solution.txt");
@@ -89,16 +111,24 @@ export function parseCodingDraft(value: unknown, goal: Pick<CodingGoal, "mode" |
 	};
 }
 
-export function saveCodingSession(draft: Omit<CodingSession, "id" | "createdAt">): CodingSession {
-	const session = { ...draft, id: randomUUID(), createdAt: new Date().toISOString() };
+export function saveCodingSession(draft: Omit<CodingSession, "id" | "createdAt" | "teachingStep">, teachingStep?: TeachingCodingStep): CodingSession {
+	const id = teachingStep ? teachingCodingSessionId(teachingStep) : randomUUID();
+	const session = { ...draft, id, createdAt: new Date().toISOString(), ...(teachingStep ? { teachingStep } : {}) };
 	fs.mkdirSync(sessionDirectory, { recursive: true, mode: 0o700 });
 	const target = path.join(sessionDirectory, `${session.id}.json`);
-	const temporary = `${target}.tmp`;
+	const temporary = `${target}.${randomUUID()}.tmp`;
 	const serialized = JSON.stringify(session);
 	if (Buffer.byteLength(serialized, "utf8") > sessionSizeLimit) throw new Error("The workspace exceeds its storage limit.");
 	try {
 		fs.writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
-		fs.renameSync(temporary, target);
+		// A concurrent request can publish the same Teaching step first.
+		fs.linkSync(temporary, target);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST" && teachingStep) {
+			const existing = getCodingSession(id);
+			if (existing) return existing;
+		}
+		throw error;
 	} finally {
 		fs.rmSync(temporary, { force: true });
 	}
@@ -115,7 +145,9 @@ export function getCodingSession(id: string): CodingSession | null {
 		if (session.id !== id || typeof session.createdAt !== "string") return null;
 		const exercise = object(session.exercise);
 		const goal = parseCodingGoal({ mode: session.mode, language: exercise.language, goal: "saved session" });
-		return { ...parseCodingDraft(session, goal), id, createdAt: session.createdAt };
+		const teachingStep = session.teachingStep === undefined ? undefined : parseTeachingCodingStep(session.teachingStep);
+		if (id.startsWith("step-") && (!teachingStep || teachingCodingSessionId(teachingStep) !== id)) return null;
+		return { ...parseCodingDraft(session, goal), id, createdAt: session.createdAt, ...(teachingStep ? { teachingStep } : {}) };
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		return null;

@@ -10,6 +10,8 @@
 // A session-scoped dependency tree authored by the teacher via plan tools.
 // One substrate with the global graph: tree nodes fold into graph nodes.
 
+import type { CodingMode } from "../coding-session.ts";
+
 export interface PlanNode {
 	/** Opaque, agent-chosen slug, stable across edits: "chain-rule-intuition". */
 	id: string;
@@ -17,6 +19,8 @@ export interface PlanNode {
 	title: string;
 	/** 1-2 sentences: what this node covers. */
 	summary?: string;
+	/** Optional exercise brief for a hands-on step. */
+	coding?: { goal: string; mode: CodingMode; language?: string };
 }
 
 export interface PlanEdge {

@@ -57,6 +57,12 @@ const planInitInput = Type.Object({
 			"The only strict rule: ids are permanent lowercase slugs (a-z, 0-9, hyphens/underscores) — checks reference them via nodeId. " +
 			"Titles are free single-line text; `-->` means 'from = prerequisite' (chains fine); no subgraphs, styles, or classes.",
 	}),
+	codingSteps: Type.Optional(Type.Array(Type.Object({
+		nodeId: Type.String({ minLength: 1, maxLength: 200 }),
+		goal: Type.String({ minLength: 1, maxLength: 500 }),
+		mode: Type.Union([Type.Literal("problem"), Type.Literal("project")]),
+		language: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
+	}), { maxItems: 32, description: "Mark steps where writing code helps. Give each a focused exercise goal, Problem or Project mode (problem or project), and the actual language if known (e.g. cpp, rust, python). Omit for conceptual steps." })),
 });
 
 export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> {
@@ -71,7 +77,7 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				"`-->` edges meaning 'from must be understood before to' (chains fine). 5–15 nodes: a map, not a syllabus — one reasoning step per node, compress. " +
 				"Every check you fire names the node it assesses via `nodeId`; where the lesson stands derives from those tags.",
 			parameters: planInitInput,
-			execute: serverExecute("plan_init", planInitInput, async ({ mermaid }) => {
+			execute: serverExecute("plan_init", planInitInput, async ({ mermaid, codingSteps }) => {
 				const { chatId, chatStore } = ctx;
 				const record = chatStore.getChat(chatId);
 				if (!record) return { ok: false, error: `Chat not found: ${chatId}` };
@@ -86,7 +92,19 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				try {
 					// createTree validates the structure (duplicate ids, missing
 					// edge endpoints, self-loops, cycles → PlanTreeError).
-					const next = createTree(parsed.plan.nodes, parsed.plan.edges);
+					const marked = new Map<string, NonNullable<PlanTree["nodes"][number]["coding"]>>();
+					const nodeIds = new Set(parsed.plan.nodes.map(node => node.id));
+					for (const { nodeId, goal, mode, language } of codingSteps ?? []) {
+						if (!nodeIds.has(nodeId) || marked.has(nodeId) || !goal.trim()) {
+							throw new PlanTreeError(`Coding steps must reference unique plan node ids and include a goal. Check "${nodeId}".`);
+						}
+						marked.set(nodeId, { goal: goal.trim(), mode, ...(language?.trim() ? { language: language.trim().toLowerCase() } : {}) });
+					}
+					const nodes = parsed.plan.nodes.map(node => {
+						const coding = marked.get(node.id);
+						return coding ? { ...node, coding } : node;
+					});
+					const next = createTree(nodes, parsed.plan.edges);
 					chatStore.saveTree(chatId, next);
 					// Context diet: content = the validated nodeIds + the reminder (the
 				// ids just became binding for every quiz/explain call); details =

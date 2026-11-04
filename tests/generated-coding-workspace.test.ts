@@ -11,6 +11,7 @@ after(() => fs.rmSync(data, { recursive: true, force: true }));
 
 const { codingGenerationResponse } = await import("../src/server/coding-generation.ts");
 const { getCodingSession, recentCodingSessions } = await import("../src/server/coding-sessions.ts");
+const { chatStore } = await import("../src/store/chats.ts");
 const { codeWorkspacesResponse } = await import("../src/server/code-workspaces.ts");
 
 function post(route: string, body: unknown) {
@@ -78,4 +79,47 @@ test("rejects path traversal in a generated project before publishing it", async
 	}));
 	assert.equal(response.status, 502);
 	assert.deepEqual(recentCodingSessions(), before);
+});
+
+test("Teaching steps reuse their own workspace and reject duplicate generation in flight", async () => {
+	const chat = chatStore.createChat("Learn to build a C++ service");
+	const node = { id: "charge", title: "Calculate a charge", coding: { goal: "Handle the amount", mode: "project" as const, language: "cpp" } };
+	chatStore.saveTree(chat.id, { nodes: [node], edges: [], version: 1 });
+	const teachingStep = { chatId: chat.id, nodeId: node.id };
+	const body = { ...goal, teachingStep };
+	let finish!: () => void;
+	let started!: () => void;
+	const waiting = new Promise<void>(resolve => { finish = resolve; });
+	const ready = new Promise<void>(resolve => { started = resolve; });
+	const first = codingGenerationResponse(post("coding-sessions", body), async (_goal, _signal, step) => {
+		assert.deepEqual(step, { node, lesson: chat.title });
+		started();
+		await waiting;
+		return draft;
+	});
+	await ready;
+	const duplicate = await codingGenerationResponse(post("coding-sessions", body), async () => assert.fail("Concurrent request called the model again"));
+	assert.equal(duplicate.status, 409);
+	finish();
+	const created = await first;
+	assert.equal(created.status, 201);
+	const { id } = await created.json() as { id: string };
+	assert.deepEqual(getCodingSession(id)?.teachingStep, teachingStep);
+
+	const workspaceRequest = (action: "load" | "save", fields = {}) => codeWorkspacesResponse(post("code-workspaces", {
+		chatId: "coding", problemCallId: id, action, ...fields,
+	}));
+	const workspace = await (await workspaceRequest("load")).json() as { revision: string };
+	const source = "int amount(int x) { return x * 2; }";
+	assert.equal((await workspaceRequest("save", { source, expectedRevision: workspace.revision })).status, 200);
+
+	chatStore.saveTree(chat.id, { nodes: [{ ...node, title: "Charge calculation" }], edges: [], version: 2 });
+	const reopened = await codingGenerationResponse(post("coding-sessions", body), async () => assert.fail("Saved step called the model again"));
+	assert.equal(reopened.status, 200);
+	assert.deepEqual(await reopened.json(), { id });
+	assert.equal((await (await workspaceRequest("load")).json()).source, source);
+
+	const missing = await codingGenerationResponse(post("coding-sessions", { ...body, teachingStep: { ...teachingStep, nodeId: "missing" } }),
+		async () => assert.fail("Unknown step called the model"));
+	assert.equal(missing.status, 404);
 });

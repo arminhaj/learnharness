@@ -1,12 +1,12 @@
 import { piEngineForSpec } from "../agent/models.ts";
 import { runSubagent } from "../agent/subagents/pi-run.ts";
-import type { CodingGoal } from "../core/coding-session.ts";
+import type { CodingGoal, TeachingCodingStep } from "../core/coding-session.ts";
 import { resolveConversationSpec } from "../core/settings-resolution.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { refreshConnectionCatalog } from "./model-catalog.ts";
 import { effectiveSettings } from "./stores.ts";
 import { codeWorkspaceRequestAuthorized } from "./code-workspaces.ts";
-import { parseCodingDraft, parseCodingGoal, saveCodingSession } from "./coding-sessions.ts";
+import { getCodingSession, getTeachingCodingStep, parseCodingDraft, parseCodingGoal, parseTeachingCodingStep, saveCodingSession, teachingCodingSessionId } from "./coding-sessions.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 
 const instructions = `Create one guided coding exercise that teaches the learner's stated goal at their requested level.
@@ -22,7 +22,11 @@ Write deterministic examples that use supplied local fixtures and standard input
 
 export class CodingSetupError extends Error {}
 
-export async function authorCodingDraft(goal: CodingGoal, signal: AbortSignal): Promise<unknown> {
+export async function authorCodingDraft(
+	goal: CodingGoal,
+	signal: AbortSignal,
+	step?: NonNullable<ReturnType<typeof getTeachingCodingStep>>,
+): Promise<unknown> {
 	const model = resolveConversationSpec(undefined, effectiveSettings().models.strong);
 	if (!model) throw new CodingSetupError("Choose a strong model in Settings before generating a coding workspace.");
 	if (!providerKeyPresent(model.provider)) throw new CodingSetupError("Connect the selected model provider in Settings before generating a workspace.");
@@ -33,32 +37,60 @@ export async function authorCodingDraft(goal: CodingGoal, signal: AbortSignal): 
 		engine: piEngineForSpec(model, false),
 		maxTurns: 1,
 		abortSignal: signal,
-		systemPrompt: instructions,
-		prompt: JSON.stringify(goal),
+		systemPrompt: instructions + (step ? "\nUse the Teaching step as context. Create a runnable exercise for that step only." : ""),
+		prompt: JSON.stringify(step ? { ...goal, teaching: { lesson: step.lesson, step: step.node.title, summary: step.node.summary, exerciseGoal: step.node.coding?.goal } } : goal),
 	});
 	const output = text.trim();
 	const fenced = /^\x60{3}(?:json)?\s*([\s\S]*?)\s*\x60{3}$/i.exec(output);
 	return JSON.parse(fenced ? fenced[1]! : output);
 }
 
+const generatingSteps = new Set<string>();
 const headers = { "Cache-Control": "no-store" };
 const error = (message: string, status: number) => Response.json({ error: message }, { status, headers });
 
 export async function codingGenerationResponse(request: Request, author = authorCodingDraft) {
 	if (!codeWorkspaceRequestAuthorized(request)) return error("Open Coding in the local LearnHarness window.", 403);
 	if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json") return error("Expected a JSON coding goal.", 415);
-	let goal: ReturnType<typeof parseCodingGoal>;
+	let goal: CodingGoal;
+	let teachingStep: TeachingCodingStep | undefined;
 	try {
-		goal = parseCodingGoal(await readBoundedJson(request, 384 * 1024));
+		const input = await readBoundedJson(request, 384 * 1024);
+		goal = parseCodingGoal(input);
+		const link = (input as { teachingStep?: unknown }).teachingStep;
+		if (link !== undefined) teachingStep = parseTeachingCodingStep(link);
 	} catch (cause) {
 		if (cause instanceof CustomBodyLimitError) return error("The coding goal is too large.", 413);
 		return error(cause instanceof SyntaxError ? "Invalid coding goal." : (cause as Error).message, 400);
 	}
+	const step = teachingStep ? getTeachingCodingStep(teachingStep) : null;
+	if (teachingStep && !step) return error("This step is no longer in the Teaching plan.", 404);
+	const stepId = teachingStep ? teachingCodingSessionId(teachingStep) : undefined;
+	if (stepId && getCodingSession(stepId)) return Response.json({ id: stepId }, { headers });
+	const language = step?.node.coding?.language;
+	if (language && language !== goal.language) return error(`This step calls for ${language}. Choose a matching runner.`, 400);
+	if (stepId && generatingSteps.has(stepId)) return error("This exercise is already being generated. Try reopening the step shortly.", 409);
+
+	if (stepId) generatingSteps.add(stepId);
+	try {
+		return await generateCodingSession(request, goal, author, teachingStep, step ?? undefined);
+	} finally {
+		if (stepId) generatingSteps.delete(stepId);
+	}
+}
+
+async function generateCodingSession(
+	request: Request,
+	goal: CodingGoal,
+	author: typeof authorCodingDraft,
+	teachingStep?: TeachingCodingStep,
+	step?: NonNullable<ReturnType<typeof getTeachingCodingStep>>,
+) {
 	const timeout = AbortSignal.timeout(120_000);
 	const signal = AbortSignal.any([request.signal, timeout]);
 	let draft: ReturnType<typeof parseCodingDraft>;
 	try {
-		draft = parseCodingDraft(await author(goal, signal), goal);
+		draft = parseCodingDraft(await author(goal, signal, step), goal);
 		signal.throwIfAborted();
 	} catch (cause) {
 		if (cause instanceof CodingSetupError) return error(cause.message, 503);
@@ -67,7 +99,8 @@ export async function codingGenerationResponse(request: Request, author = author
 		return error("The model did not return a usable exercise. Try again or narrow the goal.", 502);
 	}
 	try {
-		const session = saveCodingSession(draft);
+		if (teachingStep && !getTeachingCodingStep(teachingStep)) return error("This step is no longer in the Teaching plan.", 404);
+		const session = saveCodingSession(draft, teachingStep);
 		return Response.json({ id: session.id }, { status: 201, headers });
 	} catch {
 		return error("LearnHarness could not save the generated workspace.", 500);

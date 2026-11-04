@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CodeWorkbench } from "@/components/code-workbench";
 import { CodingHint } from "@/components/coding-hint";
@@ -12,6 +13,9 @@ export default async function CodingSessionPage({ params }: { params: Promise<{ 
 	return (
 		<>
 			<header className="mb-5 max-w-3xl space-y-2">
+				{session.teachingStep && (
+					<Link href={`/chat/${session.teachingStep.chatId}`} className="text-sm underline underline-offset-4">Back to Teaching</Link>
+				)}
 				<p className="capitalize text-xs text-muted-foreground">{session.mode} · {language?.label}{session.simulation ? " · Simulated API or service" : ""}</p>
 				<h2 className="font-title text-2xl tracking-tight sm:text-3xl">{session.title}</h2>
 				<p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-muted-foreground">{session.brief}</p>

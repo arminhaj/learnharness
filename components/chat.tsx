@@ -1748,7 +1748,7 @@ export function Chat({
 						onClose={() => setFigureFocus(null)}
 					/>
 				)}
-				{planOpen && !explorationPlan && <PlanPopup messages={messages} onClose={() => setPlanOpen(false)} />}
+				{planOpen && !explorationPlan && <PlanPopup messages={messages} chatId={chatId} onClose={() => setPlanOpen(false)} />}
 				{explorationPlan && <PlanPopup messages={explorationPlan.messages} onClose={() => setExplorationPlan(null)} />}
 				<AbortTurnDialog mode={abortAsk} onClose={() => setAbortAsk(null)} onConfirm={confirmAbort} busy={busy} />
 				</div>

@@ -3,12 +3,15 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, type CodingLanguageId, type CodingMode } from "@/src/core/coding-session";
+import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, type CodingLanguageId, type CodingMode, type TeachingCodingStep } from "@/src/core/coding-session";
 
-export function NewCodingWorkspace({ languages }: { languages: readonly { id: CodingLanguageId; label: string }[] }) {
-	const [mode, setMode] = useState<CodingMode>("problem");
+export function NewCodingWorkspace({ languages, step }: {
+	languages: readonly { id: CodingLanguageId; label: string }[];
+	step?: TeachingCodingStep & { title: string; goal: string; mode: CodingMode };
+}) {
+	const [mode, setMode] = useState<CodingMode>(step?.mode ?? "problem");
 	const [language, setLanguage] = useState(languages[0]?.id ?? "cpp");
-	const [goal, setGoal] = useState("");
+	const [goal, setGoal] = useState(step?.goal ?? "");
 	const [files, setFiles] = useState<File[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -32,7 +35,7 @@ export function NewCodingWorkspace({ languages }: { languages: readonly { id: Co
 			const response = await fetch("/api/coding-sessions", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ mode, language, goal, ...(contextFiles.length ? { contextFiles } : {}) }),
+				body: JSON.stringify({ mode, language, goal, ...(contextFiles.length ? { contextFiles } : {}), ...(step ? { teachingStep: { chatId: step.chatId, nodeId: step.nodeId } } : {}) }),
 				signal: controller.signal,
 			});
 			const result = await response.json() as { id?: string; error?: string };
@@ -49,8 +52,8 @@ export function NewCodingWorkspace({ languages }: { languages: readonly { id: Co
 	return (
 		<form onSubmit={generate} className="max-w-2xl space-y-5">
 			<div>
-				<h2 className="font-title text-2xl">What do you want to learn?</h2>
-				<p className="mt-1 text-sm text-muted-foreground">Start from a learning goal. LearnHarness will generate starter code, a hint, a reference, and checks for the exercise.</p>
+				<h2 className="font-title text-2xl">{step?.title ?? "What do you want to learn?"}</h2>
+				<p className="mt-1 text-sm text-muted-foreground">{step ? "Create a runnable exercise for this Teaching step." : "Start from a learning goal. LearnHarness will generate starter code, a hint, a reference, and checks for the exercise."}</p>
 			</div>
 			<fieldset disabled={busy} className="space-y-5">
 				<legend className="mb-2 text-sm font-medium">Workspace type</legend>
@@ -103,7 +106,7 @@ export function NewCodingWorkspace({ languages }: { languages: readonly { id: Co
 			</fieldset>
 			{error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 			<div className="flex flex-wrap items-center gap-3">
-				<Button type="submit" disabled={busy || !goal.trim()}>{busy ? "Generating workspace…" : "Generate workspace"}</Button>
+				<Button type="submit" disabled={busy || !goal.trim()}>{busy ? "Generating workspace…" : step ? "Generate exercise" : "Generate workspace"}</Button>
 				{busy && <Button type="button" variant="outline" onClick={() => inFlight.current?.abort()}>Cancel</Button>}
 			</div>
 		</form>

@@ -8,6 +8,11 @@ export const CODING_LANGUAGES = [
 export type CodingLanguageId = (typeof CODING_LANGUAGES)[number]["id"];
 export type CodingMode = "problem" | "project";
 
+export interface TeachingCodingStep {
+	chatId: string;
+	nodeId: string;
+}
+
 export interface CodingGoal {
 	mode: CodingMode;
 	language: CodingLanguageId;
@@ -24,6 +29,7 @@ export interface CodingSession {
 	id: string;
 	title: string;
 	createdAt: string;
+	teachingStep?: TeachingCodingStep;
 	mode: CodingMode;
 	simulation?: boolean;
 	brief: string;

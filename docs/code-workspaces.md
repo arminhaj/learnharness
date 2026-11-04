@@ -4,6 +4,8 @@ Open **Coding** from the sidebar and describe what you want to learn. Choose **P
 
 For a project based on an existing codebase, select the relevant text files as context. LearnHarness sends those files to your configured model and builds a separate exercise. Review the generated source and supporting files before running the checks. The exercise identifies simulated APIs or services.
 
+In a Teaching session, open **The plan → Coding exercises** and choose a step. Use **Generate exercise** to create its workspace. Returning to the same step opens your saved workspace. **Choose another step** lets you start an exercise from a step outside the suggested list.
+
 **Examples** contains prepared exercises grouped by language. They work without a model connection. Save edits before switching workspaces to keep working from the saved file when you return.
 
 Editors start in Vim Normal mode: use `h/j/k/l` to move, `i` to insert, `Esc` or `Ctrl+[` to return to Normal, `v` for Visual mode, `u` to undo, and `/` to search. The status bar shows the current mode. In Insert mode, Enter inserts a newline and Tab indents. Cmd/Ctrl+Enter checks the exercise.
