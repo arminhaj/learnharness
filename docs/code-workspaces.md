@@ -1,10 +1,12 @@
-# Code answers and runnable exercises
+# Coding workspace and runnable exercises
 
-Use **Write code** in a conversation, free-text answer, or practice thinking field for a code editor with C++ syntax highlighting, line numbers, indentation, bracket matching, undo, word completion, and Vim keybindings. Editors start in Normal mode: use `h/j/k/l` to move, `i` to insert, `Esc` or `Ctrl+[` to return to Normal, `v` for Visual mode, `u` to undo, and `/` to search. The status bar shows the current mode. In Insert mode, Enter inserts a newline and Tab indents; Cmd/Ctrl+Enter sends or checks in either mode. Escape stays in the editor without dismissing the answer or stopping the session. Code answers are saved as Markdown fences and typeset in the transcript. Text mode retains the existing prose and file-path editing behavior.
+Open **Coding** from the sidebar for guided exercises with starter code, hints, reference material, and runnable tests. No model connection is needed. The exercise links are grouped by language. Save edits before switching exercises to keep working from the saved file when you return.
 
-## Try the C++ demo
+Editors start in Vim Normal mode: use `h/j/k/l` to move, `i` to insert, `Esc` or `Ctrl+[` to return to Normal, `v` for Visual mode, `u` to undo, and `/` to search. The status bar shows the current mode. In Insert mode, Enter inserts a newline and Tab indents. Cmd/Ctrl+Enter checks the exercise.
 
-Run `npm run dev`, then open `/code-demo`, or follow **Try C++ checks** from a code input. No model connection is needed for this demo. Complete `add(a, b)` in the generated `solution.cpp`. The initial file has the includes, function signature, input handling, and entry point already supplied. It compiles, but three of four tests fail until the function is implemented.
+## Add two integers
+
+Choose **Add two integers** under **C++20**. Complete `add(a, b)` in the generated `solution.cpp`. The initial file has the includes, function signature, input handling, and entry point already supplied. It compiles, but three of four tests fail until the function is implemented.
 
 **Check** saves an edited in-app draft, then compiles and tests the saved source. Results distinguish compilation errors, runtime failures, timeouts, failed assertions against expected output, and passing tests. Tests compare standard output, normalizing CRLF and final newlines only. Compiler success alone never means the answer is correct.
 

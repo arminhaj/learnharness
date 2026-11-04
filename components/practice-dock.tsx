@@ -6,7 +6,7 @@ import { ToolContentResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
 import { joinDictation, useDictationTarget } from "@/components/dictation";
 import { useEnterSubmits } from "@/components/enter-submits";
-import { CodeAwareInput } from "@/components/code-aware-input";
+import { PathInput } from "@/components/path-input";
 import { CodeWorkbench } from "@/components/code-workbench";
 import type { CodeExercise } from "@/src/core";
 import { cn } from "@/lib/utils";
@@ -60,7 +60,6 @@ export interface PracticeDockProps {
 
 export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
-	const [codeThinking, setCodeThinking] = useState(false);
 	const [molecule, setMolecule] = useState<MoleculeDocument>();
 	const [copiedSource, setCopiedSource] = useState<MoleculeSource>();
 	const startingSource = useMemo<MoleculeSource | undefined>(() => input.chemistry?.startingStructure ? { smiles: input.chemistry.startingStructure } : undefined, [input.chemistry?.startingStructure]);
@@ -154,9 +153,7 @@ export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded,
 						/>
 					</div>
 				)}
-				<CodeAwareInput
-					onCodeSubmit={submit}
-					onCodeModeChange={setCodeThinking}
+				<PathInput
 					value={thinking}
 					onValueChange={(value) => {
 						thinkingRef.current = value;
@@ -189,7 +186,7 @@ export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded,
 				    field 10 − p-1 (4) = button 6. */}
 				<div className="flex items-center justify-between gap-2 p-1">
 					<span aria-hidden className="pl-1.5 text-xs text-muted-foreground">
-						{compactionRunning ? "compacting session…" : codeThinking ? "Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter submits" : "↵ submits · ⇧↵ newline"}
+						{compactionRunning ? "compacting session…" : "↵ submits · ⇧↵ newline"}
 					</span>
 					<Button
 						type="button"

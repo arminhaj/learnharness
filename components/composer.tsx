@@ -3,7 +3,7 @@
 import { ArrowRightIcon, CornerDownLeftIcon, SquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Hint } from "@/components/ui/hint";
-import { CodeAwareInput } from "@/components/code-aware-input";
+import { PathInput } from "@/components/path-input";
 
 /**
  * The chat composer — content row ONLY (the persistent rounded shell lives in
@@ -91,8 +91,7 @@ export function Composer({
 				act();
 			}}
 		>
-			<CodeAwareInput
-				onCodeSubmit={act}
+			<PathInput
 				ref={inputRef}
 				value={value}
 				onValueChange={onChange}

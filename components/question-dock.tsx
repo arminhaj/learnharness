@@ -7,7 +7,6 @@ import { finishDictation, isDictationActive, joinDictation, useDictationTarget }
 import { useDictationActive } from "@/components/dictation-state";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
-import { CodeAwareInput } from "@/components/code-aware-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
 import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
@@ -389,7 +388,6 @@ function QuestionDockForm({
 	const [thinking, setThinking] = useState(initialDraft?.thinking ?? "");
 	const [other, setOther] = useState(initialDraft?.other ?? "");
 	const [text, setText] = useState(initialDraft?.text ?? "");
-	const [codeAnswer, setCodeAnswer] = useState(() => /^`{3,}[a-zA-Z0-9_+-]*\n/.test(initialDraft?.text ?? ""));
 	const [molecule, setMolecule] = useState<MoleculeDocument | undefined>(initialDraft?.molecule);
 	const [moleculeInitial, setMoleculeInitial] = useState<MoleculeSource>();
 	/* Refs MIRROR the two dictation-target fields ("nothing gets lost"
@@ -1014,9 +1012,7 @@ function QuestionDockForm({
 						{qd.mode === "text" ? "Your answer" : "YOUR THINKING"}
 					</div>
 					{qd.mode === "text" ? (
-						<CodeAwareInput
-							onCodeSubmit={submit}
-							onCodeModeChange={setCodeAnswer}
+						<PathInput
 							value={text}
 							onValueChange={(value) => {
 								answerTextRef.current = value;
@@ -1080,7 +1076,7 @@ function QuestionDockForm({
 					)}
 					<div className="flex items-center justify-between gap-2 p-1">
 						<span aria-hidden className="pl-1.5 text-xs text-muted-foreground">
-								{compactionRunning ? "compacting session…" : codeAnswer ? "Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter submits" : "↵ submits · ⇧↵ newline"}
+								{compactionRunning ? "compacting session…" : "↵ submits · ⇧↵ newline"}
 						</span>
 						<Button
 							type="submit"

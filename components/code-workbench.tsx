@@ -20,7 +20,7 @@ const resultLabels: Record<CodeRunResult["status"], string> = {
 
 /** Render stored evidence, including failed attempts, without equating a
  * successful build with a correct answer. Also used by the session transcript. */
-export function CodeCheckResults({ result, stale = false }: { result: CodeRunResult; stale?: boolean }) {
+export function CodeCheckResults({ result, stale = false, standalone = false }: { result: CodeRunResult; stale?: boolean; standalone?: boolean }) {
 	const passed = result.tests.filter(test => test.status === "passed").length;
 	const successful = result.status === "passed";
 	return (
@@ -58,7 +58,7 @@ export function CodeCheckResults({ result, stale = false }: { result: CodeRunRes
 					<pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{[result.stdout, result.stderr].filter(Boolean).join("\n")}</pre>
 				</details>
 			)}
-			<div className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">{successful ? "These test cases pass. Your tutor will review the solution and reasoning." : "Use the result to revise your code, or submit it for help."}</div>
+			<div className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">{standalone ? successful ? "All supplied checks pass." : "Inspect the results and revise your code." : successful ? "These test cases pass. Your tutor will review the solution and reasoning." : "Use the result to revise your code, or submit it for help."}</div>
 		</section>
 	);
 }
@@ -232,7 +232,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
 			<p className="text-[11px] leading-relaxed text-muted-foreground">Compiler errors from the latest check are underlined; hover or press F1 with the cursor on a squiggle to see its explanation. Check again after editing for updated feedback.</p>
 			{workspace?.path && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Workspace file</summary><code className="mt-1 block select-all break-all rounded bg-muted/50 px-2 py-1.5">{workspace.path}</code></details>}
-			{workspace?.lastRun && <CodeCheckResults result={workspace.lastRun} stale={workspace.lastRun.source !== source || workspace.lastRun.revision !== workspace.revision} />}
+			{workspace?.lastRun && <CodeCheckResults standalone={!onSubmit} result={workspace.lastRun} stale={workspace.lastRun.source !== source || workspace.lastRun.revision !== workspace.revision} />}
 			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see compiler and test results.</p>}
 		</div>
 	);
