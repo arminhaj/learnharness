@@ -82,6 +82,7 @@ const nextConfig: NextConfig = {
 			// loads its colocated WASM through Node, also in packaged Electron.
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
+			"src/agent/prompts/focused.md",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same
 			// per-platform-binary story as the canvas above (one per build).

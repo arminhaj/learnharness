@@ -335,8 +335,11 @@ export interface DictationSettings {
 	language?: DictationLanguage;
 }
 
+export type TeachingProfile = "original" | "focused";
+
 /** Agent settings — everything about the non-conversation machinery. */
 export interface AgentSettings {
+	teachingProfile?: TeachingProfile;
 	/** Background-role model/thinking overrides (absent role = config pin). */
 	models?: Partial<Record<BackgroundModelRole, RoleModelOverride>>;
 	/** Tool toggles keyed by tool id (absent key = enabled). User-level
@@ -680,6 +683,9 @@ function sanitizeBooleanMap(raw: unknown): Record<string, boolean> | undefined {
 
 function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 	const out: AgentSettings = {};
+	if (raw.teachingProfile === "original" || raw.teachingProfile === "focused") {
+		out.teachingProfile = raw.teachingProfile;
+	}
 	if (raw.models !== null && typeof raw.models === "object" && !Array.isArray(raw.models)) {
 		const models: Partial<Record<BackgroundModelRole, RoleModelOverride>> = {};
 		for (const [role, override] of Object.entries(raw.models as Record<string, unknown>)) {

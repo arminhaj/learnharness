@@ -43,6 +43,7 @@ import {
 	type ModelSlot,
 	type ModelSlotName,
 	type RoleModelOverride,
+	type TeachingProfile,
 	type UserSettings,
 } from "./settings.ts";
 
@@ -74,6 +75,7 @@ export interface EffectiveSettings {
 	general: Required<GeneralSettings>;
 	dictation: Required<DictationSettings>;
 	agent: {
+		teachingProfile: TeachingProfile;
 		models: Record<BackgroundModelRole, EffectiveModelSpec | undefined>;
 		/** Delta map as stored — consumers resolve absent key → enabled. */
 		tools: Record<string, boolean>;
@@ -187,6 +189,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 			language: record?.dictation?.language ?? FACTORY_SETTINGS.dictation.language,
 		},
 		agent: {
+			teachingProfile: agent.teachingProfile ?? "original",
 			models,
 			tools: agent.tools ?? {},
 			prompts: agent.prompts ?? {},

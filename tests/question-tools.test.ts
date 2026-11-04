@@ -31,6 +31,7 @@ import { jobStore } from "../src/store/jobs.ts";
 import { probeQuizInputSchema, quizInputObject, quizInputProblems } from "../src/core/question-core.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { PATHS } from "../config.ts";
+import { composeInstructions } from "../src/agent/teacher-agent.ts";
 
 const dataDir = path.join(PATHS.root, "data");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -316,6 +317,22 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 			freeFull.filter((t) => t !== "research"),
 			"mechanics and plain toggles compose",
 		);
+	});
+
+	it("enables the focused prompt and assisted recall only in the Focused configuration", () => {
+		const ctx = { chatId: newChat("Focused lesson"), chatStore, deliver: () => {}, jobStore, spawn: () => {} };
+		const original = { explain: true };
+		const focus = "focused";
+		for (const [kind, makeTools, name] of [
+			["prober", createProberTools, "recall"],
+			["teacher", createTeacherTools, "explain"],
+		] as const) {
+			assert.equal(composeInstructions(kind, {}, "original"), composeInstructions(kind));
+			assert.match(composeInstructions(kind, {}, focus), /## Focused teaching configuration/);
+			assert.equal(makeTools(ctx, original, "original")[name]!.parameters.properties.choiceHints, undefined);
+			assert.ok(makeTools(ctx, original, focus)[name]!.parameters.properties.choiceHints);
+		}
+		assert.equal(composeInstructions("practice", {}, focus), composeInstructions("practice"));
 	});
 });
 

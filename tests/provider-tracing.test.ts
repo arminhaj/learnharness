@@ -39,7 +39,7 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 	it("preserves all secret exclusions exactly", () => {
 		assert.deepEqual(patterns, ["**/data/**/*", "auth.json", "chatgpt-credentials.json*", "github-copilot-credentials.json*", "xai-credentials.json*", ".env*"]);
 	});
-	it("retains exactly the narrow native-Turbopack closure workaround and existing runtime includes", () => {
+	it("limits tracing to the runtime dependencies and prompt assets", () => {
 		assert.deepEqual(nextConfig.outputFileTracingIncludes!["*"], [
 			"node_modules/@puppeteer/browsers/lib/browser-data/**/*.js",
 			"node_modules/pdfjs-dist/legacy/**/*",
@@ -47,6 +47,7 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 			"node_modules/@napi-rs/canvas-*/**/*",
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
+			"src/agent/prompts/focused.md",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			"node_modules/@resvg/resvg-js-*/**/*",
 			"node_modules/@earendil-works/pi-ai/dist/providers/data/**/*",

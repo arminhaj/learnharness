@@ -337,23 +337,34 @@ export const explainInputObject = Type.Object({
 	...explainInputBase.properties,
 });
 
+const choiceHintsProperty = {
+	choiceHints: Type.Optional(Type.Array(Type.Object(quizOptionProps), {
+		minItems: 2,
+		maxItems: 6,
+		description: "Optional alternatives for the same question, including one correct option. The learner can reveal them if stuck. Omit when they would give away the reasoning you need to assess.",
+	})),
+};
+
+export const focusedRecallInputSchema = Type.Object({ ...explainInputBase.properties, ...choiceHintsProperty });
+export const focusedExplainInputSchema = Type.Object({ ...explainInputObject.properties, ...choiceHintsProperty });
+
 /** The DISPLAY parse for persisted explain calls (tool-parts.ts): the
  *  base + `type` as an OPTIONAL plain string — exactly the quiz display
  *  pattern. Old records carry none; questionNeedsReveal treats them as
  *  checks (the standing default). nodeId stays stripped (unknown key).
  *  The PROBE recall parses against the bare base. */
 export const explainDisplayInputSchema = Type.Object({
-	...explainInputBase.properties,
+	...focusedRecallInputSchema.properties,
 	type: Type.Optional(Type.String()),
 });
 
 /** The explain authoring contract: the commitment must exist. Empty
  *  result = an explain the dock can arm and the model can grade against. */
-export function explainInputProblems(input: { correctAnswer: string }): string[] {
+export function explainInputProblems(input: { correctAnswer: string; choiceHints?: Array<{ label: string; value?: string }> }): string[] {
 	if (input.correctAnswer.trim().length === 0) {
 		return ["correctAnswer is required — commit to the full correct answer BEFORE posing the question."];
 	}
-	return [];
+	return input.choiceHints ? askOptionProblems(input.choiceHints) : [];
 }
 
 /** The tool names that carry the quizzing mechanic — the teach seam
@@ -387,13 +398,14 @@ export const askInputSchema = Type.Object({
 		Type.Boolean({ description: "Set to true to allow multiple answers to the same question." }),
 	),
 });
+
 // Ask's option sanity (labels non-empty, values distinct — ask is not
 // graded, but duplicate values break the dock's value keying) runs at the
 // call boundary in execute (askOptionProblems, above).
 
 export type QuizToolInput = Static<typeof quizInputObject>;
 export type AskToolInput = Static<typeof askInputSchema>;
-export type ExplainToolInput = Static<typeof explainInputObject>;
+export type ExplainToolInput = Static<typeof focusedExplainInputSchema>;
 export type ProbeExplainToolInput = Static<typeof explainInputBase>;
 
 
@@ -433,6 +445,33 @@ export interface QuestionData {
 /** The learner's answer — full structured record, stored in `lh_question_answered`.
  *  NO questionId (owner, tool-result diet 2026-10-02): it was the
  *  toolCallId restated — the toolResult message already carries it. */
+export const TOPIC_RELEVANCE_LABELS = {
+	core: "Core to my goal",
+	later: "Useful later",
+	off_track: "Off track",
+} as const;
+
+export const TOPIC_CHALLENGE_LABELS = {
+	too_easy: "Too easy",
+	good_challenge: "Good challenge",
+	too_hard: "Too hard",
+} as const;
+
+export interface TopicFeedback {
+	relevance?: keyof typeof TOPIC_RELEVANCE_LABELS;
+	challenge?: keyof typeof TOPIC_CHALLENGE_LABELS;
+	madeMeThink?: true;
+}
+
+export function isTopicFeedback(value: unknown): value is TopicFeedback {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const { relevance, challenge, madeMeThink } = value as Record<string, unknown>;
+	return Object.keys(value).every((key) => key === "relevance" || key === "challenge" || key === "madeMeThink")
+		&& (relevance === undefined || (typeof relevance === "string" && Object.hasOwn(TOPIC_RELEVANCE_LABELS, relevance)))
+		&& (challenge === undefined || (typeof challenge === "string" && Object.hasOwn(TOPIC_CHALLENGE_LABELS, challenge)))
+		&& (madeMeThink === undefined || madeMeThink === true);
+}
+
 export interface QuestionAnswerData {
 	kind: QuestionKind;
 	/** The persisted call's tool NAME (owner, 2026-10-09): probe-phase
@@ -462,7 +501,9 @@ export interface QuestionAnswerData {
 	 *  2026-10-03) — a separate channel from `thinking`, captured by the
 	 *  reading field and riding the check answer. Absent when empty. */
 	readingThinking?: string;
-	confidence?: number; // quiz only: the learner's stated probability (0-100, raw) that his selected answer is correct — never sent on "I don't know" (owner, 2026-10-01)
+	confidence?: number; // stated probability (0–100) that a selected answer is correct
+	choicesShown?: true;
+	topicFeedback?: TopicFeedback;
 	correct?: boolean; // quiz only
 	correctIndices?: number[]; // quiz only (rendering)
 	committed?: string; // explain only (rendering): the model's committed answer
@@ -489,7 +530,9 @@ export interface AnswerRequest {
 	text?: string; // ask text-mode
 	thinking?: string; // the reasoning-on-the-question channel (was `note`)
 	readingThinking?: string; // the thinking-while-reading channel (check answers)
-	confidence?: number; // quiz only: 0-100 raw probability — 50 is a real coin flip, always sent (owner, 2026-10-01)
+	confidence?: number; // 0–100, only for a selected answer
+	choicesShown?: true;
+	topicFeedback?: TopicFeedback;
 }
 
 /** The confidence slider's snap stops (owner, 2026-10-01): raw probability
@@ -519,6 +562,8 @@ export interface QuestionFormDraft {
 	other: string;
 	text: string;
 	confidenceIndex: number;
+	choicesShown?: boolean;
+	topicFeedback?: TopicFeedback;
 }
 
 export interface QuestionDraft {
@@ -711,15 +756,19 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 		...(tool ? { tool } : {}),
 		questionType: qd.questionType,
 		questionText: qd.question,
-		options: qd.options.map((o, i) => ({ index: i + 1, label: o.label })),
+		options: qd.kind === "explain" && !req.choicesShown
+			? []
+			: qd.options.map((o, i) => ({ index: i + 1, label: o.label })),
 		dontKnow: req.dontKnow === true,
 		answers: [],
 		thinking: req.thinking?.trim() || undefined,
 		readingThinking: req.readingThinking?.trim() || undefined,
+		...(req.choicesShown && qd.kind === "explain" ? { choicesShown: true as const } : {}),
+		...(req.topicFeedback ? { topicFeedback: req.topicFeedback } : {}),
 		answeredAt: new Date().toISOString(),
 	};
 	// resolve selected option values → OptionAnswer (in display order)
-	if (req.values && req.values.length > 0) {
+	if (req.values && req.values.length > 0 && (qd.kind !== "explain" || req.choicesShown)) {
 		const byValue = new Map(qd.options.map((o, i) => [o.value, { ...o, index: i + 1 }]));
 		for (const v of req.values) {
 			const opt = byValue.get(v);
@@ -730,17 +779,15 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 	}
 	if (req.other?.trim()) base.other = req.other.trim();
 	if (req.text?.trim()) base.text = req.text.trim();
+	if (!base.dontKnow && req.confidence !== undefined &&
+		(qd.kind === "quiz" || (base.choicesShown && base.answers.length > 0))) {
+		base.confidence = Math.max(0, Math.min(100, Math.round(req.confidence)));
+	}
 
 	if (qd.kind === "quiz") {
 		base.correctIndices = qd.correctIndices ?? [];
 		base.explanation = qd.explanation;
 		base.correct = base.dontKnow ? false : isCorrect(base.answers.map((a) => a.index), qd.correctIndices ?? []);
-		// The confidence slider rides on real quiz answers only — never on
-		// "I don't know" (no answer, no probability). Clamped defensively;
-		// the dock snaps to the grid, the record accepts any integer.
-		if (!base.dontKnow && req.confidence !== undefined) {
-			base.confidence = Math.max(0, Math.min(100, Math.round(req.confidence)));
-		}
 	}
 	if (qd.kind === "explain") {
 		// No client grading — the model grades in its reply, against the
@@ -791,6 +838,8 @@ export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, un
 	// incorrect and carries no confidence: both stay implicit.)
 	if (ad.correct !== undefined && !ad.dontKnow) out.correct = ad.correct;
 	if (ad.confidence !== undefined) out.confidence = ad.confidence;
+	if (ad.choicesShown === true) out.choicesShown = true;
+	if (isTopicFeedback(ad.topicFeedback)) out.topicFeedback = ad.topicFeedback;
 	// Two DISTINCT thinking channels, clearly keyed so the model never
 	// conflates them (owner 2026-10-03): reasoning on the question vs
 	// thinking while reading the teaching. `note` is the pre-rename key —

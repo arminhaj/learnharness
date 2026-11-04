@@ -8,7 +8,7 @@ import { PathText } from "@/components/file-path-chip";
 import { cn } from "@/lib/utils";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import type { QuestionAnswerData } from "@/src/core";
-import { answerForPresentation, parseAskInput, parseQuizInput } from "@/src/core";
+import { answerForPresentation, isTopicFeedback, parseAskInput, parseQuizInput, TOPIC_CHALLENGE_LABELS, TOPIC_RELEVANCE_LABELS } from "@/src/core";
 
 /**
  * Static rendering of an answered question (tool part in `output-available`).
@@ -44,6 +44,8 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 	const askInput = answer.kind === "ask" ? parseAskInput(input) : undefined;
 	const parsedDetails = askInput?.details ?? (answer.kind === "quiz" ? parseQuizInput(input)?.details : undefined);
 	const descByIndex = new Map((askInput?.options ?? []).map((o, i) => [i + 1, o.description]));
+
+	const feedback = isTopicFeedback(answer.topicFeedback) ? answer.topicFeedback : undefined;
 
 	return (
 		<>
@@ -169,7 +171,7 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 			    "I don't know" sent none (its slider was grayed out), explain and
 			    ask never had one, and records from before the feature carry no
 			    field — nothing to show, nothing rendered. */}
-			{isQuiz && answer.confidence != null && (
+			{(isQuiz || answer.choicesShown) && answer.confidence != null && (
 				<div className="mt-3 flex items-center gap-3" data-testid="answered-confidence">
 					<ConfidenceRail value={answer.confidence} className="min-w-0 flex-1" />
 					<span className="w-9 shrink-0 text-right font-mono text-sm tabular-nums text-muted-foreground">
@@ -177,8 +179,17 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 					</span>
 				</div>
 			)}
-			{answer.dontKnow && isQuiz && (
+			{answer.dontKnow && (isQuiz || isExplain) && (
 				<div className="mt-2 text-sm text-muted-foreground">Answered “I don't know”.</div>
+			)}
+
+			{answer.choicesShown && <p className="mt-2 text-xs text-muted-foreground">Choices revealed</p>}
+			{feedback && (
+				<div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground" aria-label="Topic feedback">
+					{feedback.relevance && <span>Relevance · {TOPIC_RELEVANCE_LABELS[feedback.relevance]}</span>}
+					{feedback.challenge && <span>Stimulation · {TOPIC_CHALLENGE_LABELS[feedback.challenge]}</span>}
+					{feedback.madeMeThink && <span>Made me think</span>}
+				</div>
 			)}
 
 			{(answer.thinking ?? answer.note) && (

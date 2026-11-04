@@ -292,7 +292,7 @@ export async function handleChatInput(
 				effective.compaction?.thresholdTokens,
 				catalogContextLimits().get(modelIdForCompaction),
 			),
-			systemPromptTokens: Math.ceil((record.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(record.kind === "practice" ? "practice" : "teacher")).length / 4),
+			systemPromptTokens: Math.ceil((record.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(record.kind === "practice" ? "practice" : "teacher", effective.agent.prompts, effective.agent.teachingProfile)).length / 4),
 		},
 		chatId,
 	);
@@ -455,6 +455,7 @@ export async function handleChatInput(
 		messages: asAgentMessages(agentMessages),
 		onUsage: collectUsage,
 		toolToggles: effective.agent.tools,
+		teachingProfile: effective.agent.teachingProfile,
 		// Debug (owner, 2026-10-04): teacher/prober raw provider events under
 		// LH_PROVIDER_EVENTS=1 (provider-events.ts); no-op otherwise.
 		chatId,
@@ -672,7 +673,7 @@ export async function handleChatInput(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil((freshRecord.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher")).length / 4),
+							systemPromptTokens: Math.ceil((freshRecord.exploration ? EXPLORATION_INSTRUCTIONS : composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher", fresh.agent.prompts, fresh.agent.teachingProfile)).length / 4),
 						};
 					}, chatId);
 			},

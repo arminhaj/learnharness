@@ -715,11 +715,26 @@ export function AgentSection({
 						</SettingsRow>
 					);
 				})()}
+				<SettingsRow
+					label="Teaching configuration"
+					hint={agent?.teachingProfile === "focused" ? "Probe as needed and offer choices on request" : "Use the original teaching method and your quizzing preference"}
+					testid="teaching-profile-row"
+				>
+					<select
+						aria-label="Teaching configuration"
+						value={agent?.teachingProfile ?? "original"}
+						onChange={(event) => onSectionChange({ ...agent, teachingProfile: event.target.value === "focused" ? "focused" : "original" })}
+						className="rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-sm"
+					>
+						<option value="original">Original</option>
+						<option value="focused">Focused</option>
+					</select>
+				</SettingsRow>
 				{/* The quizzing mechanic (owner 2026-09-27): segmented — exactly one
 				    of Multiple choice / Free recall is active; the choice swaps which
 				    quizzing tool BOTH agents carry (prober checks + teach checks).
 				    Persisted as agent.tools.explain; absent = Multiple choice. */}
-				{(() => {
+				{agent?.teachingProfile !== "focused" && (() => {
 					const free = agent?.tools?.explain === true;
 					return (
 						<SettingsRow
