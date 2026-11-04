@@ -46,15 +46,16 @@ function probeConcluded(messages: readonly LhMessage[]): boolean {
  * result) is also the construction seam: from that result on, every request
  * builds the TEACHER agent. Bare calls and refused results keep probing.
  */
-export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<any>> {
+export function probeDoneTool(ctx: ProbeDoneContext, focused = false): Record<string, AgentTool<any>> {
 	return {
 		probe_done: {
 			name: "probe_done",
 			label: "probe_done",
 			description:
-				"Conclude the probing phase and hand off to the teaching phase. Call this ONCE, when the probe is " +
-				"complete: every strand the lesson depends on is bracketed (a floor he reliably gets right AND a " +
-				"ceiling where it runs out), and his learning goal is concrete. For a requested problem-set walkthrough, " +
+				"Conclude the probing phase and hand off to the teaching phase. Call this ONCE, " +
+				(focused
+					? "when the goal is concrete and you can choose a starting point. Mark unmeasured understanding unknown. For a requested problem-set walkthrough, "
+					: "when the probe is complete: every strand the lesson depends on is bracketed (a floor he reliably gets right AND a ceiling where it runs out), and his learning goal is concrete. For a requested problem-set walkthrough, ") +
 				"instead hand off after reading and inventorying the set: assess only the first question's starting " +
 				"strands, explicitly marking unmeasured understanding unknown; no whole-set bracketing is needed. " +
 				"Carry the source references, full question/subpart inventory, progress, working, and next question " +

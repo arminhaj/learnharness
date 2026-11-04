@@ -28,7 +28,7 @@
  * turn rides one composition.
  */
 
-import type { QuestionAnswerData } from "./question-core.ts";
+import { isTopicFeedback, type QuestionAnswerData } from "./question-core.ts";
 import type { CodeRunResult } from "./code-workspace.ts";
 import { parseMoleculeDocument, type MoleculeDocument } from "./chemistry.ts";
 import type { LhMessage } from "./native-messages.ts";
@@ -179,21 +179,29 @@ export function parseChatInput(input: unknown): ChatInput {
 				throw new ChatInputError("text input requires non-empty text");
 			}
 			return { type: "text", text: i.text };
-		case "answer":
+		case "answer": {
 			if (typeof i.toolCallId !== "string" || i.toolCallId.length === 0) {
 				throw new ChatInputError("answer input requires toolCallId");
 			}
 			if (typeof i.answer !== "object" || i.answer === null) {
 				throw new ChatInputError("answer input requires the graded answer object");
 			}
+			const answer = i.answer as QuestionAnswerData;
+			if (answer.choicesShown !== undefined && answer.choicesShown !== true) {
+				throw new ChatInputError("choicesShown must be true when present");
+			}
+			if (answer.topicFeedback !== undefined && !isTopicFeedback(answer.topicFeedback)) {
+				throw new ChatInputError("Invalid topic feedback");
+			}
 			return {
 				type: "answer",
 				toolCallId: i.toolCallId,
 				answer: {
-					...(i.answer as QuestionAnswerData),
+					...answer,
 					...((i.answer as QuestionAnswerData).molecule === undefined ? {} : { molecule: inputMolecule((i.answer as QuestionAnswerData).molecule) }),
 				},
 			};
+		}
 		case "continue":
 			return { type: "continue" };
 		case "retry":

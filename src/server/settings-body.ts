@@ -150,6 +150,12 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 	const raw = asRecord(body);
 	if (!raw) return { ok: false, error: "Invalid JSON body" };
 	const settings: AgentSettings = {};
+	if (raw.teachingProfile !== undefined) {
+		if (raw.teachingProfile !== "original" && raw.teachingProfile !== "focused") {
+			return { ok: false, error: 'teachingProfile must be "original" or "focused"' };
+		}
+		settings.teachingProfile = raw.teachingProfile;
+	}
 	if (raw.models !== undefined) {
 		const models = asRecord(raw.models);
 		if (!models) return { ok: false, error: "models must be an object" };

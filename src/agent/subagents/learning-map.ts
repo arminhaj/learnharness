@@ -93,14 +93,14 @@ export function learningPassages(record: Pick<ChatRecord, "messages" | "updatedA
 			const answer = (message.details ?? {}) as Record<string, unknown>;
 			if (answer.dismissed === true) return [];
 			const fields = Object.fromEntries([
-				"questionText", "options", "answers", "other", "text", "thinking", "note", "readingThinking", "dontKnow", "correct", "confidence",
+				"questionText", "options", "answers", "other", "text", "thinking", "note", "readingThinking", "dontKnow", "correct", "confidence", "choicesShown",
 			].filter((key) => answer[key] !== undefined).map((key) => [key, answer[key]]));
 			if (Object.keys(fields).length === 0) return [];
 			text = JSON.stringify(fields);
 			learnerEvidence = true;
 			// Incorrect / don't-know answers cannot be cited as mastery. A
 			// multiple-choice guess alone also does not establish understanding.
-			canSupportComfortable = answer.dontKnow !== true && answer.correct !== false &&
+			canSupportComfortable = answer.dontKnow !== true && answer.correct !== false && answer.choicesShown !== true &&
 				[answer.text, answer.thinking, answer.note].some((value) => typeof value === "string" && value.trim().length > 0);
 		}
 		if (!text.trim()) return [];

@@ -7,6 +7,8 @@ import {
 	explainInputBase,
 	explainInputObject,
 	explainInputProblems,
+	focusedExplainInputSchema,
+	focusedRecallInputSchema,
 	parseOptionsIfString,
 	probeQuizInputSchema,
 	quizInputObject,
@@ -25,6 +27,7 @@ import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
 import { healToolRecord } from "./tools/heal.ts";
 import type { GraphStore } from "../core/ports.ts";
+import type { TeachingProfile } from "../core/settings.ts";
 
 export { jobTools };
 export type { ProbeDoneContext } from "./tools/probe.ts";
@@ -178,10 +181,12 @@ function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types
  *  (near-miss reading, genuine gaps) lives in the shared prompt chunk.
  *  `name`: the teach tool self-references as explain, the probe variant
  *  as recall (owner 2026-10-09). */
-function explainDescription(name: "explain" | "recall", nodeId: boolean): string {
+function explainDescription(name: "explain" | "recall", nodeId: boolean, focused = false): string {
 	return (
-		"Ask the learner to EXPLAIN something in his own words — a graded check with NO options: he types a free-text " +
-		"answer. Unlike ask_user_question (no right answer), " +
+		(focused
+			? "Ask a graded question that starts as free response. Optional choiceHints become visible only on request. "
+			: "Ask the learner to EXPLAIN something in his own words — a graded check with NO options: he types a free-text answer. ") +
+		"Unlike ask_user_question (no right answer), " +
 		name +
 		" always has one. THE COMMITMENT RULE: " +
 		"correctAnswer is the FULL correct answer in your own words, reasoning included, COMMITTED before he ever " +
@@ -220,12 +225,13 @@ export const probeQuizTool: AgentTool<typeof probeQuizInputSchema> = {
  *  teach quiz — phases/plan recognize BOTH tool names). */
 export function teachExplainToolFor(
 	ctx: Pick<PlanToolContext, "chatId" | "chatStore">,
-): AgentTool<typeof explainInputObject> {
+	focused = false,
+): AgentTool<typeof explainInputObject | typeof focusedExplainInputSchema> {
 	return {
 		name: "explain",
 		label: "explain",
-		description: explainDescription("explain", true),
-		parameters: explainInputObject,
+		description: explainDescription("explain", true, focused),
+		parameters: focused ? focusedExplainInputSchema : explainInputObject,
 		prepareArguments: prepareQuestionArguments,
 		executionMode: "sequential",
 		execute: async (_toolCallId, input) => {
@@ -287,10 +293,12 @@ export interface ProberToolContext extends ProbeDoneContext {
 export function createProberTools(
 	ctx: ProberToolContext,
 	enabled?: EnabledTools,
+	profile?: TeachingProfile,
 ): Record<string, AgentTool<any>> {
 	// probe_done is re-added AFTER the filter, always-on by construction — it
 	// is how the phase ENDS; a prober that can never conclude is a lockout.
-	const done = probeDoneTool(ctx);
+	const focused = profile === "focused";
+	const done = probeDoneTool(ctx, focused);
 	// The job tools build over the SAME context/gates as the teacher's
 	// (one builder, one gating semantic); the prober carries a SUBSET:
 	const jobs = jobTools({
@@ -305,12 +313,18 @@ export function createProberTools(
 	// PHASE names (probe/recall, owner 2026-10-09) — distinct from the
 	// teach tools so the schema boundary is visible to the model.
 	const mechanics = quizMechanics(enabled);
+	const focusedRecall: AgentTool<typeof focusedRecallInputSchema> = {
+		...probeExplainTool,
+		description: explainDescription("recall", false, true),
+		parameters: focusedRecallInputSchema,
+	};
 	// The armed quizzing tool, widened to the registry's heterogeneous
 	// AgentTool record BEFORE the filter (a conditional spread of two
 	// differently-typed literals makes the whole object's type a union —
 	// unusable as Record<string, AgentTool<any>> downstream).
 	const quizzing: Record<string, AgentTool<any>> =
-		mechanics === "free" ? { recall: probeExplainTool } : { probe: probeQuizTool };
+		focused ? { recall: focusedRecall }
+			: mechanics === "free" ? { recall: probeExplainTool } : { probe: probeQuizTool };
 	// healToolRecord (owner, 2026-10-09 — the whitehead generalization):
 	// the standard argument heal over the WHOLE registry — every tool,
 	// not just the one the latest wobble incident landed on.
@@ -434,15 +448,17 @@ function withoutMechanics(enabled?: EnabledTools): EnabledTools | undefined {
 export function createTeacherTools(
 	ctx: TeacherToolContext,
 	enabled?: EnabledTools,
+	profile?: TeachingProfile,
 ): Record<string, AgentTool<any>> {
 	// Quizzing mechanics (owner 2026-09-27): free-recall swaps the teach
 	// quiz for the teach explain — one quizzing tool at a time, whichever
 	// the settings arm. ask stays always-on.
 	const mechanics = quizMechanics(enabled);
+	const focused = profile === "focused";
 	// Same widening as the prober's (see above) — the conditional spread of
 	// two differently-typed literals collapses into an unusable union type.
 	const quizzing: Record<string, AgentTool<any>> =
-		mechanics === "free" ? { explain: teachExplainToolFor(ctx) } : { quiz: teachQuizToolFor(ctx) };
+		focused || mechanics === "free" ? { explain: teachExplainToolFor(ctx, focused) } : { quiz: teachQuizToolFor(ctx) };
 	// healToolRecord — same standard as the prober's registry (above).
 	return healToolRecord(
 		filterEnabledTools(

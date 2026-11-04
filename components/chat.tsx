@@ -2369,6 +2369,7 @@ function DockOverlay({
 						>
 							{pending ? (
 								<QuestionDock
+									chatId={chatId}
 									paused={paused}
 									toolName={pending.tool as "quiz" | "probe" | "ask_user_question" | "explain" | "recall"}
 									toolCallId={pending.toolCallId}

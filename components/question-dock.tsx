@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ChevronRightIcon, PlayIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
@@ -11,10 +11,13 @@ import { CodeAwareInput } from "@/components/code-aware-input";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
 import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
+import { onSettingsSaved } from "@/components/settings-signal";
+import { TopicFeedbackControl } from "@/components/topic-feedback";
 import type { MoleculeDocument, MoleculeSource } from "@/src/core";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
+	dismissedAnswer,
 	hasMoleculeBlock,
 	repairMathForDisplay,
 	normalizeQuizType,
@@ -42,6 +45,8 @@ import {
 	type QuizToolInput,
 	type SelectMode,
 	type Phase3,
+	type TopicFeedback,
+	type UserSettings,
 } from "@/src/core";
 import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-rail";
 
@@ -66,6 +71,7 @@ import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-
  */
 
 export interface QuestionDockProps {
+	chatId?: string;
 	draftKey?: string;
 	toolName: "quiz" | "probe" | "ask_user_question" | "explain" | "recall";
 	toolCallId: string;
@@ -108,6 +114,7 @@ export interface QuestionDockProps {
 }
 
 export function QuestionDock({
+	chatId,
 	draftKey,
 	toolName,
 	toolCallId,
@@ -168,6 +175,7 @@ export function QuestionDock({
 			)}
 			<div className={expanded ? "dock-variant" : "invisible h-0 overflow-hidden"}>
 				<QuestionDockForm
+					chatId={chatId}
 					draftKey={draftKey}
 					toolName={toolName}
 					toolCallId={toolCallId}
@@ -267,6 +275,7 @@ export function QuestionDockBar({
 
 /** The expanded question: label, question, options, and the unified bottom row. */
 function QuestionDockForm({
+	chatId,
 	draftKey,
 	toolName,
 	toolCallId,
@@ -303,9 +312,9 @@ function QuestionDockForm({
 						: "single-select"
 						: "text";
 		const options = normalizeOptions(
-			(quizInput?.options ?? askInput?.options ?? []) as { label: string; value?: string }[],
+			quizInput?.options ?? askInput?.options ?? explainInput?.choiceHints ?? [],
 		);
-		const ordered = kind === "quiz" && options.length > 0 ? shuffleOptions(options, seededRandom(toolCallId)) : options;
+		const ordered = kind === "ask" ? options : shuffleOptions(options, seededRandom(toolCallId));
 		const q: QuestionData = {
 			id: toolCallId,
 			kind,
@@ -339,6 +348,43 @@ function QuestionDockForm({
 	// "Other…" row in a multi-select must never clear already-picked
 	// options, and picking an option must never clear a typed custom answer.
 	const [sel, setSel] = useState<DockSelection>(() => initialDraft?.selection ?? emptyDockSelection());
+	const [focused, setFocused] = useState(false);
+	const [feedback, setFeedback] = useState<TopicFeedback>(() => initialDraft?.topicFeedback ?? {});
+	const [choicesShown, setChoicesShown] = useState(initialDraft?.choicesShown ?? false);
+	const choiceListId = useId();
+	const hasChoiceHints = kind === "explain" && qd.options.length > 0;
+	const choiceStorageKey = `lh:choice-hints:${chatId ?? ""}:${toolCallId}`;
+	useEffect(() => {
+		if (!hasChoiceHints) return;
+		try {
+			if (sessionStorage.getItem(choiceStorageKey) === "shown") setChoicesShown(true);
+		} catch { /* The current dock still remembers the reveal. */ }
+	}, [choiceStorageKey, hasChoiceHints]);
+	const showChoices = () => {
+		setChoicesShown(true);
+		try { sessionStorage.setItem(choiceStorageKey, "shown"); }
+		catch { /* The current dock still remembers the reveal. */ }
+	};
+	useEffect(() => {
+		if (kind === "ask") return;
+		let controller: AbortController | undefined;
+		const refresh = () => {
+			controller?.abort();
+			const request = new AbortController();
+			controller = request;
+			void fetch("/api/settings", { signal: request.signal })
+				.then(async (response) => {
+					if (!response.ok) return;
+					const { settings } = await response.json() as { settings: UserSettings | null };
+					if (!request.signal.aborted) setFocused(settings?.agent?.teachingProfile === "focused");
+				})
+				.catch(() => { /* Keep the last known configuration. */ });
+		};
+		refresh();
+		const unsubscribe = onSettingsSaved((section) => { if (section === "agent") refresh(); });
+		return () => { controller?.abort(); unsubscribe(); };
+	}, [kind]);
+	const topicFeedback = feedback.relevance || feedback.challenge || feedback.madeMeThink ? feedback : undefined;
 	// The learner's transfer channel — thinking, never "a note".
 	const [thinking, setThinking] = useState(initialDraft?.thinking ?? "");
 	const [other, setOther] = useState(initialDraft?.other ?? "");
@@ -359,16 +405,21 @@ function QuestionDockForm({
 	const [confIdx, setConfIdx] = useState<number>(initialDraft?.confidenceIndex ?? DEFAULT_CONFIDENCE_INDEX);
 	const saveDraftRef = useRef(onSaveDraft);
 	saveDraftRef.current = onSaveDraft;
-	const previousDraft = useRef({ selection: sel, thinking, other, text, molecule, confidenceIndex: confIdx });
+	const previousDraft = useRef({ selection: sel, thinking, other, text, molecule, confidenceIndex: confIdx, choicesShown, topicFeedback: feedback });
 	useEffect(() => {
 		const previous = previousDraft.current;
 		if (previous.selection === sel && previous.thinking === thinking && previous.other === other
-			&& previous.text === text && previous.molecule === molecule && previous.confidenceIndex === confIdx) return;
-		const draft = { selection: sel, thinking, other, text, molecule, confidenceIndex: confIdx };
+			&& previous.text === text && previous.molecule === molecule && previous.confidenceIndex === confIdx
+			&& previous.choicesShown === choicesShown && previous.topicFeedback === feedback) return;
+		const draft = { selection: sel, thinking, other, text, molecule, confidenceIndex: confIdx, choicesShown, topicFeedback: feedback };
 		previousDraft.current = draft;
 		saveDraftRef.current?.(draft);
-	}, [sel, thinking, other, text, molecule, confIdx]);
+	}, [sel, thinking, other, text, molecule, confIdx, choicesShown, feedback]);
 
+	const hasConfidence = kind === "quiz" || (hasChoiceHints && choicesShown && sel.selected.size > 0);
+	const moveConfidence = (key: "ArrowLeft" | "ArrowRight") => {
+		setConfIdx((index) => Math.min(CONFIDENCE_STOPS.length - 1, Math.max(0, index + (key === "ArrowRight" ? 1 : -1))));
+	};
 	const selectMode: SelectMode = qd.mode === "multi-select" ? "multi-select" : "single-select";
 
 	// The PRIMARY dictation input (owner, STT round 1): while a question
@@ -403,7 +454,7 @@ function QuestionDockForm({
 
 	const canSubmit =
 		qd.mode === "text"
-			? text.trim().length > 0 || !!molecule
+			? sel.dontKnow || text.trim().length > 0 || !!molecule || (choicesShown && sel.selected.size > 0)
 			: sel.dontKnow || (sel.otherSelected && other.trim().length > 0) || sel.selected.size > 0;
 	const dictationActive = useDictationActive();
 	const canFinishSpokenAnswer = qd.mode === "text" && dictationClaim && dictationActive;
@@ -416,12 +467,13 @@ function QuestionDockForm({
 		return () => { mountedRef.current = false; };
 	}, []);
 
-	const submit = () => {
+	const submit = (moveOn = false) => {
 		if (compactionRunning || paused || finishingSubmissionRef.current) return;
 		const recording = isDictationActive();
 		// A voice-only free response is still buffered until finish(). Only
 		// the current target may finish it; select questions still need a choice.
-		if ((!canSubmit && !(qd.mode === "text" && dictationClaim && recording)) || (recording && !dictationClaim)) return;
+		if (recording && !dictationClaim) return;
+		if (!moveOn && !canSubmit && !(qd.mode === "text" && recording)) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while
 		 * a run is live with reasoning still in Deepgram's hands. Stop the
 		 * run, let the last finals land in the target field, and only then
@@ -429,29 +481,20 @@ function QuestionDockForm({
 		 * forgotten stop. The field values below come from the REF mirrors
 		 * because the flush lands via setState after an await. */
 		if (!recording) {
-			doSubmit();
+			doSubmit(moveOn);
 			return;
 		}
 		finishingSubmissionRef.current = true;
-		void finishDictation().then(() => doSubmit(true)).finally(() => { finishingSubmissionRef.current = false; });
+		void finishDictation().then(() => doSubmit(moveOn, true)).finally(() => { finishingSubmissionRef.current = false; });
 	};
-	const doSubmit = (requireDictationClaim = false) => {
+	const doSubmit = (moveOn: boolean, requireDictationClaim = false) => {
 		const latest = submissionStateRef.current;
 		if (!mountedRef.current || latest.paused || latest.compactionRunning || (requireDictationClaim && !latest.dictationClaim)) return;
 		// State in the pre-finish closure can still be empty. Validate the ref
 		// updated by the transcript flush, and never submit an empty recording.
-		if (qd.mode === "text" ? !answerTextRef.current.trim() && !molecule : !canSubmit) return;
-		const req: AnswerRequest = {
-			dontKnow: sel.dontKnow,
-			values: [...sel.selected].map((i) => qd.options[i]!.value),
-			other: sel.otherSelected ? other : undefined,
-			text: qd.mode === "text" ? answerTextRef.current : undefined,
-			molecule: qd.mode === "text" ? molecule : undefined,
-			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
-			// Always sent on quiz answers (owner: 50 must mean 50, never
-			// "untouched"); buildAnswer drops it on "I don't know".
-			confidence: kind === "quiz" ? CONFIDENCE_STOPS[confIdx] : undefined,
-		};
+		if (!moveOn && (qd.mode === "text"
+			? !sel.dontKnow && !answerTextRef.current.trim() && !molecule && !(choicesShown && sel.selected.size > 0)
+			: !canSubmit)) return;
 		// Snapshot before optimistic submission unmounts the form. Ref values
 		// include the dictation finals that just landed, unlike stale closures.
 		onSaveDraft?.({
@@ -461,7 +504,25 @@ function QuestionDockForm({
 			text: answerTextRef.current,
 			molecule,
 			confidenceIndex: confIdx,
+			choicesShown,
+			topicFeedback: feedback,
 		});
+		if (moveOn) {
+			onSubmit(dismissedAnswer(qd.kind, qd.question));
+			return;
+		}
+		const req: AnswerRequest = {
+			dontKnow: sel.dontKnow,
+			values: [...sel.selected].map((i) => qd.options[i]!.value),
+			other: sel.otherSelected ? other : undefined,
+			text: qd.mode === "text" && !sel.dontKnow ? answerTextRef.current : undefined,
+			molecule: qd.mode === "text" && !sel.dontKnow ? molecule : undefined,
+			thinking: qd.mode !== "text" ? thinkingTextRef.current.trim() || undefined : undefined,
+			choicesShown: choicesShown ? true : undefined,
+			topicFeedback,
+			// The resting confidence is a real 50. buildAnswer drops it on "I don't know".
+			confidence: hasConfidence ? CONFIDENCE_STOPS[confIdx] : undefined,
+		};
 		onSubmit(buildAnswer(qd, req, toolName));
 	};
 
@@ -533,7 +594,7 @@ function QuestionDockForm({
 		if (!active || rowCount === 0) return;
 		const onKeyDown = (e: KeyboardEvent) => {
 			const t = e.target as HTMLElement | null;
-			if (e.defaultPrevented || document.querySelector("dialog[data-chemistry-dialog][open]") || t?.closest?.("[data-chemistry-interactive]")) return;
+			if (e.defaultPrevented || document.querySelector("dialog[data-chemistry-dialog][open]") || t?.closest?.("[data-chemistry-interactive], [data-question-control]")) return;
 			// A TYPING field is where keys mean text (owner round 4): the
 			// thinking/answer fields, search boxes, renames — never a range
 			// input, whose focus after a click or drag must not kill the
@@ -551,7 +612,7 @@ function QuestionDockForm({
 			// global ←/→ own its keyboard, so it never joins the chain.
 			// Shift+Tab falls through (the global thinking-level cycle owns
 			// it), so the shift check matters.
-			if (e.key === "Tab" && !e.shiftKey && !modded) {
+			if (e.key === "Tab" && !e.shiftKey && !modded && !focused) {
 				e.preventDefault();
 				e.stopPropagation();
 				if (t?.closest?.("[data-kbdrow]")) thinkingRef.current?.focus();
@@ -584,12 +645,7 @@ function QuestionDockForm({
 				// (the slider grays out and nothing is sent).
 				if (kind !== "quiz" || sel.dontKnow) return;
 				e.preventDefault();
-				setConfIdx((i) =>
-					Math.min(
-						CONFIDENCE_STOPS.length - 1,
-						Math.max(0, i + (e.key === "ArrowRight" ? 1 : -1)),
-					),
-				);
+				moveConfidence(e.key);
 			} else if (e.key === " ") {
 				if (kbdIdx === null) return; // plain Space keeps scrolling the page
 				e.preventDefault();
@@ -639,6 +695,42 @@ function QuestionDockForm({
 				{qd.context && (
 					<div className="mb-3 text-sm text-muted-foreground">
 						<ToolContentResponse>{qd.context}</ToolContentResponse>
+					</div>
+				)}
+
+				{(hasChoiceHints || (kind === "explain" && (focused || sel.dontKnow))) && (
+					<div className="space-y-2 pb-2" data-question-control>
+						<div className="flex flex-wrap gap-2">
+							{hasChoiceHints && (
+								<Button type="button" variant="outline" size="sm" aria-controls={choiceListId} aria-expanded={choicesShown}
+									aria-disabled={choicesShown} onClick={() => { if (!choicesShown) showChoices(); }}>
+									{choicesShown ? "Choices shown" : "Show choices"}
+								</Button>
+							)}
+							{(focused || sel.dontKnow) && (
+								<Button type="button" variant={sel.dontKnow ? "secondary" : "outline"} size="sm" aria-pressed={sel.dontKnow}
+									onClick={() => setSel((previous) => ({ ...emptyDockSelection(), dontKnow: !previous.dontKnow }))}>
+									I don’t know
+								</Button>
+							)}
+							{(focused || hasChoiceHints) && (
+								<Button type="button" variant="ghost" size="sm" disabled={paused || compactionRunning}
+									onClick={() => submit(true)}>
+									Move on
+								</Button>
+							)}
+						</div>
+						{hasChoiceHints && choicesShown && (
+							<div id={choiceListId} role="group" aria-label="Answer choices" className="grid gap-2">
+								{qd.options.map((option, index) => (
+									<button key={option.value} type="button" aria-pressed={sel.selected.has(index)}
+										onClick={() => setSel((previous) => previous.selected.has(index) ? emptyDockSelection() : toggleOption("single-select", previous, index))}
+										className={cn("rounded-lg border px-3 py-2 text-left text-sm hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring", sel.selected.has(index) && "border-primary bg-accent")}>
+										<ToolContentResponse>{option.label}</ToolContentResponse>
+									</button>
+								))}
+							</div>
+						)}
 					</div>
 				)}
 
@@ -816,7 +908,7 @@ function QuestionDockForm({
 				app-wide). Clicking and dragging are native. "I don't know"
 				GRAYS it out — the layout holds, no value is sent, the IDK
 				signal stands alone. */}
-			{kind === "quiz" && (
+			{hasConfidence && (
 				<div className="border-t border-border/60 px-4 py-2.5">
 					<div className="flex items-center gap-3">
 						<span
@@ -825,7 +917,7 @@ function QuestionDockForm({
 								sel.dontKnow ? "text-muted-foreground/50" : "text-muted-foreground",
 							)}
 						>
-							Confidence
+							{focused || hasChoiceHints ? "Answer confidence" : "Confidence"}
 						</span>
 						<div
 							className={cn("relative h-4 min-w-0 flex-1", sel.dontKnow && "opacity-40")}
@@ -854,10 +946,15 @@ function QuestionDockForm({
 								step={1}
 								value={CONFIDENCE_STOPS[confIdx]}
 								disabled={sel.dontKnow}
-								aria-label="Confidence — the probability your selected answer is correct"
+								aria-label={hasChoiceHints ? "Answer confidence — the probability your selected answer is correct" : "Confidence — the probability your selected answer is correct"}
 								aria-valuetext={`${CONFIDENCE_STOPS[confIdx]} percent`}
 								title="The probability your selected answer is correct — 50% is a coin flip. Adjust with ←/→."
 								data-testid="confidence-slider"
+								onKeyDown={(event) => {
+									if (kind !== "explain" || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+									event.preventDefault();
+									moveConfidence(event.key);
+								}}
 								onChange={(e) => {
 									// Snap to the nearest stop; the rendered VALUE is the stop's own
 									// percent, so the thumb always rests at its true fraction (50 =
@@ -894,6 +991,8 @@ function QuestionDockForm({
 				</div>
 			)}
 
+			{(focused || topicFeedback) && <TopicFeedbackControl value={feedback} onChange={setFeedback} />}
+
 			{/* The learner's half of the dock — a composer TWIN: a labeled, bordered
 			    field with Submit docked inside, exactly like the chat composer's
 			    send. Select modes get "Your thinking" (Enter makes a newline — it
@@ -922,6 +1021,7 @@ function QuestionDockForm({
 							onValueChange={(value) => {
 								answerTextRef.current = value;
 								setText(value);
+								if (sel.dontKnow) setSel((previous) => ({ ...previous, dontKnow: false }));
 							}}
 							onKeyDown={(e) => {
 								// Esc ends dictation (the dictate decisions: click-again
@@ -940,7 +1040,7 @@ function QuestionDockForm({
 									submit();
 								}
 							}}
-							placeholder="Type your answer…"
+							placeholder={choicesShown ? "Type an answer or add your reasoning…" : "Type your answer…"}
 							className="field-sizing-content lh-input max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 						/>
 					) : (

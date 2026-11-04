@@ -390,7 +390,7 @@ Keep original assigned questions distinct from generated examples and prerequisi
 Write the summary with EXACTLY these sections, in this order:
 
 ## The learner's understanding
-The most detailed picture you can give of what this learner knows and how that EVOLVED across the session: what they answered and how well (quiz outcomes, correct reasoning, mistakes), their stated or displayed confidence, misconceptions that surfaced, which were corrected and which still stand. This section carries the most weight — future teaching decisions hang on it.
+The most detailed picture you can give of what this learner knows and how that EVOLVED across the session: what they answered and how well (quiz outcomes, correct reasoning, mistakes), their stated or displayed confidence, misconceptions that surfaced, which were corrected and which still stand. When choices were revealed, record the help received. Preserve any stated topic relevance and stimulation that should guide later teaching separately from performance. This section carries the most weight — future teaching decisions hang on it.
 
 ## The teaching arc
 How the session progressed: what was covered and in what order, which explanations landed and which didn't, how the learner responded, where the momentum went. Include probe-phase findings if present.${assignmentContext}

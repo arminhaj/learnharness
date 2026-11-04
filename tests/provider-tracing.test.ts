@@ -41,7 +41,7 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 	it("preserves all secret exclusions and excludes only the additional local chemistry environment", () => {
 		assert.deepEqual(patterns, ["**/data/**/*", "auth.json", "chatgpt-credentials.json*", "github-copilot-credentials.json*", "xai-credentials.json*", ".env*", ".venv-chemistry/**/*"]);
 	});
-	it("retains the narrow native-Turbopack closure and adds only the bounded chemistry runtime", () => {
+	it("limits tracing to the runtime dependencies and prompt assets", () => {
 		assert.deepEqual(nextConfig.outputFileTracingIncludes!["*"], [
 			"node_modules/@puppeteer/browsers/lib/browser-data/**/*.js",
 			"node_modules/pdfjs-dist/legacy/**/*",
@@ -49,6 +49,7 @@ describe("standalone JavaScript tracing exclusions and native workaround policy"
 			"node_modules/@napi-rs/canvas-*/**/*",
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
+			"src/agent/prompts/focused.md",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			"node_modules/@resvg/resvg-js-*/**/*",
 			"node_modules/@earendil-works/pi-ai/dist/providers/data/**/*",

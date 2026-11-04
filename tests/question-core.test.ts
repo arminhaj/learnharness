@@ -717,6 +717,30 @@ describe("buildAnswer / formatAnswerMessage: explain", () => {
 		assert.ok(!("questionText" in compact));
 	});
 
+	it("records an assisted response and its ratings without leaking unrevealed choices", () => {
+		const question = { ...explainQD(), options: normalizeOptions([{ label: "One" }, { label: "Two" }]) };
+		const unaided = buildAnswer(question, { text: "One", values: ["One"] });
+		assert.deepEqual(unaided.options, []);
+		assert.deepEqual(compactAnswerForModel(unaided), { kind: "explain", text: "One" });
+
+		const assisted = buildAnswer(question, {
+			choicesShown: true,
+			values: ["One"],
+			confidence: 70,
+			topicFeedback: { relevance: "core", challenge: "too_hard", madeMeThink: true },
+		});
+		assert.deepEqual(compactAnswerForModel(assisted), {
+			kind: "explain",
+			answers: [{ index: 1, label: "One" }],
+			confidence: 70,
+			choicesShown: true,
+			topicFeedback: { relevance: "core", challenge: "too_hard", madeMeThink: true },
+		});
+		assert.deepEqual(compactAnswerForModel(buildAnswer(question, {
+			dontKnow: true, topicFeedback: { relevance: "core" },
+		})), { kind: "explain", dontKnow: true, topicFeedback: { relevance: "core" } });
+	});
+
 });
 
 // ─── the question's role: predict vs check (owner 2026-10-03) ─────────────
