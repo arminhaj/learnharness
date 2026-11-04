@@ -184,7 +184,7 @@ function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types
 function explainDescription(name: "explain" | "recall", nodeId: boolean, focused = false): string {
 	return (
 		(focused
-			? "Ask a graded question that starts as free response. Optional choiceHints become visible only on request. "
+			? "Ask a graded question that starts as free response. Include choiceHints with every question; they become visible only on request. "
 			: "Ask the learner to EXPLAIN something in his own words — a graded check with NO options: he types a free-text answer. ") +
 		"Unlike ask_user_question (no right answer), " +
 		name +
@@ -317,6 +317,7 @@ export function createProberTools(
 		...probeExplainTool,
 		description: explainDescription("recall", false, true),
 		parameters: focusedRecallInputSchema,
+		prepareArguments: prepareQuestionArguments,
 	};
 	// The armed quizzing tool, widened to the registry's heterogeneous
 	// AgentTool record BEFORE the filter (a conditional spread of two

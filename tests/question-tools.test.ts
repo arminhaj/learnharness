@@ -32,6 +32,7 @@ import { probeQuizInputSchema, quizInputObject, quizInputProblems } from "../src
 import { chatStore } from "../src/store/chats.ts";
 import { PATHS } from "../config.ts";
 import { composeInstructions } from "../src/agent/teacher-agent.ts";
+import { parseExplainInput } from "../src/core/tool-parts.ts";
 
 const dataDir = path.join(PATHS.root, "data");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -319,7 +320,7 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 		);
 	});
 
-	it("enables the focused prompt and assisted recall only in the Focused configuration", () => {
+	it("requires hidden choices when authoring a Focused check and still reads older questions", () => {
 		const ctx = { chatId: newChat("Focused lesson"), chatStore, deliver: () => {}, jobStore, spawn: () => {} };
 		const original = { explain: true };
 		const focus = "focused";
@@ -329,8 +330,20 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 		] as const) {
 			assert.equal(composeInstructions(kind, {}, "original"), composeInstructions(kind));
 			assert.match(composeInstructions(kind, {}, focus), /## Focused teaching configuration/);
-			assert.equal(makeTools(ctx, original, "original")[name]!.parameters.properties.choiceHints, undefined);
-			assert.ok(makeTools(ctx, original, focus)[name]!.parameters.properties.choiceHints);
+			const originalSchema = makeTools(ctx, original, "original")[name]!.parameters;
+			const focusedSchema = makeTools(ctx, original, focus)[name]!.parameters;
+			const question = {
+				question: "What is twice five?",
+				correctAnswer: "Ten.",
+				...(kind === "teacher" ? { type: "check", nodeId: "doubling" } : {}),
+			};
+			const choiceHints = [{ label: "Ten" }, { label: "Seven" }];
+			assert.equal(Value.Check(originalSchema, question), true);
+			assert.equal(originalSchema.properties.choiceHints, undefined);
+			assert.equal(Value.Check(focusedSchema, question), false);
+			assert.equal(Value.Check(focusedSchema, { ...question, choiceHints }), true);
+			assert.equal(parseExplainInput(question)?.question, question.question);
+			assert.deepEqual(parseExplainInput({ ...question, choiceHints })?.choiceHints, choiceHints);
 		}
 		assert.equal(composeInstructions("practice", {}, focus), composeInstructions("practice"));
 	});
