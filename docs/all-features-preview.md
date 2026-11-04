@@ -15,7 +15,7 @@ The node graph overhaul is merged into `main`. Learning history, the Coding work
 - After submitting an answer, look for feedback on your reasoning before optional research or preparation for the next question.
 - After answering, inspect automatic understanding updates and their source links. Evidence from an inline exploration should open the exact passage inside its parent lesson. Reading an explanation alone does not mark a concept understood.
 - Open **Learning history** in the sidebar, or select a passage in a teaching session and choose **Mark this moment**. See [learning history](learning-history.md) for analysis, speech cleanup, and source attribution.
-- Choose **Coding** in the sidebar to open guided C++ exercises with hints, references, and runnable checks. Choose **Add two integers** or **Borrow a book** in the workspace. See [code workspaces](code-workspaces.md) for compiler and local execution requirements.
+- Choose **Coding** in the sidebar, enter a learning goal, and generate a **Problem** or **Project** workspace with starter code, hints, references, and runnable C++ checks. The **Examples** link opens the prepared exercises. See [code workspaces](code-workspaces.md) for compiler and local execution requirements.
 - Open `/chemistry` to try molecular drawings, editable structure answers, and rotatable 3D views. Questions and practice problems preserve both molecular answers and code submissions. See [chemistry setup](../README.md#chemistry-interface) for the optional local Python RDKit setup required to generate 3D conformers.
 
 ## Desktop launch

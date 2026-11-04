@@ -1,6 +1,10 @@
 # Coding workspace and runnable exercises
 
-Open **Coding** from the sidebar for guided exercises with starter code, hints, reference material, and runnable tests. No model connection is needed. The exercise links are grouped by language. Save edits before switching exercises to keep working from the saved file when you return.
+Open **Coding** from the sidebar and describe what you want to learn. Choose **Problem** for a focused algorithm exercise or **Project** to implement one feature in a small runnable project. Choose a language and select **Generate workspace**. Generation uses your configured strong model and saves the workspace under **Recent workspaces**.
+
+For a project based on an existing codebase, select the relevant text files as context. LearnHarness sends those files to your configured model and builds a separate exercise. Review the generated source and supporting files before running the checks. The exercise identifies simulated APIs or services.
+
+**Examples** contains prepared exercises grouped by language. They work without a model connection. Save edits before switching workspaces to keep working from the saved file when you return.
 
 Editors start in Vim Normal mode: use `h/j/k/l` to move, `i` to insert, `Esc` or `Ctrl+[` to return to Normal, `v` for Visual mode, `u` to undo, and `/` to search. The status bar shows the current mode. In Insert mode, Enter inserts a newline and Tab indents. Cmd/Ctrl+Enter checks the exercise.
 

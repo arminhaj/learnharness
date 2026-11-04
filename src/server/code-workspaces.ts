@@ -7,6 +7,8 @@ import { CODE_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExer
 import { activeProblemOf } from "../core/native-messages.ts";
 import { chatStore } from "../store/chats.ts";
 import { codeFilename, runCodeExercise } from "./code-runner.ts";
+import { getCodingSession } from "./coding-sessions.ts";
+import type { CodingProjectFile } from "../core/coding-session.ts";
 import { desktopAPIAuthorized } from "./desktop-access.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 
@@ -55,7 +57,14 @@ function writeAtomic(file: string, text: string) {
 	} finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
-function activeExercise(chatId: string, problemCallId: string): CodeExercise {
+type WorkspaceExercise = CodeExercise & { supportFiles?: CodingProjectFile[] };
+
+function activeExercise(chatId: string, problemCallId: string): WorkspaceExercise {
+	if (chatId === "coding") {
+		const session = getCodingSession(problemCallId);
+		if (!session) throw new CodeWorkspaceError("This coding workspace does not exist.", 404);
+		return { ...session.exercise, supportFiles: session.supportFiles };
+	}
 	if (chatId === "demo" && problemCallId === "cpp-sum") return CODE_DEMO_EXERCISE;
 	const chat = chatStore.getChat(chatId);
 	if (!chat) throw new CodeWorkspaceError("This chat no longer exists.", 404);
@@ -104,15 +113,17 @@ export async function openCodeEditor(file: string, editor: CodeEditor): Promise<
 
 export function createCodeWorkspaceService(options: {
 	directory: string;
-	getExercise: (chatId: string, problemCallId: string) => CodeExercise;
+	getExercise: (chatId: string, problemCallId: string) => WorkspaceExercise;
 	runner?: typeof runCodeExercise;
 	openEditor?: typeof openCodeEditor;
 }) {
 	const running = new Set<string>();
 	function files(chatId: string, problemCallId: string) {
 		if (!validId(chatId) || !validId(problemCallId)) throw new CodeWorkspaceError("Invalid chat or problem identifier.");
-		const exercise = parseCodeExercise(options.getExercise(chatId, problemCallId));
-		const exerciseHash = digest(JSON.stringify(exercise));
+		const setup = options.getExercise(chatId, problemCallId);
+		const exercise = parseCodeExercise(setup);
+		const supportFiles = setup.supportFiles ?? [];
+		const exerciseHash = digest(JSON.stringify(supportFiles.length ? { exercise, supportFiles } : exercise));
 		// Providers can reuse tool-call IDs. A changed exercise gets a fresh directory.
 		const id = digest(`${chatId}\0${problemCallId}\0${exerciseHash}`);
 		const directory = path.join(options.directory, id);
@@ -127,12 +138,21 @@ export function createCodeWorkspaceService(options: {
 			if (!fs.existsSync(sourceFile)) fs.writeFileSync(sourceFile, exercise.starterCode, { encoding: "utf8", mode: 0o600, flag: "wx" });
 			const flagsFile = path.join(directory, "compile_flags.txt");
 			if (!fs.existsSync(flagsFile)) fs.writeFileSync(flagsFile, "-std=c++20\n-Wall\n-Wextra\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+			for (const file of supportFiles) {
+				const target = path.join(directory, file.path);
+				if (!fs.existsSync(target)) fs.writeFileSync(target, file.source, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			}
 			writeAtomic(metadataFile, JSON.stringify(metadata));
 		} else {
 			metadata = JSON.parse(safeRead(metadataFile, 16 * 1024)) as Metadata;
 			if (metadata.id !== id || metadata.chatId !== chatId || metadata.problemCallId !== problemCallId || metadata.exerciseHash !== exerciseHash) throw new CodeWorkspaceError("The exercise changed. Start a new code problem before creating another workspace.", 409);
 		}
-		return { id, directory, metadataFile, sourceFile, metadata, exercise };
+		for (const file of supportFiles) {
+			if (safeRead(path.join(directory, file.path), CODE_SOURCE_LIMIT) !== file.source) {
+				throw new CodeWorkspaceError(`Restore the supplied contents of ${file.path} before checking the workspace.`, 409);
+			}
+		}
+		return { id, directory, metadataFile, sourceFile, metadata, exercise, supportFiles };
 	}
 	function readRun(state: ReturnType<typeof files>, runId: string): CodeRunResult {
 		if (!/^[0-9a-f-]{36}$/.test(runId)) throw new CodeWorkspaceError("Invalid code check identifier.");
@@ -165,7 +185,13 @@ export function createCodeWorkspaceService(options: {
 		if (command.expectedRevision && command.expectedRevision !== current.revision) throw new CodeWorkspaceError("The saved file changed. Reload it before checking.", 409);
 		running.add(state.id);
 		try {
-			const run = await (options.runner ?? runCodeExercise)({ workspaceId: state.id, source: current.source, revision: current.revision, exercise: state.exercise }, { signal });
+			const run = await (options.runner ?? runCodeExercise)({
+				workspaceId: state.id, source: current.source, revision: current.revision, exercise: state.exercise,
+				supportFiles: state.supportFiles,
+				...(state.supportFiles.length > 0
+					? { compileSources: [current.filename, ...state.supportFiles.filter(file => file.path.endsWith(".cpp")).map(file => file.path)] }
+					: {}),
+			}, { signal });
 			// Re-resolve active ownership and directory safety after the asynchronous run.
 			const latest = files(command.chatId, command.problemCallId);
 			if (latest.id !== state.id) throw new CodeWorkspaceError("The active exercise changed while this check was running. Check the new exercise instead.", 409);
