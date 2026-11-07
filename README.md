@@ -31,6 +31,8 @@ Instead of just giving you an explanation, it uses your answers and thinking to 
 
 **Think out loud.** The thinking fields let you explain your reasoning, uncertainties, and reactions in your own words. This is how the agent gets a detailed picture rather than just a record of right and wrong answers. You can type or use dictation.
 
+Choose **Settings → Agent → Teaching configuration → Mad Max** to reduce repeated questions. It builds on Focused and uses reasoning you have already demonstrated to skip equivalent checks across related topics. The tutor asks a targeted question when a new distinction or uncertainty would change what to teach next, and revisits an inference if later answers contradict it. Inferred transfer alone does not count as proven mastery or completed work. Assigned problem sets and Practice keep their completion requirements.
+
 The agent can also research questions in the background, create visual explanations, and build interactive demonstrations.
 
 ## Knowledge that carries forward
@@ -143,6 +145,40 @@ NODE_ENV=test node --import tsx --test tests/chemistry*.test.ts tests/render-che
 The engine tests exercise invalid inputs, charge/isotope/stereo round trips, coordinate-source consistency, and API errors. Real conformer tests cover relative-energy ranking, both chair basins, independent ring-geometry fixtures, stereochemistry rejection, convergence, deduplication, and common coordinate alignment. They run when the configured or project-local Python runtime exists, otherwise they are skipped. Viewer tests cover conformer selection, imported-coordinate searches, stale responses, and keyboard isolation. Browser checks additionally cover drawing layout, editor save/reopen, and rendered 3D interaction.
 
 The chemistry integrations use [RDKit](https://github.com/rdkit/rdkit) (BSD-3-Clause), [Ketcher](https://github.com/epam/ketcher) and its Indigo engine (Apache-2.0), and [3Dmol.js](https://github.com/3dmol/3Dmol.js) (BSD-3-Clause). Asset preparation includes their copyright and license notices. Versioned upstream copies and provenance are in [third-party/chemistry](third-party/chemistry/README.md); preserve these notices when redistributing the application and prepared assets.
+
+## Backend activity traces
+
+Set `LH_ACTIVITY_TRACE=1` before starting the server to record correlated chat,
+turn, model-request, tool, and background-job activity. Add
+`LH_ACTIVITY_TRACE_SUMMARIES=1` to include available provider reasoning summaries.
+These flags do not change the model, thinking level, speed, or request payload.
+
+```bash
+LH_ACTIVITY_TRACE=1 LH_ACTIVITY_TRACE_SUMMARIES=1 npm run dev
+```
+
+JSONL files are written to the configured data directory's
+`debug/activity-traces/trace_<id>.jsonl`. Each record includes a wall-clock
+timestamp (`t`, epoch milliseconds), monotonic `elapsedMs`, and trace/span/parent
+identities. Events cover local preparation and compaction, request dispatch and
+headers, provider state and reasoning-summary arrivals, first text, tool and job
+execution, usage, and terminal status. Requested and returned processing tiers
+are recorded separately when available. Background job spans carry their job ID.
+
+The recorder batches writes asynchronously, caps each file at 8 MB, and prunes
+to 50 files and seven days of inactivity when writing. Files use owner-only
+permissions. Summary capture is capped at 64K characters per request span;
+truncation, file caps, and dropped records
+are explicitly marked. The default metadata-only mode excludes prompts,
+structures, tool arguments/results, credentials, encrypted reasoning, and private
+reasoning-text events. With summary capture enabled, returned summary content
+can contain details from the study session.
+
+These timestamps measure when the harness observes events. Summaries can be
+buffered, and a reasoning-item span is not a measurement of GPU compute time.
+Provider queueing, input processing, and internal reasoning may remain partly
+opaque. Logging failures never interrupt generation. The older
+`LH_PROVIDER_EVENTS` raw-protocol recorder remains separate.
 
 ## License
 

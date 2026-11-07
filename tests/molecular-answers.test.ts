@@ -6,6 +6,7 @@ import { buildAnswer, compactAnswerForModel, type QuestionData } from "../src/co
 import { sessionMarkdown } from "../src/core/session-markdown.ts";
 import { normalizeMolecule, normalizeMoleculeDocument } from "../src/server/chemistry.ts";
 import type { MoleculeDocument } from "../src/core/chemistry.ts";
+import { curvedArrowsDocument, curvedArrowsKet, ethanolKet } from "./fixtures/curved-arrows.ts";
 
 const ethanol = await normalizeMolecule({ smiles: "CCO" });
 
@@ -65,26 +66,29 @@ describe("molecular answer records", () => {
 	});
 
 	it("carries actual structural source and reasoning into tutor context and portable export", () => {
-		const message = newThinkingMessage("call1", "The hydroxyl is terminal.", undefined, { ...ethanol, ket: '{"root":{}}' });
+		const message = newThinkingMessage("call1", "The hydroxyl is terminal.", undefined, curvedArrowsDocument);
 		const model = JSON.stringify(toLlmMessages(asAgentMessages([message])));
 		assert.match(model, /The hydroxyl is terminal/);
 		assert.match(model, /Submitted molecular structure/);
 		assert.match(model, /molfile/);
-		assert.doesNotMatch(model, /ket/);
+		assert.match(model, /elliptical-arc-arrow-open-angle/);
+		assert.match(model, /elliptical-arc-arrow-open-half-angle/);
 		const markdown = sessionMarkdown([message]);
 		assert.match(markdown, /The hydroxyl is terminal/);
 		const source = JSON.parse(markdown.match(/```molecule\n([^\n]+)\n```/)![1]!);
-		assert.equal(source.molfile, ethanol.molfile);
+		assert.equal(source.molfile, curvedArrowsDocument.molfile);
 		assert.equal(source.smiles, ethanol.smiles);
+		assert.equal(source.ket, curvedArrowsKet);
 	});
 
 	it("free-response answers include structures without changing multiple-choice grading", () => {
-		const draft = { ...ethanol };
+		const draft = { ...curvedArrowsDocument };
 		const answer = buildAnswer(question, { molecule: draft });
 		draft.smiles = "wrong client-side mutation";
 		assert.equal(answer.molecule?.smiles, "CCO");
 		assert.equal(answer.correct, undefined);
 		assert.match(String(compactAnswerForModel(answer).molecule), /molfile/);
+		assert.match(String(compactAnswerForModel(answer).molecule), /elliptical-arc-arrow-open-half-angle/);
 		const quiz = buildAnswer({ ...question, kind: "quiz", mode: "single-select", options: [{ value: "a", label: "A" }], correctIndices: [1] }, { molecule: ethanol, values: ["a"] });
 		assert.equal(quiz.correct, true);
 		assert.equal(quiz.molecule, undefined);
@@ -100,9 +104,9 @@ describe("molecular answer records", () => {
 	});
 
 	it("normalizes identity from Molfile and preserves editor document independently", async () => {
-		const normalized = await normalizeMoleculeDocument({ ...ethanol, smiles: "c1ccccc1", ket: '{"root":{}}' });
+		const normalized = await normalizeMoleculeDocument({ ...ethanol, smiles: "c1ccccc1", ket: ethanolKet });
 		assert.equal(normalized.smiles, "CCO");
-		assert.equal(normalized.ket, '{"root":{}}');
+		assert.equal(normalized.ket, ethanolKet);
 		assert.match(normalized.molfile, /M  END/);
 		await assert.rejects(() => normalizeMoleculeDocument({ ...ethanol, molfile: "broken structure" }));
 	});

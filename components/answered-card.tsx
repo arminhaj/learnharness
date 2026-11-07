@@ -11,6 +11,7 @@ import { ToolContentResponse } from "@/components/ai-elements/message";
 import type { QuestionAnswerData } from "@/src/core";
 import { answerForPresentation, isTopicFeedback, parseAskInput, parseQuizInput, TOPIC_CHALLENGE_LABELS, TOPIC_RELEVANCE_LABELS } from "@/src/core";
 import { MoleculeFigure } from "@/components/chemistry/molecule-figure";
+import { CodeCheckResults } from "@/components/code-workbench";
 
 /**
  * Static rendering of an answered question (tool part in `output-available`).
@@ -164,6 +165,7 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 			)}
 
 			{answer.text && <div className="lh-prose mt-2 whitespace-pre-wrap">{/^`{3,}/.test(answer.text) ? <LearnerText text={answer.text} /> : <>“<PathText text={answer.text} />”</>}</div>}
+			{answer.codeResult && <div className="mt-3"><CodeCheckResults result={answer.codeResult} /></div>}
 			{answer.molecule && (
 				<div className="mt-3" data-testid="answered-molecule">
 					<div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your structure</div>

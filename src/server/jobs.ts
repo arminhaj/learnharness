@@ -1,3 +1,4 @@
+import { teachingPausedByLearner } from "../core/teaching-flow.ts";
 /**
  * THE WAKE PIPELINE (contracts.ts "THE ASYNC PROTOCOL" §4) — server-side
  * steer delivery for finished sub-agent jobs. Wave C (2026-09-26):
@@ -60,6 +61,7 @@
 import {
 	buildAbortSteer,
 	buildSubagentSteer,
+	hasJobRetry,
 	isSubagentFailure,
 	steerDelivered,
 	type JobRecord,
@@ -200,6 +202,52 @@ function completeEntry(chatId: string, entry: QueuedSteer): void {
 	entry.resolve();
 }
 
+/** A retry link is durable before the source's delivery patch. Checking it
+ * also closes that crash window without treating unrelated duplicate jobs
+ * for a tool call as retries. */
+function deliverySuperseded(job: JobRecord): boolean {
+	return job.delivery?.status === "superseded" || hasJobRetry(job, stores.jobStore.listJobs(job.chatId));
+}
+
+/** In-flight cargo already belongs to its wake/live agent and cannot be
+ * retracted by deleting a registry entry. Retry admission checks this before
+ * synchronously creating its new attempt. The caller owns the turn gate. */
+export function canSupersedeJobDelivery(jobId: string): boolean {
+	const job = stores.jobStore.getJob(jobId);
+	if (!job) return false;
+	return !(state().queues.get(job.chatId) ?? []).some(entry =>
+		jobIdOf(entry.steer) === jobId && (entry.waking || entry.handedTo));
+}
+
+/** Retire one failed attempt's delivery, preserving its worker outcome,
+ * usage and saved transcript. This resolves waiting delivery callers without
+ * claiming that the old failure was delivered to the teacher. */
+export function supersedeJobDelivery(jobId: string): void {
+	const job = stores.jobStore.getJob(jobId);
+	if (!job) return;
+	if (!canSupersedeJobDelivery(jobId)) throw new Error("Job delivery is already in flight");
+	if (job.delivery?.status === "pending") {
+		stores.jobStore.updateJob(jobId, { delivery: { ...job.delivery, status: "superseded" } });
+	}
+	for (const entry of [...(state().queues.get(job.chatId) ?? [])]) {
+		if (jobIdOf(entry.steer) !== jobId) continue;
+		removeEntry(job.chatId, entry);
+		entry.resolve();
+	}
+}
+
+/** Recovery and registration may discover a retry whose source patch was
+ * interrupted. Retire only unclaimed cargo; claimed cargo is reconciled at
+ * settlement and is never handed to another vehicle. */
+function pruneSupersededDeliveries(chatId: string): void {
+	for (const entry of [...(state().queues.get(chatId) ?? [])]) {
+		const id = jobIdOf(entry.steer);
+		const job = id ? stores.jobStore.getJob(id) : null;
+		if (!job || !deliverySuperseded(job) || entry.waking || entry.handedTo) continue;
+		supersedeJobDelivery(job.id);
+	}
+}
+
 /** Deletion discards the session's obligations, never wakes a deleted chat. */
 export function discardChatDeliveries(chatId: string): void {
 	const s = state();
@@ -221,6 +269,12 @@ function finalizeSteer(steer: SteerMessage): void {
  * wake-acceptance/error semantics. Workers never await this promise. */
 export function deliverJobResult(steer: SteerMessage): Promise<void> {
 	const chatId = chatIdOf(steer);
+	const id = jobIdOf(steer);
+	const job = id ? stores.jobStore.getJob(id) : null;
+	if (job && deliverySuperseded(job)) {
+		if (canSupersedeJobDelivery(job.id)) supersedeJobDelivery(job.id);
+		return Promise.resolve();
+	}
 	const entry = queueSteer(chatId, steer);
 	void pump(chatId);
 	return entry.promise;
@@ -256,12 +310,16 @@ export function automaticFollowUpAllowed(chatId: string, agent?: Agent): boolean
 }
 
 function handOffEligible(chatId: string, agent: Agent): void {
+	pruneSupersededDeliveries(chatId);
 	const queue = state().queues.get(chatId);
 	// Keep automatic results in their owning registry. Never mix them into a
 	// foreground batch without express account consent. Learner steers below
 	// remain deliverable, including the first poll of an answer run.
 	if (automaticFollowUpAllowed(chatId, agent) && queue && queue.length > 0) {
 		for (const entry of queue) {
+			const id = jobIdOf(entry.steer);
+			const job = id ? stores.jobStore.getJob(id) : null;
+			if (job && deliverySuperseded(job)) continue;
 			if (!entry.waking && !entry.deferred && entry.handedTo !== agent && entry.steer.customType !== "probe-handoff") {
 				agent.steer(entry.steer);
 				entry.handedTo = agent;
@@ -381,7 +439,12 @@ export function settleSteers(chatId: string, persisted: { id?: string }[], faile
 	const deliveredIds = new Set(persisted.map((m) => m.id).filter(Boolean));
 	const remaining: QueuedSteer[] = [];
 	for (const entry of queue) {
-		if (deliveredIds.has(entry.steer.id)) {
+		const id = jobIdOf(entry.steer);
+		const job = id ? stores.jobStore.getJob(id) : null;
+		if (job && deliverySuperseded(job)) {
+			if (job.delivery?.status === "pending") stores.jobStore.updateJob(job.id, { delivery: { ...job.delivery, status: "superseded" } });
+			entry.resolve();
+		} else if (deliveredIds.has(entry.steer.id)) {
 			finalizeSteer(entry.steer);
 			entry.resolve();
 		} else {
@@ -498,6 +561,7 @@ async function pump(chatId: string): Promise<void> {
 			// Idempotent delivery: the transcript already carries these steers
 			// (an in-run injection persisted, a wake completed, or a duplicate
 			// deliver raced in). Resolve and flip without re-firing anything.
+			pruneSupersededDeliveries(chatId);
 			noteSteersDurable(chatId, record.messages);
 			const stillPending = (s.queues.get(chatId) ?? []).filter((entry) => !entry.waking && !entry.deferred);
 			if (stillPending.length === 0) { parked = true; return; }
@@ -553,6 +617,7 @@ async function pump(chatId: string): Promise<void> {
 
 			// A live run may have delivered some markers while the gates were
 			// closed — re-check: only still-missing markers ride the wake.
+			pruneSupersededDeliveries(chatId);
 			noteSteersDurable(chatId, fresh.messages);
 			const fire = (s.queues.get(chatId) ?? []).filter((entry) => !entry.waking && !entry.deferred && !entry.handedTo);
 			if (fire.length === 0) return;
@@ -564,7 +629,7 @@ async function pump(chatId: string): Promise<void> {
 			// hands them to that turn once the text-claim lands — until then,
 			// settlement re-pumps and lands them right after it). The pause is
 			// derived from the tail, so any user message un-holds by construction.
-			if (endsInDismissal(fresh.messages) || !automaticFollowUpAllowed(chatId)) {
+			if (endsInDismissal(fresh.messages) || teachingPausedByLearner(fresh.messages) || !automaticFollowUpAllowed(chatId)) {
 				parked = true;
 				return;
 			}
@@ -652,6 +717,10 @@ function finalizeJob(jobId: string): void {
 		if (!job) return;
 		if (!job.delivery) job = normalizeLegacyResult(job);
 		if (job.delivery?.status !== "pending") return;
+		if (deliverySuperseded(job)) {
+			stores.jobStore.updateJob(job.id, { delivery: { ...job.delivery, status: "superseded" } });
+			return;
+		}
 		stores.jobStore.updateJob(jobId, { delivery: { ...job.delivery, status: "delivered" } });
 	} catch (error) {
 		// The conversation is already durable. A bookkeeping failure must
@@ -677,6 +746,10 @@ function restorePendingDeliveries(chatId: string): void {
 	for (const stored of stores.jobStore.listJobs(chatId)) {
 		const job = isJobLive(stored.id) ? stored : normalizeLegacyResult(stored);
 		if (job.delivery?.status !== "pending") continue;
+		if (deliverySuperseded(job)) {
+			if (canSupersedeJobDelivery(job.id)) supersedeJobDelivery(job.id);
+			continue;
+		}
 		const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
 			: job.result ? buildSubagentSteer(job, job.result as never) : undefined;
 		if (!steer) continue;

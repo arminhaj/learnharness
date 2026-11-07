@@ -41,6 +41,7 @@ export function parseSettingsBody(body: unknown): SettingsBodyResult<ChatSetting
 	const raw = body as {
 		model?: { provider?: unknown; id?: unknown };
 		thinkingLevel?: unknown;
+		fastMode?: unknown;
 	};
 	const settings: ChatSettings = {};
 	if (raw.model !== undefined) {
@@ -59,6 +60,10 @@ export function parseSettingsBody(body: unknown): SettingsBodyResult<ChatSetting
 			return { ok: false, error: "thinkingLevel must be a string" };
 		}
 		settings.thinkingLevel = raw.thinkingLevel as ThinkingLevel;
+	}
+	if (raw.fastMode !== undefined) {
+		if (typeof raw.fastMode !== "boolean") return { ok: false, error: "fastMode must be a boolean" };
+		settings.fastMode = raw.fastMode;
 	}
 	// Wave 7 killed the graph-context injection (owner: zero configuration
 	// beyond chat models — the prober reads its map through tools now); its
@@ -127,6 +132,10 @@ function parseRoleOverride(value: unknown, role: string): { ok: true; override: 
 		}
 		override.thinkingLevel = raw.thinkingLevel as ThinkingLevel;
 	}
+	if (raw.fastMode !== undefined) {
+		if (typeof raw.fastMode !== "boolean") return { ok: false, error: `${role}.fastMode must be a boolean` };
+		override.fastMode = raw.fastMode;
+	}
 	return { ok: true, override };
 }
 
@@ -151,8 +160,8 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 	if (!raw) return { ok: false, error: "Invalid JSON body" };
 	const settings: AgentSettings = {};
 	if (raw.teachingProfile !== undefined) {
-		if (raw.teachingProfile !== "original" && raw.teachingProfile !== "focused") {
-			return { ok: false, error: 'teachingProfile must be "original" or "focused"' };
+		if (raw.teachingProfile !== "original" && raw.teachingProfile !== "focused" && raw.teachingProfile !== "mad-max") {
+			return { ok: false, error: 'teachingProfile must be "original", "focused", or "mad-max"' };
 		}
 		settings.teachingProfile = raw.teachingProfile;
 	}

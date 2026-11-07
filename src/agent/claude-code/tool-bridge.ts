@@ -45,6 +45,10 @@ export function toolNameFromMcp(name: string): string {
 	return name.startsWith(MCP_TOOL_PREFIX) ? name.slice(MCP_TOOL_PREFIX.length) : name;
 }
 
+export function toolNameToMcp(name: string): string {
+	return `${MCP_TOOL_PREFIX}${name}`;
+}
+
 function toMcpContent(block: TextContent | ImageContent): CallToolResult["content"][number] {
 	switch (block.type) {
 		case "text":
@@ -221,7 +225,7 @@ export async function createToolBridge(tools: Tool[], callbacks?: BridgeCallback
 
 	return {
 		mcpConfig: toMcpConfig(port, authorization),
-		allowedTools: tools.map((tool) => `${MCP_TOOL_PREFIX}${tool.name}`),
+		allowedTools: tools.map((tool) => toolNameToMcp(tool.name)),
 		waitForToolCalls: (count) => queue.waitFor(count),
 		resolveToolCall: (call, result) => queue.resolve(call, result),
 		getPendingToolCalls: () => queue.list(),

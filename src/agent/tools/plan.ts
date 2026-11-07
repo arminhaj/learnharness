@@ -21,34 +21,17 @@ export interface PlanToolContext {
 	chatStore: ChatStore;
 }
 
-/**
- * The plan tool — AUTHOR-ONCE protocol (2026-09-03 design pass): the teacher
- * WRITES the map and never tracks progress. One tool, plan_init, takes the
- * whole dependency map as a mermaid `graph TD` block:
- *
- *   - call it ONCE right after the probe concludes, to present the map (the
- *     LEARNER'S ACCEPTANCE of the presented plan, not this call, ends
- *     planning — docs/probe-teach-split.md §4)
- *   - statuses (current / visited / upcoming) are DERIVED from the quiz
- *     nodeId tags the teacher fires (contracts.ts derivePlanStatuses) — the
- *     teacher never declares them, and there is no "done" bookkeeping
- *   - re-call it any time the map is wrong: the new block replaces the tree
- *     wholesale. Node slugs are permanent — the map tracks nothing between
- *     rewrites
- *   - checks name the node they assess (quiz nodeId, validated against the
- *     live tree at the call boundary) — that tag is the only thing statuses
- *     derive from
- *
- * The former mutation tools (add/update/remove node/edge, set_current,
- * mark_done) are gone by design: restructuring is a rewrite, tracking is
- * derived. SERVER-SIDE with execute: parse → validate → persist. The
- * result is CONTEXT-SLIM (owner, context diet 2026-10-09): the model
- * WROTE the mermaid one message ago, so content never echoes the tree —
- * it carries the validated nodeIds + the binding-nodeId reminder (the
- * exact moment the ids become load-bearing); `details` keeps the full
- * tree for the record and the plan popup (latestTree reads it — the
- * agent-invisible channel, serializer-verified).
- */
+/** Plan authorship and explicit lesson-step completion, persisted on the session. */
+const planCompletionInput = Type.Object({
+ nodeId: Type.String({ minLength: 1 }),
+ completed: Type.Boolean({ description: "True when this plan step is complete; false to reopen it." }),
+ reason: Type.String({ minLength: 1, description: "Brief evidence from the lesson supporting completion or reopening." }),
+});
+
+const lessonCompletionInput = Type.Object({
+	completed: Type.Boolean({ description: "True to mark the whole lesson complete; false to reopen the lesson." }),
+});
+
 const planInitInput = Type.Object({
 	mermaid: Type.String({
 		minLength: 1,
@@ -67,6 +50,34 @@ const planInitInput = Type.Object({
 
 export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> {
 	return {
+		lesson_set_completed: {
+			name: "lesson_set_completed",
+			label: "Update lesson status",
+			description: "Mark this whole lesson complete or reopen it only when the learner explicitly requests that lesson-level change. Marking complete moves a settled, unarchived lesson to Completed in the sidebar, even with unfinished or unverified plan steps or without a plan. This changes lesson organization only: it does not complete plan steps, pass checks, or change knowledge-map mastery. For a request to complete one question or plan step, use plan_set_completed when its evidence requirements are met instead. Do not mark the whole lesson complete merely because the learner moves to the next question or pauses.",
+			parameters: lessonCompletionInput,
+			execute: serverExecute("lesson_set_completed", lessonCompletionInput, async ({ completed }) => {
+				if (!ctx.chatStore.getChat(ctx.chatId)) return { ok: false, error: `Chat not found: ${ctx.chatId}` };
+				ctx.chatStore.setLessonCompleted(ctx.chatId, completed);
+				return { ok: true, completed };
+			}),
+		},
+        plan_set_completed: {
+            name: "plan_set_completed",
+            label: "Update lesson completion",
+            description: "Explicitly complete or reopen a step of this session's lesson plan. Call after giving feedback when the step's learning goal has been met, including the final step. Do not count visits, skipped work, or merely asking a question as completion. Give a brief evidence-based reason. Reopen a completed step if more teaching is needed. This updates the learner's lesson-completion percentage, not their knowledge-map mastery.",
+            parameters: planCompletionInput,
+            execute: serverExecute("plan_set_completed", planCompletionInput, async ({ nodeId, completed, reason }) => {
+                const tree = ctx.chatStore.getChat(ctx.chatId)?.tree;
+                if (!tree || !tree.nodes.some(node => node.id === nodeId)) return { ok: false, error: `Unknown plan step: ${nodeId}. Use an id from the current plan.` };
+                if (!reason.trim()) return { ok: false, error: "Give evidence for this completion update." };
+                const ids = new Set((tree.completedNodeIds ?? []).filter(id => tree.nodes.some(node => node.id === id)));
+                const changed = ids.has(nodeId) !== completed;
+                if (completed) ids.add(nodeId); else ids.delete(nodeId);
+                const next: PlanTree = { ...tree, completedNodeIds: [...ids], version: tree.version + (changed ? 1 : 0) };
+                ctx.chatStore.saveTree(ctx.chatId, next);
+                return { text: JSON.stringify({ ok: true, nodeId, completed, reason, completedNodeIds: next.completedNodeIds }), details: { ok: true, tree: next } };
+            }),
+        },
 		plan_init: {
 			name: "plan_init",
 			label: "plan_init",
@@ -105,7 +116,9 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 						return coding ? { ...node, coding } : node;
 					});
 					const next = createTree(nodes, parsed.plan.edges);
-					chatStore.saveTree(chatId, next);
+					const retained = (record.tree?.completedNodeIds ?? []).filter(id => nodes.some(node => node.id === id));
+                    if (retained.length) next.completedNodeIds = [...new Set(retained)];
+                    chatStore.saveTree(chatId, next);
 					// Context diet: content = the validated nodeIds + the reminder (the
 				// ids just became binding for every quiz/explain call); details =
 					// the full tree for the record/UI — the plan popup's latestTree

@@ -23,11 +23,33 @@ export function loadRDKit(): Promise<MainModule> {
 }
 
 const drawings = new Map<string, string>();
+
+function hasDrawingArrows(ket: string): boolean {
+	try {
+		const drawing = JSON.parse(ket) as { root?: { nodes?: { type?: string }[] } };
+		return Array.isArray(drawing.root?.nodes) && drawing.root.nodes.some(node => node?.type === "arrow");
+	} catch {
+		throw new Error("The mechanism annotations could not be read.");
+	}
+}
+
+function cacheDrawing(key: string, svg: string): string {
+	if (drawings.size >= 128) drawings.delete(drawings.keys().next().value!);
+	drawings.set(key, svg);
+	return svg;
+}
+
 export async function drawMolecule(source: MoleculeSource, dark = false): Promise<string> {
 	const input = moleculeInput(source);
-	const key = JSON.stringify([input, dark]);
+	const key = JSON.stringify([input, source.ket, dark]);
 	const cached = drawings.get(key);
 	if (cached) return cached;
+	if (source.ket && hasDrawingArrows(source.ket)) {
+		// Chemical graph renderers omit electron-flow arrows. Keep the full
+		// native drawing for this preview without using it as molecular input.
+		const { drawMechanism } = await import("./ketcher-renderer");
+		return cacheDrawing(key, await drawMechanism(source.ket, dark));
+	}
 	const rdkit = await loadRDKit();
 	let molecule;
 	try {
@@ -45,9 +67,7 @@ export async function drawMolecule(source: MoleculeSource, dark = false): Promis
 				"8": dark ? [1, 0.52, 0.52] : [0.80, 0.12, 0.15] },
 		}));
 		if (!svg.includes("<svg")) throw new Error("The structure could not be drawn.");
-		if (drawings.size >= 128) drawings.delete(drawings.keys().next().value!);
-		drawings.set(key, svg);
-		return svg;
+		return cacheDrawing(key, svg);
 	} catch (error) {
 		throw error instanceof Error ? error : new Error("Could not read this molecular structure.");
 	} finally { molecule?.delete(); }

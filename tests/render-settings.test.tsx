@@ -110,6 +110,21 @@ describe("Providers settings-label typography", () => {
 });
 
 describe("AgentSection (thin SSR)", () => {
+	for (const teachingProfile of ["original", "focused", "mad-max"] as const) {
+		it(`offers every teaching configuration and shows the saved ${teachingProfile} selection`, () => {
+			const html = renderToStaticMarkup(<AgentSection
+				agent={{ teachingProfile }} models={undefined} graph={undefined}
+				onSectionChange={() => {}} onModelsChange={() => {}}
+			/>);
+			for (const [value, label] of [["original", "Original"], ["focused", "Focused"], ["mad-max", "Mad Max"]]) {
+				assert.match(html, new RegExp(`<option value="${value}"[^>]*>${label}</option>`));
+			}
+			assert.match(html, new RegExp(`<option value="${teachingProfile}" selected="">`));
+			assert.equal(html.includes('data-testid="quiz-mechanics-row"'), teachingProfile === "original",
+				"Focused-family profiles provide their own question interface");
+		});
+	}
+
 	it("renders the three model SLOT rows (slots-only, fix wave: unpicked reads —, no Default option)", () => {
 		const html = renderToStaticMarkup(<AgentSection agent={undefined} models={undefined} graph={undefined} onSectionChange={() => {}} onModelsChange={() => {}} />);
 		for (const slot of ["strong", "cheap", "vision"]) {

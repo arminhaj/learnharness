@@ -28,7 +28,7 @@
  * turn rides one composition.
  */
 
-import { isTopicFeedback, type QuestionAnswerData } from "./question-core.ts";
+import { askInputProblems, isTopicFeedback, type QuestionAnswerData } from "./question-core.ts";
 import type { CodeRunResult } from "./code-workspace.ts";
 import { parseMoleculeDocument, type MoleculeDocument } from "./chemistry.ts";
 import type { LhMessage } from "./native-messages.ts";
@@ -41,6 +41,7 @@ import {
 	newProblemDismissedMarker,
 	newThinkingMessage,
 	newUserMessage,
+	nativeInputCause,
 	pendingProblemDismissalOf,
 	reconstructRequestCause,
 } from "./native-messages.ts";
@@ -49,7 +50,7 @@ import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
 /** One client-originated input event (the POST body's `input`). */
 export type ChatInput =
 	| { type: "text"; text: string }
-	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData }
+	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData; codeRunId?: string }
 	| { type: "continue" }
 	/** The failed-turn retry (issue #110): the banner's Retry button. */
 	| { type: "retry" }
@@ -186,7 +187,11 @@ export function parseChatInput(input: unknown): ChatInput {
 			if (typeof i.answer !== "object" || i.answer === null) {
 				throw new ChatInputError("answer input requires the graded answer object");
 			}
-			const answer = i.answer as QuestionAnswerData;
+			if (i.codeRunId !== undefined && (typeof i.codeRunId !== "string" || !i.codeRunId || i.codeRunId.length > 128)) {
+				throw new ChatInputError("Code submission requires a valid check ID.");
+			}
+			// Compiler evidence is always reconstructed from the stored check.
+			const { codeResult: _untrustedCodeResult, ...answer } = i.answer as QuestionAnswerData;
 			if (answer.choicesShown !== undefined && answer.choicesShown !== true) {
 				throw new ChatInputError("choicesShown must be true when present");
 			}
@@ -196,6 +201,7 @@ export function parseChatInput(input: unknown): ChatInput {
 			return {
 				type: "answer",
 				toolCallId: i.toolCallId,
+				...(typeof i.codeRunId === "string" ? { codeRunId: i.codeRunId } : {}),
 				answer: {
 					...answer,
 					...((i.answer as QuestionAnswerData).molecule === undefined ? {} : { molecule: inputMolecule((i.answer as QuestionAnswerData).molecule) }),
@@ -246,6 +252,15 @@ export function inputAppends(
 			const pending = danglingQuestionOf(record.messages);
 			if (!pending || pending.toolCallId !== input.toolCallId) {
 				throw new ChatInputError("answer input targets no pending question call");
+			}
+			if (input.codeRunId || input.answer.codeResult) {
+				const question = pending.input as { options?: { label: string; value?: string }[]; multiSelect?: boolean; codeExercise?: unknown } | null;
+				if (pending.tool !== "ask_user_question" || !question?.codeExercise || askInputProblems(question).length > 0) {
+					throw new ChatInputError("Code answers require a pending free-response coding question");
+				}
+				if (!input.codeRunId || input.answer.codeResult?.id !== input.codeRunId || input.answer.kind !== "ask" || input.answer.dismissed || input.answer.dontKnow) {
+					throw new ChatInputError("Code answer does not match the checked question");
+				}
 			}
 			if (input.answer.molecule) {
 				const kind = toolQuestionKind(pending.tool);
@@ -349,6 +364,16 @@ export function retryDrops(messages: readonly LhMessage[]): Set<string> {
 	}
 	if (!before || before.role === "assistant") throw new ChatInputError("retry input leaves no input to continue from");
 	return ids;
+}
+
+/** On a blank completion after a learner's saved answer, retry with an
+ * explicit continuation cue rather than resending an identical request.
+ * Transport errors retain the ordinary replay path. */
+export function emptyRetryAnswerCallId(messages: readonly LhMessage[]): string | undefined {
+	if (failedResponseAtEnd(messages)?.stopReason !== "stop") return;
+	const { before } = failedTail(messages);
+	if (before?.role !== "toolResult") return;
+	if (nativeInputCause(before, messages.slice(0, messages.indexOf(before))) === "learner") return before.toolCallId;
 }
 
 /** Walk back over failed assistants and UI-only plan blocks. A compaction

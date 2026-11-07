@@ -22,6 +22,7 @@ const { beginTurn, endTurn } = await import("../src/server/turn-liveness.ts");
 const {
 	deliverJobResult, discardChatDeliveries, noteSteersDurable, recoverStaleJobs,
 	registerLiveAgent, unregisterLiveAgent, settleSteers, setTurnRunner,
+	canSupersedeJobDelivery, supersedeJobDelivery,
 } = await import("../src/server/jobs.ts");
 const { activityFeed } = await import("../src/server/observability.ts");
 const { deleteChatSession } = await import("../src/server/chats.ts");
@@ -328,4 +329,108 @@ test("deleting a session discards its pending deliveries without starting a turn
 	assert.equal(stores.jobStore.getJob(job.id), null);
 	assert.equal(stores.chatStore.getChat(owner.id), null);
 	assert.equal(wakes, 0);
+});
+
+function failedDemo(chatId: string) {
+	const input = { title: "Phase timing", brief: "Compare voltage and current peaks" };
+	const source = stores.jobStore.createJob({ kind: "demo", chatId, toolCallId: "demo-call", input });
+	const failure = { title: input.title, html: "", tested: true as const, notes: "FAILED: fixture builder failure" };
+	stores.jobStore.updateJob(source.id, {
+		status: "error", activity: "failed", error: failure.notes, result: failure,
+		delivery: { kind: "result", status: "pending" },
+		usage: { model: "faux:faux", inputTokens: 12, outputTokens: 4, cacheReadTokens: undefined,
+			cacheWriteTokens: undefined, reasoningTokens: undefined, steps: 1 },
+	});
+	const job = stores.jobStore.getJob(source.id)!;
+	return { job, steer: buildSubagentSteer(job, failure) };
+}
+
+test("retry supersession retires only its failure delivery and preserves saved history and worker outcome", async () => {
+	const owner = chat(true); const { job, steer } = failedDemo(owner.id);
+	const unrelated = pending(owner.id);
+	const beforeMessages = stores.chatStore.getChat(owner.id)!.messages;
+	const oldDelivery = deliverJobResult(steer);
+	let unrelatedSettled = false;
+	const otherDelivery = deliverJobResult(unrelated.steer).then(() => { unrelatedSettled = true; });
+	stores.jobStore.createJob({ kind: "demo", chatId: owner.id, toolCallId: job.toolCallId, input: job.input, retryOf: job.id });
+	assert(canSupersedeJobDelivery(job.id));
+	supersedeJobDelivery(job.id); await oldDelivery;
+	const retired = stores.jobStore.getJob(job.id)!;
+	assert.deepEqual(retired.result, job.result);
+	assert.deepEqual(retired.input, job.input);
+	assert.deepEqual(retired.usage, job.usage);
+	assert.equal(retired.error, job.error); assert.equal(retired.status, "error");
+	assert.equal(retired.delivery?.status, "superseded");
+	assert.deepEqual(stores.chatStore.getChat(owner.id)!.messages, beforeMessages);
+	assert.equal(unrelatedSettled, false);
+	supersedeJobDelivery(job.id);
+	assert.deepEqual(stores.jobStore.getJob(job.id), retired, "repeated supersession writes nothing");
+	noteSteersDurable(owner.id, [steer]);
+	assert.equal(stores.jobStore.getJob(job.id)!.delivery?.status, "superseded", "late acknowledgment cannot revive delivery");
+	await deliverJobResult(steer);
+	const next = agent(); assert(beginTurn(owner.id)); registerLiveAgent(owner.id, next.value);
+	assert.deepEqual(next.handed.map(message => message.id), [unrelated.steer.id]);
+	persist(owner.id, next.handed); unregisterLiveAgent(owner.id); endTurn(owner.id); await otherDelivery;
+});
+
+test("a saved retry link suppresses an unpatched failure after process restart and stale resubmission", async () => {
+	const owner = chat(true); const { job, steer } = failedDemo(owner.id);
+	const waiting = deliverJobResult(steer);
+	stores.jobStore.createJob({ kind: "demo", chatId: owner.id, toolCallId: job.toolCallId, input: job.input, retryOf: job.id });
+	assert.equal(stores.jobStore.getJob(job.id)!.delivery?.status, "pending", "fixture stops between child creation and source patch");
+	const script = `
+		const { stores } = await import('./src/server/stores.ts');
+		const { registerLiveAgent, unregisterLiveAgent } = await import('./src/server/jobs.ts');
+		const { beginTurn, endTurn } = await import('./src/server/turn-liveness.ts');
+		const handed = []; beginTurn(${JSON.stringify(owner.id)});
+		registerLiveAgent(${JSON.stringify(owner.id)}, { steer: marker => handed.push(marker) });
+		unregisterLiveAgent(${JSON.stringify(owner.id)}); endTurn(${JSON.stringify(owner.id)});
+		console.log(JSON.stringify(handed.map(marker => marker.id)));
+	`;
+	const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+		cwd: process.cwd(), encoding: "utf8", timeout: 15000,
+		env: { PATH: process.env.PATH, HOME: path.join(directory, "home"), NODE_ENV: "test", LH_DATA_DIR: process.env.LH_DATA_DIR, LH_AUTH_FILE: process.env.LH_AUTH_FILE },
+	});
+	assert.equal(child.status, 0, child.stderr);
+	assert.deepEqual(JSON.parse(child.stdout.trim()), []);
+	assert.equal(stores.jobStore.getJob(job.id)!.delivery?.status, "superseded");
+	await deliverJobResult(steer); await waiting;
+	sweep();
+	const next = agent(); assert(beginTurn(owner.id)); registerLiveAgent(owner.id, next.value);
+	assert.equal(next.handed.length, 0); unregisterLiveAgent(owner.id); endTurn(owner.id);
+	assert.deepEqual(stores.chatStore.getChat(owner.id)!.messages, [question]);
+});
+
+test("unlinked jobs sharing a tool call retain independent deliveries", async () => {
+	const owner = chat(true); const first = failedDemo(owner.id); const second = failedDemo(owner.id);
+	const deliveries = [deliverJobResult(first.steer), deliverJobResult(second.steer)];
+	const next = agent(); assert(beginTurn(owner.id)); registerLiveAgent(owner.id, next.value);
+	assert.deepEqual(new Set(next.handed.map(message => message.id)), new Set([first.steer.id, second.steer.id]));
+	persist(owner.id, next.handed); unregisterLiveAgent(owner.id); endTurn(owner.id); await Promise.all(deliveries);
+	assert.equal(stores.jobStore.getJob(first.job.id)!.delivery?.status, "delivered");
+	assert.equal(stores.jobStore.getJob(second.job.id)!.delivery?.status, "delivered");
+});
+
+test("retry cannot retire failure cargo already handed to a live teacher", async () => {
+	const owner = chat(true); const { job, steer } = failedDemo(owner.id);
+	const delivery = deliverJobResult(steer);
+	const live = agent(); assert(beginTurn(owner.id)); registerLiveAgent(owner.id, live.value);
+	assert.equal(canSupersedeJobDelivery(job.id), false);
+	assert.throws(() => supersedeJobDelivery(job.id), /already in flight/);
+	assert.deepEqual(stores.jobStore.getJob(job.id), job);
+	persist(owner.id, live.handed); unregisterLiveAgent(owner.id); endTurn(owner.id); await delivery;
+});
+
+test("retry cannot retire a staged wake before it claims a teacher turn", async () => {
+	const owner = chat(); const { job, steer } = failedDemo(owner.id);
+	let waking = false; let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	setTurnRunner(async () => { waking = true; await gate; return 403; });
+	const delivery = deliverJobResult(steer); await until(() => waking);
+	assert.equal(canSupersedeJobDelivery(job.id), false);
+	assert.throws(() => supersedeJobDelivery(job.id), /already in flight/);
+	assert.deepEqual(stores.jobStore.getJob(job.id), job);
+	release(); await until(() => canSupersedeJobDelivery(job.id));
+	supersedeJobDelivery(job.id); await delivery;
+	assert.equal(stores.jobStore.getJob(job.id)!.delivery?.status, "superseded");
 });

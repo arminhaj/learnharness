@@ -20,6 +20,7 @@
 import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { piModels } from "../agent/models.ts";
+import { supportsFastMode } from "../core/model-speed.ts";
 import { customProviderAvailable } from "./custom-provider.ts";
 import { chatGPTConnected, chatGPTModel, chatGPTModels, refreshChatGPTModels } from "../agent/chatgpt-bridge.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
@@ -85,6 +86,7 @@ export function catalogDefaultsFor(
 	return {
 		model,
 		...(level !== undefined ? { thinkingLevel: level } : {}),
+		...(strong?.fastMode !== undefined ? { fastMode: strong.fastMode } : {}),
 	};
 }
 
@@ -108,6 +110,7 @@ export function rolePinsFor(
 			? {
 					model: { provider: spec.provider, id: spec.id },
 					...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}),
+					...(spec.fastMode !== undefined ? { fastMode: spec.fastMode } : {}),
 				}
 			: null;
 	}
@@ -135,6 +138,7 @@ export function catalogSlots(): SlotPins {
 			? {
 					model: { provider: slot.provider, id: slot.id },
 					...(slot.thinkingLevel !== undefined ? { thinkingLevel: slot.thinkingLevel } : {}),
+					...(slot.fastMode !== undefined ? { fastMode: slot.fastMode } : {}),
 				}
 			: null;
 	}
@@ -255,6 +259,12 @@ export function validateChatSettings(settings: ChatSettings): SettingsValidation
 			return { ok: false, error: `No model "${id}" in the ${provider} catalog` };
 		}
 	}
+	if (settings.fastMode === true) {
+		const strong = effectiveSettings().models.strong;
+		if (!supportsFastMode(settings.model?.provider ?? strong?.provider, settings.model?.id ?? strong?.id)) {
+			return { ok: false, error: "Fast mode requires a supported ChatGPT or OpenAI model." };
+		}
+	}
 	// BYOK interlude (owner, 2026-09-22): thinking levels NEVER reject a
 	// write — a model swap with a pinned level JUST WORKS. The WRITE clamps
 	// the pin to the new model's nearest supported level (clampChatLevel
@@ -273,6 +283,9 @@ export function validateModelsSettings(settings: ModelsSettings, stored?: Models
 	for (const name of MODEL_SLOTS) {
 		const slot = settings[name];
 		if (!slot) continue;
+		if (slot.fastMode === true && !supportsFastMode(slot.model?.provider, slot.model?.id)) {
+			return { ok: false, error: "Fast mode requires a supported ChatGPT or OpenAI model." };
+		}
 		const previous = stored?.[name]?.model;
 		if (slot.model && previous && slot.model.provider === previous.provider && slot.model.id === previous.id) continue;
 		const verdict = validateSlotSpec(name, slot);
@@ -325,7 +338,7 @@ export function clampModelsLevels(settings: ModelsSettings): ModelsSettings {
 		out[name] =
 			slot.thinkingLevel !== undefined
 				? {
-						model: slot.model,
+						...slot,
 						thinkingLevel: clampLevelFor(slot.model.provider, slot.model.id, slot.thinkingLevel),
 					}
 				: slot;

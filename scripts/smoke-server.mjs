@@ -18,7 +18,8 @@
  * free port, NODE_ENV=production, a THROWAWAY LH_DATA_DIR and an EMPTY
  * LH_AUTH_FILE under os.tmpdir() (no real keys or data ever touch it) —
  * polls GET / until 200, then probes the GET-only API surface (graph /
- * models / settings — no side effects). Any non-200, an early server
+ * models / settings), then round-trips a synthetic curved-arrow drawing
+ * through chemistry normalization (no stored answer or model call). Any non-200, an early server
  * exit, or a 30s boot timeout fails the gate and prints the server's own
  * log tail for diagnosis. The child is ALWAYS killed before exit — a
  * leaked server holds its port against the next run (learned the hard
@@ -169,6 +170,28 @@ async function main() {
 			if (status !== 200) throw new Error(`GET ${route} → ${status} (expected 200)`);
 			console.log(`[smoke-server] GET ${route} → 200`);
 		}
+
+		// GETs never load the KET serializer. Its toolkit lookup tables live
+		// under data/, so learner-data trace exclusions can accidentally omit them.
+		const ket = JSON.stringify({
+			root: { nodes: [
+				{ $ref: "mol0" },
+				...(["elliptical-arc-arrow-open-angle", "elliptical-arc-arrow-open-half-angle"].map((mode, y) => ({
+					type: "arrow", data: { mode, pos: [{ x: 0, y, z: 0 }, { x: 1, y, z: 0 }], height: 0.5 },
+				}))),
+			] },
+			mol0: { type: "molecule", atoms: [{ label: "C", location: [0, 0, 0] }], bonds: [] },
+		});
+		const normalize = source => fetch(`${url}/api/chemistry/normalize`, {
+			method: "POST", headers: { "Content-Type": "application/json", Origin: url },
+			body: JSON.stringify(source), signal: AbortSignal.timeout(10_000),
+		});
+		const saved = await normalize({ smiles: "C", ket });
+		const drawing = await saved.json();
+		if (saved.status !== 200 || drawing.ket !== ket || drawing.smiles !== "C") throw new Error(`Curved-arrow save failed: ${JSON.stringify(drawing)}`);
+		const reopened = await normalize(drawing);
+		if (reopened.status !== 200 || (await reopened.json()).ket !== ket) throw new Error("Curved arrows were lost on reopen.");
+		console.log("[smoke-server] curved-arrow save/reopen → preserved both arrowheads");
 	} catch (err) {
 		failed = err;
 	} finally {

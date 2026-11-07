@@ -10,7 +10,7 @@ import { PathInput } from "@/components/path-input";
 import { CodeWorkbench } from "@/components/code-workbench";
 import type { CodeExercise } from "@/src/core";
 import { cn } from "@/lib/utils";
-import { hasMoleculeBlock, type MoleculeDocument, type MoleculeSource } from "@/src/core";
+import { collectMoleculeReferences, hasMoleculeBlock, type MoleculeDocument, type MoleculeSource } from "@/src/core";
 import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
 import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
 
@@ -37,6 +37,8 @@ import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
 export interface PracticeDockProps {
 	chatId?: string;
 	draftKey?: string;
+	/** Public prose introducing this problem, already scoped by its tool call. */
+	chemistryContext?: readonly string[];
 	/** The active problem's tool-call id (submissions target it). */
 	problemCallId: string;
 	/** The pose's arguments — only the statement is the learner's (the
@@ -58,12 +60,15 @@ export interface PracticeDockProps {
 	paused?: boolean;
 }
 
-export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
+export function PracticeDock({ chatId, draftKey, chemistryContext, problemCallId, input, expanded, onExpand, onSubmit, onEscape, compactionRunning = false, paused = false }: PracticeDockProps) {
 	const [thinking, setThinking] = useState("");
 	const [molecule, setMolecule] = useState<MoleculeDocument>();
 	const [copiedSource, setCopiedSource] = useState<MoleculeSource>();
 	const startingSource = useMemo<MoleculeSource | undefined>(() => input.chemistry?.startingStructure ? { smiles: input.chemistry.startingStructure } : undefined, [input.chemistry?.startingStructure]);
-	const chemistryEnabled = !!input.chemistry || hasMoleculeBlock(input.statement) || !!copiedSource || !!molecule;
+	const problemReferences = useMemo(() => collectMoleculeReferences([
+		...(chemistryContext ?? []), input.statement, ...(input.chemistry?.instructions ? [input.chemistry.instructions] : []),
+	], startingSource ? [startingSource] : []), [chemistryContext, input.statement, input.chemistry?.instructions, startingSource]);
+	const chemistryEnabled = !!input.chemistry || hasMoleculeBlock(input.statement) || !!problemReferences.length || !!copiedSource || !!molecule;
 	const useStructure = useCallback((source: MoleculeSource) => {
 		if (!paused && !compactionRunning) setCopiedSource({ ...source });
 	}, [paused, compactionRunning]);
@@ -147,6 +152,7 @@ export function PracticeDock({ chatId, draftKey, problemCallId, input, expanded,
 						<ChemistryWorkbench
 							draftKey={`practice:${draftKey ?? `${chatId ?? "session"}:${problemCallId}`}`}
 							initial={copiedSource ?? startingSource}
+							problemReferences={problemReferences}
 							value={molecule}
 							onChange={setMolecule}
 							disabled={paused || compactionRunning}

@@ -4,7 +4,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { XIcon } from "lucide-react";
 
-export function ChemistryDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function ChemistryDialog({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
 	const ref = useRef<HTMLDialogElement>(null);
 	const closeRef = useRef(onClose);
 	closeRef.current = onClose;
@@ -17,8 +17,8 @@ export function ChemistryDialog({ title, onClose, children }: { title: string; o
 	if (typeof document === "undefined") return null;
 	return createPortal(
 		<dialog ref={ref} data-chemistry-dialog="" data-chemistry-interactive="" aria-label={title}
-			className="fixed inset-0 z-[100] m-auto max-h-[92dvh] w-[min(1100px,96vw)] max-w-none overflow-auto rounded-xl border border-border bg-background p-0 text-foreground shadow-xl backdrop:bg-black/50"
-			onCancel={(event) => { event.preventDefault(); closeRef.current(); }}
+			className={`fixed inset-0 z-[100] m-auto max-h-[92dvh] ${wide ? "w-[min(1420px,96vw)]" : "w-[min(1100px,96vw)]"} max-w-none overflow-auto rounded-xl border border-border bg-background p-0 text-foreground shadow-xl backdrop:bg-black/50`}
+			onCancel={(event) => { if (event.defaultPrevented) return; event.preventDefault(); closeRef.current(); }}
 			onKeyDown={(event) => { event.stopPropagation(); }}>
 			<header className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
 				<h2 className="text-base font-medium">{title}</h2>

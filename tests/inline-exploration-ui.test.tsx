@@ -10,6 +10,7 @@ import { createInlineExploration, changeInlineExploration, explorationErrorMessa
 import { planBlocksFor } from "../src/core/plan-blocks.ts";
 import { latestTree } from "../components/plan-block.tsx";
 import type { LhViewMessage } from "../src/core/view.ts";
+import { buildSubagentSteer, type JobRecord } from "../src/core/contracts/jobs.ts";
 import { QuestionDock } from "../components/question-dock.tsx";
 import { readPathInput } from "../components/path-input-dom.ts";
 import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
@@ -353,6 +354,69 @@ describe("exploration teaching controls", () => {
 			assert.equal(JSON.stringify(record), original, "the failed attempt and original input remain in the record");
 		});
 	});
+	for (const delivered of [false, true]) {
+		it(`restores a ${delivered ? "delivered" : "pending"} figure and its brightness preference after reload`, async () => {
+			await withExplorationDOM(async (host, root) => {
+				const record = teachingBranch("explain");
+				const job: JobRecord = { id: "job_saved", chatId: "child", kind: "visual", toolCallId: "figure_call", status: "done", activity: "finished", createdAt: "2026-11-02T00:00:00Z", updatedAt: "2026-11-02T00:00:00Z", delivery: { kind: "result", status: delivered ? "delivered" : "pending" }, result: { svg: "<svg/>" }, ui: { inverted: true } };
+				if (delivered) record.messages.push(buildSubagentSteer(job, job.result as { svg: string }));
+				const writes: string[] = [];
+				globalThis.fetch = (async (url: string, init?: RequestInit) => {
+					if (init?.method === "POST") writes.push(url);
+					if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
+					return Response.json(url.startsWith("/api/jobs") ? { jobs: [job] } : record);
+				}) as typeof fetch;
+				await renderBranch(root, record);
+				assert.equal(host.querySelectorAll('[data-testid="visual-card"]').length, 1);
+				assert.match(host.querySelector('[data-testid="visual-svg"]')!.getAttribute("style")!, /invert\(1\)/);
+				assert.ok(host.querySelector('[data-testid="teach-check-reveal"]'));
+				assert.deepEqual(writes, []);
+			});
+		});
+	}
+
+	it("shows a finished figure while a question waits, then adopts its delivery without duplicating or remounting it", async () => {
+		await withExplorationDOM(async (host, root) => {
+			const record = teachingBranch("explain");
+			record.messages.splice(1, 0,
+				{ ...fauxAssistantMessage([fauxToolCall("visual", { brief: "Draw the schema." }, { id: "figure_call" })]), id: "figure_request" },
+				{ id: "figure_ack", role: "toolResult", toolCallId: "figure_call", toolName: "visual", content: [{ type: "text", text: "Dispatched" }], details: "Dispatched", isError: false, timestamp: 2 },
+			);
+			let job: JobRecord = { id: "job_figure", chatId: "child", kind: "visual", toolCallId: "figure_call", status: "running", activity: "drawing", createdAt: "2026-11-02T00:00:00Z", updatedAt: "2026-11-02T00:00:00Z" };
+			const events = new Map<string, (data: string) => void>();
+			const connect = (): NotifySource => ({ close() {}, onOpen() {}, onEvent(name, cb) { events.set(name, cb); } });
+			const writes: string[] = [];
+			globalThis.fetch = (async (url: string, init?: RequestInit) => {
+				if (init?.method === "POST") writes.push(url);
+				if (url.endsWith("/explorations")) return Response.json({ explorations: [] });
+				return Response.json(url.startsWith("/api/jobs") ? { jobs: [job] } : record);
+			}) as typeof fetch;
+			await act(async () => root.render(<ServerEventsProvider connect={connect}>
+				<InlineExploration chat={record} expanded changing={false} canReopen onInitialDelivered={() => {}} onToggle={() => {}} onClose={() => {}} onReopen={() => {}} />
+			</ServerEventsProvider>));
+			const question = host.querySelector('[data-testid="teach-check-reveal"]');
+			assert.ok(question);
+			assert.equal(host.querySelector('[data-testid="visual-card"]'), null);
+			job = { ...job, status: "done", activity: "finished", delivery: { kind: "result", status: "pending" }, result: { svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><text>Schema</text></svg>' } };
+			await act(async () => events.get("jobs-changed")!(JSON.stringify({ chatId: "child" })));
+			const figure = host.querySelector('[data-testid="visual-card"]');
+			assert.ok(figure, "worker completion displays the saved SVG without answering the question");
+			assert.equal(host.querySelector('[data-testid="teach-check-reveal"]'), question);
+			assert.deepEqual(writes, [], "showing the result does not submit an answer or start a tutor turn");
+			await act(async () => (host.querySelector('[aria-label="Invert figure brightness"]') as HTMLElement).click());
+			assert.deepEqual(writes, ["/api/chats/child/artifact-ui"]);
+			// Delivery status may reach the job feed before the transcript does.
+			job = { ...job, delivery: { kind: "result", status: "delivered" } };
+			await act(async () => events.get("jobs-changed")!(JSON.stringify({ chatId: "child" })));
+			assert.equal(host.querySelector('[data-testid="visual-card"]'), figure);
+			record.messages.push(buildSubagentSteer(job, job.result as { svg: string }));
+			await act(async () => events.get("record-changed")!(JSON.stringify({ chatId: "child" })));
+			assert.equal(host.querySelectorAll('[data-testid="visual-card"]').length, 1);
+			assert.equal(host.querySelector('[data-testid="visual-card"]'), figure, "the canonical delivery retains the mounted figure and its controls");
+			assert.match(host.querySelector('[data-testid="visual-svg"]')!.getAttribute("style")!, /invert\(1\)/);
+		});
+	});
+
 	it("reveals child checks after teaching and preserves the exact selected answer across returning and reopening", async () => {
 		await withExplorationDOM(async (host, root) => {
 			const record = teachingBranch();

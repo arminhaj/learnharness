@@ -1,13 +1,14 @@
 "use client";
 
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DownloadIcon } from "lucide-react";
+import { DownloadIcon, XIcon } from "lucide-react";
 import { Toggle } from "@/components/settings/controls";
 import { InvertDiscIcon } from "@/components/artifacts/invert-disc";
 import { ChatActionsContext } from "@/components/chat";
 import { downloadFile, slugFilename } from "@/components/artifacts/download";
 import { DispatchCard } from "@/components/artifacts/dispatch-card";
-import type { ArtifactPartProps, DemoResult } from "@/src/core";
+import type { ArtifactPartProps, DemoResult, JobRecord } from "@/src/core";
+import { RetryDemoButton, useDemoRetryAttempt } from "@/components/artifacts/retry-demo-button";
 
 /**
  * Demo artifact card (W6): while the part is input-available, a job activity
@@ -95,11 +96,16 @@ export function DemoOutputCard({
 	output,
 	messageId,
 	initialInverted = false,
+	retryJob,
+	onClose,
 }: {
 	output: unknown;
 	messageId?: string;
 	initialInverted?: boolean;
+	retryJob?: JobRecord;
+	onClose?: () => void;
 }) {
+	const retry = useDemoRetryAttempt(retryJob ?? null);
 	const result = output as DemoResult | undefined;
 	if (!result || typeof result.html !== "string" || typeof result.title !== "string") {
 		return (
@@ -110,6 +116,8 @@ export function DemoOutputCard({
 	}
 	const failed = result.html.length === 0;
 	if (failed) {
+		if (retry.job?.status === "running") return <DispatchCard toolCallId={retry.job.toolCallId} kind="demo" acceptedJob={retry.job} />;
+		if (retryJob && retry.job?.id !== retryJob.id && retry.job?.status === "done") return null;
 		return (
 			<div className="rounded-xl border bg-card p-4 text-card-foreground" data-testid="demo-card-failed">
 				<div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -117,11 +125,12 @@ export function DemoOutputCard({
 					<span className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-500">failed</span>
 				</div>
 				<p className="mt-2 text-sm text-muted-foreground">{result.notes ?? "The demo could not be built."}</p>
+				<div className="mt-2"><RetryDemoButton retry={retry} /></div>
 			</div>
 		);
 	}
 	return (
-		<DemoFrame title={result.title} html={result.html} messageId={messageId} initialInverted={initialInverted} />
+		<DemoFrame title={result.title} html={result.html} messageId={messageId} initialInverted={initialInverted} onClose={onClose} />
 	);
 }
 
@@ -130,12 +139,15 @@ function DemoFrame({
 	html,
 	messageId,
 	initialInverted = false,
+	onClose,
 }: {
 	title: string;
 	html: string;
 	messageId?: string;
 	initialInverted?: boolean;
+	onClose?: () => void;
 }) {
+	const inPane = !!onClose;
 	const actions = useContext(ChatActionsContext);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const [state, setState] = useState<DemoBridgeState>(INITIAL_DEMO_BRIDGE_STATE);
@@ -163,23 +175,24 @@ function DemoFrame({
 			// Only messages from THIS demo's iframe (the sandbox gives it an
 			// opaque origin; the window reference still matches).
 			if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
+			if (inPane && event.data?.type === "demo-resize") return;
 			setState((prev) => reduceDemoBridgeState(prev, event.data));
 		};
 		window.addEventListener("message", onMessage);
 		return () => window.removeEventListener("message", onMessage);
-	}, []);
+	}, [inPane]);
 
 	return (
-		<div className="rounded-xl border bg-card p-4 text-card-foreground" data-testid="demo-card">
+		<div className={`bg-card text-card-foreground ${inPane ? "flex h-full flex-col p-3" : "rounded-xl border p-4"}`} data-testid="demo-card">
 			{/* Caption header (owner, 2026-10-07): kind label + title in the
 			   label's size/tracking (title normal-case, foreground) — the
 			   figure card's grammar plus a name. Switch + download far right. */}
 			<div className="flex items-center justify-between gap-2">
 				<div className="flex min-w-0 items-baseline gap-2">
-					<span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+					{!inPane && <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 						interactive demo
-					</span>
-					<span className="truncate text-xs font-medium tracking-wide text-foreground">{title}</span>
+					</span>}
+					<span className="truncate text-xs font-medium tracking-wide text-foreground" title={title}>{title}</span>
 				</div>
 				<div className="flex shrink-0 items-center gap-1.5">
 					<Toggle
@@ -199,6 +212,11 @@ function DemoFrame({
 					>
 						<DownloadIcon className="size-3.5" />
 					</button>
+					{onClose && (
+						<button type="button" aria-label="Close demo pane" title="Close demo pane" onClick={onClose} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+							<XIcon className="size-3.5" />
+						</button>
+					)}
 				</div>
 			</div>
 			{state.error && (
@@ -220,14 +238,14 @@ function DemoFrame({
 				// before the first resize lands — and a scrollable iframe TRAPS
 				// the wheel (session scrolling stalls over the demo). With
 				// scrolling disabled the wheel chains straight to the session.
-				scrolling="no"
-				className="mt-2 w-full rounded-lg border bg-white"
+				scrolling={inPane ? undefined : "no"}
+				className={`mt-2 w-full rounded-lg border bg-white ${inPane ? "min-h-0 flex-1" : ""}`}
 				// content-box: the bridge reports the CONTENT height — with the
 				// preflight's border-box the 2px border would eat into it and clip
 				// the bottom of the demo (smoke finding, 2026-10-07).
 				style={{
-					height: state.height ?? 360,
-					boxSizing: "content-box",
+					height: inPane ? undefined : state.height ?? 360,
+					boxSizing: inPane ? undefined : "content-box",
 					filter: inverted ? "invert(1) hue-rotate(180deg)" : undefined,
 				}}
 				data-testid="demo-iframe"

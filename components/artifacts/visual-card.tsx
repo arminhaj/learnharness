@@ -14,8 +14,8 @@ import type { ArtifactPartProps, VisualResult } from "@/src/core";
 /**
  * Visual artifact card (W6 → ack protocol): the tool part's output is the
  * dispatch ack, so the tool-call box is the DispatchCard (live status via
- * the chat view's jobs feed). The SVG itself renders from the steer message
- * (sub-agent result delivery) via VisualOutputCard.
+ * the chat view's jobs feed). The SVG renders via VisualOutputCard as soon
+ * as its job completes, then from the real steer message after delivery.
  *
  * Both display modes use an SVG image document: generated markup and its
  * styles never join the app's DOM. Downloads still contain the original SVG.
@@ -58,7 +58,10 @@ export function VisualOutputCard({
 	// the silent artifact-ui route on toggle; without a chat page (tests,
 	// previews) it stays local-only. The toggled state also feeds the
 	// fullscreen overlay (openFigure).
-	const [inverted, setInverted] = useState(initialInverted);
+	// The job feed may load saved preferences after the transcript. Follow
+	// those preferences until the learner chooses a value in this mount.
+	const [inversionOverride, setInverted] = useState<boolean>();
+	const inverted = inversionOverride ?? initialInverted;
 	const toggleInverted = (next: boolean) => {
 		setInverted(next);
 		if (!actions?.chatId || !messageId) return;

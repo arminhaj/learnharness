@@ -84,6 +84,7 @@ for (const asset of [
 	path.join("src", "agent", "prompts", "teacher", "20-teaching.md"),
 	path.join("src", "agent", "prompts", "shared", "35-problem-sets.md"),
 	path.join("src", "agent", "prompts", "focused.md"),
+	path.join("src", "agent", "prompts", "mad-max.md"),
 ]) {
 	if (!exists(path.join(STANDALONE, asset))) {
 		console.error(`[build-server] prompt asset missing from the trace: ${asset}`);

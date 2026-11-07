@@ -11,6 +11,7 @@ const STANDALONE = path.join(".next", "standalone");
 const PROMPT = path.join("src", "agent", "system-prompt.md");
 const ASSIGNMENT_PROMPT = path.join("src", "agent", "prompts", "shared", "35-problem-sets.md");
 const FOCUSED_PROMPT = path.join("src", "agent", "prompts", "focused.md");
+const MAD_MAX_PROMPT = path.join("src", "agent", "prompts", "mad-max.md");
 
 function withPayload(test: (fixture: {
 	root: string;
@@ -31,6 +32,7 @@ function withPayload(test: (fixture: {
 		write(path.join(STANDALONE, PROMPT));
 		write(path.join(STANDALONE, ASSIGNMENT_PROMPT));
 		write(path.join(STANDALONE, FOCUSED_PROMPT));
+		write(path.join(STANDALONE, MAD_MAX_PROMPT));
 		write(path.join(STANDALONE, "src", "agent", "prompts", "teacher", "20-teaching.md"));
 		test({ root, write, run: () => spawnSync(process.execPath, [path.join(root, "scripts", "build-server.mjs")], {
 			cwd: root, encoding: "utf8", timeout: 10_000,
@@ -90,7 +92,7 @@ describe("desktop standalone payload", () => {
 	});
 
 	it("still refuses a missing runtime prompt asset", () => {
-		for (const asset of [PROMPT, ASSIGNMENT_PROMPT, FOCUSED_PROMPT]) {
+		for (const asset of [PROMPT, ASSIGNMENT_PROMPT, FOCUSED_PROMPT, MAD_MAX_PROMPT]) {
 			withPayload(({ root, run }) => {
 				fs.rmSync(path.join(root, STANDALONE, asset));
 				const result = run();

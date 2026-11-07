@@ -7,16 +7,19 @@ import { finishDictation, isDictationActive, joinDictation, useDictationTarget }
 import { useDictationActive } from "@/components/dictation-state";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { PathInput } from "@/components/path-input";
+import { CodeWorkbench } from "@/components/code-workbench";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import ChemistryWorkbench from "@/components/chemistry/chemistry-workbench";
 import { ChemistryAnswerProvider } from "@/components/chemistry/answer-context";
 import { onSettingsSaved } from "@/components/settings-signal";
 import { TopicFeedbackControl } from "@/components/topic-feedback";
-import type { MoleculeDocument, MoleculeSource } from "@/src/core";
+import type { MoleculeDocument, MoleculeSource, QuestionChemistryContinuation } from "@/src/core";
 import { cn } from "@/lib/utils";
 import {
 	buildAnswer,
 	dismissedAnswer,
+	isFocusedTeachingProfile,
+	collectMoleculeReferences,
 	hasMoleculeBlock,
 	repairMathForDisplay,
 	normalizeQuizType,
@@ -72,6 +75,9 @@ import { CONFIDENCE_COLORS, confidenceRailStyle } from "@/components/confidence-
 export interface QuestionDockProps {
 	chatId?: string;
 	draftKey?: string;
+	/** Public prose introducing this question, already scoped by its tool call. */
+	chemistryContext?: readonly string[];
+	structureContinuation?: QuestionChemistryContinuation;
 	toolName: "quiz" | "probe" | "ask_user_question" | "explain" | "recall";
 	toolCallId: string;
 	input: QuizToolInput | AskToolInput | ExplainToolInput;
@@ -85,7 +91,8 @@ export interface QuestionDockProps {
 	 */
 	reveal?: boolean;
 	onExpand: () => void;
-	onSubmit: (output: QuestionAnswerData) => void;
+	/** Synchronous return values are ignored; code submissions await any returned promise. */
+	onSubmit: (output: QuestionAnswerData, codeRunId?: string) => unknown;
 	/** Restore only this call's unconfirmed submission after recovery. */
 	initialDraft?: QuestionFormDraft;
 	onSaveDraft?: (draft: QuestionFormDraft) => void;
@@ -115,6 +122,8 @@ export interface QuestionDockProps {
 export function QuestionDock({
 	chatId,
 	draftKey,
+	chemistryContext,
+	structureContinuation,
 	toolName,
 	toolCallId,
 	input,
@@ -163,7 +172,7 @@ export function QuestionDock({
 					question={parsed.question}
 					onExpand={onExpand}
 					variant={reveal ? "reveal" : "collapsed"}
-					toolLabel={toolLabel}
+					toolLabel={canonical === "ask_user_question" && (parsed as AskToolInput).codeExercise ? "Return to code" : toolLabel}
 					label={
 						(canonical === "quiz" || canonical === "explain") &&
 						normalizeQuizType((parsed as { type?: unknown }).type) === "predict"
@@ -176,6 +185,8 @@ export function QuestionDock({
 				<QuestionDockForm
 					chatId={chatId}
 					draftKey={draftKey}
+					chemistryContext={chemistryContext}
+					structureContinuation={structureContinuation}
 					toolName={toolName}
 					toolCallId={toolCallId}
 					input={parsed}
@@ -276,6 +287,8 @@ export function QuestionDockBar({
 function QuestionDockForm({
 	chatId,
 	draftKey,
+	chemistryContext,
+	structureContinuation,
 	toolName,
 	toolCallId,
 	input,
@@ -290,6 +303,7 @@ function QuestionDockForm({
 	paused = false,
 }: Omit<QuestionDockProps, "expanded" | "onExpand" | "reveal">) {
 	const kind = toolQuestionKind(toolName);
+	const codeExercise = kind === "ask" ? (input as AskToolInput).codeExercise : undefined;
 
 	// Canonical QuestionData, built once per question. Quiz options are
 	// deterministically shuffled (seeded by toolCallId) so position never leaks
@@ -341,6 +355,10 @@ function QuestionDockForm({
 		}
 		return q;
 	}, [toolCallId, kind, input]);
+	const problemReferences = useMemo(() => collectMoleculeReferences([
+		...(chemistryContext ?? []), qd.question, ...(qd.context ? [qd.context] : []),
+		...(qd.mode !== "text" ? qd.options.map(option => option.label) : []),
+	], structureContinuation?.problemReferences.map(reference => ({ ...reference.source, label: reference.name }))), [chemistryContext, qd.question, qd.context, qd.mode, qd.options, structureContinuation]);
 
 	// The selection state machine lives in question-core (pure, tested):
 	// single-select displaces, multi-select coexists — picking the ask
@@ -375,7 +393,7 @@ function QuestionDockForm({
 				.then(async (response) => {
 					if (!response.ok) return;
 					const { settings } = await response.json() as { settings: UserSettings | null };
-					if (!request.signal.aborted) setFocused(settings?.agent?.teachingProfile === "focused");
+					if (!request.signal.aborted) setFocused(isFocusedTeachingProfile(settings?.agent?.teachingProfile));
 				})
 				.catch(() => { /* Keep the last known configuration. */ });
 		};
@@ -524,6 +542,35 @@ function QuestionDockForm({
 		onSubmit(buildAnswer(qd, req, toolName));
 	};
 
+	const submitCode = async (codeRunId: string) => {
+		if (finishingSubmissionRef.current) throw new Error("An answer is already being submitted.");
+		finishingSubmissionRef.current = true;
+		try {
+			if (isDictationActive()) {
+				if (!submissionStateRef.current.dictationClaim) throw new Error("Finish the current dictation before submitting code.");
+				await finishDictation();
+			}
+			const latest = submissionStateRef.current;
+			if (!mountedRef.current || latest.paused || latest.compactionRunning) {
+				throw new Error("The question is paused. Your checked code is saved; submit it when the question is available.");
+			}
+			onSaveDraft?.({
+				selection: { ...sel, selected: new Set(sel.selected) },
+				thinking: thinkingTextRef.current,
+				other,
+				text: answerTextRef.current,
+				molecule,
+				confidenceIndex: confIdx,
+			});
+			await onSubmit(buildAnswer(qd, {
+				text: "Code answer submitted for review.",
+				thinking: answerTextRef.current.trim() || undefined,
+			}, toolName), codeRunId);
+		} finally {
+			finishingSubmissionRef.current = false;
+		}
+	};
+
 	/* ENTER SUBMITS FROM ANYWHERE (owner round 6, 2026-10-05): the same
 	 * law as the practice dock — dictated answers rarely focus the field.
 	 * Rides submit() so the dictation-flush law is shared, not forked. */
@@ -668,11 +715,11 @@ function QuestionDockForm({
 
 	return (
 		<ChemistryAnswerProvider onUse={qd.mode === "text" ? setMoleculeInitial : undefined}>
-		<div ref={rootRef} data-testid="question-dock">
+		<div ref={rootRef} data-testid="question-dock" className={codeExercise ? "grid min-w-0 gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]" : undefined}>
 			{/* Question area — scrolls internally if very tall; the bottom row stays put.
 			    Capped by the measured column (--dock-max-h; the old fixed 55dvh cut
 			    long questions short — owner round, 2026-10-05). */}
-			<div data-dock-scroll-area="" data-session-find-root="" className="max-h-[var(--dock-max-h,55dvh)] overflow-y-auto px-4 pt-3">
+			<div data-dock-scroll-area={codeExercise ? undefined : ""} data-session-find-root="" className={codeExercise ? "min-w-0 px-4 pt-3 lg:col-start-1" : "max-h-[var(--dock-max-h,55dvh)] overflow-y-auto px-4 pt-3"}>
 				<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 					{toolName === "probe"
 						? "Probe"
@@ -684,7 +731,7 @@ function QuestionDockForm({
 									: "Check"
 									: kind === "explain"
 										? "Explain"
-											: "Question"}
+											: codeExercise ? "Coding exercise" : "Question"}
 					{qd.mode === "multi-select" && " · select all that apply"}
 				</div>
 				<div className="mb-3 font-medium">
@@ -991,25 +1038,37 @@ function QuestionDockForm({
 
 			{(focused || topicFeedback) && <TopicFeedbackControl value={feedback} onChange={setFeedback} />}
 
+			{codeExercise && chatId && (
+				<div className="min-w-0 p-3 lg:col-start-2 lg:row-start-1 lg:row-span-4 lg:border-l" data-testid="teaching-code-workspace">
+					<CodeWorkbench
+						key={`${toolCallId}:${JSON.stringify(codeExercise)}`}
+						chatId={chatId}
+						problemCallId={toolCallId}
+						disabled={paused || compactionRunning}
+						onSubmit={submitCode}
+					/>
+				</div>
+			)}
+
 			{/* The learner's half of the dock — a composer TWIN: a labeled, bordered
 			    field with Submit docked inside, exactly like the chat composer's
 			    send. Select modes get "Your thinking" (Enter makes a newline — it
 			    is for dumping, soon dictated; the button submits); text mode
 			    keeps "Your answer" with Enter-to-submit. */}
 			<form
-				className="border-t border-border/60 p-1.5"
+				className={cn("min-w-0 border-t border-border/60 p-1.5", codeExercise && "lg:col-start-1")}
 				onSubmit={(e) => {
 					e.preventDefault();
 					submit();
 				}}
 			>
-				{qd.mode === "text" && <ChemistryWorkbench draftKey={`question:${draftKey ?? toolCallId}`} initial={moleculeInitial} value={molecule} onChange={setMolecule} disabled={paused || compactionRunning} />}
+				{qd.mode === "text" && !codeExercise && <ChemistryWorkbench draftKey={`question:${draftKey ?? toolCallId}`} initial={moleculeInitial} continuation={structureContinuation?.molecule} continuationReferenceKeys={structureContinuation?.referenceDraftKeys} problemReferences={problemReferences} value={molecule} onChange={setMolecule} disabled={paused || compactionRunning} />}
 				<div
 					data-testid={qd.mode === "text" ? "answer-field" : "thinking-field"}
 					className="rounded-[10px] border border-border/70 bg-background/60 transition-colors focus-within:border-primary/50"
 				>
 					<div className="px-2.5 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-						{qd.mode === "text" ? "Your answer" : "YOUR THINKING"}
+						{codeExercise ? "Your thinking" : qd.mode === "text" ? "Your answer" : "YOUR THINKING"}
 					</div>
 					{qd.mode === "text" ? (
 						<PathInput
@@ -1036,7 +1095,7 @@ function QuestionDockForm({
 									submit();
 								}
 							}}
-							placeholder={choicesShown ? "Type an answer or add your reasoning…" : "Type your answer…"}
+							placeholder={codeExercise ? "Explain your approach or ask for help…" : choicesShown ? "Type an answer or add your reasoning…" : "Type your answer…"}
 							className="field-sizing-content lh-input max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 						/>
 					) : (
@@ -1083,7 +1142,7 @@ function QuestionDockForm({
 							disabled={(!canSubmit && !canFinishSpokenAnswer) || compactionRunning || paused}
 							className="ml-auto h-9 rounded-[6px] px-3.5 text-sm font-medium"
 						>
-							Submit answer
+							{codeExercise ? "Submit thinking" : "Submit answer"}
 						</Button>
 					</div>
 				</div>

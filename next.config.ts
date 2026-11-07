@@ -84,6 +84,7 @@ const nextConfig: NextConfig = {
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
 			"src/agent/prompts/focused.md",
+			"src/agent/prompts/mad-max.md",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same
 			// per-platform-binary story as the canvas above (one per build).
@@ -104,6 +105,9 @@ const nextConfig: NextConfig = {
 			"node_modules/json-bigint/**/*",
 			"node_modules/bignumber.js/**/*",
 			"node_modules/@rdkit/rdkit/dist/**/*",
+			// These are toolkit lookup tables, not learner data; the broad
+			// data exclusion otherwise removes them from the KET serializer.
+			"node_modules/ketcher-core/dist/application/editor/data/**/*",
 			"scripts/chemistry-conformer.py",
 		],
 	},
@@ -118,6 +122,7 @@ const nextConfig: NextConfig = {
 		"@silvia-odwyer/photon-node", // CJS loads its adjacent WASM from disk
 		"@resvg/resvg-js", // native binding — same
 		"@rdkit/rdkit", // Emscripten loads its adjacent WASM from disk
+		"ketcher-core", // use its Node serializer entry instead of bundling Paper's optional DOM adapter
 	],
 };
 

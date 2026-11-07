@@ -7,7 +7,7 @@ import { math } from "micromark-extension-math";
 
 export type ContentSpan =
 	| { kind: "prose" | "code"; raw: string }
-	| { kind: "math"; raw: string; open: string; body: string; close: string; display: boolean };
+	| { kind: "math"; raw: string; open: string; body: string; close: string; display: boolean; misplacedFence?: boolean };
 const blankLine = /^\r?\n[ \t]*\r?\n/;
 const escaped = (text: string, i: number) => {
 	let n = 0; while (i > 0 && text[--i] === "\\") n++;
@@ -33,7 +33,7 @@ function literalRanges(text: string): Array<{ start: number; end: number }> {
 
 /** Mirrors the app's native dollar-run and legacy-delimiter conventions,
  * with code and blank paragraphs as inline boundaries. */
-export function readContentSpans(text: string): ContentSpan[] {
+export function readContentSpans(text: string, recoverDisplayFences = false): ContentSpan[] {
 	const spans: ContentSpan[] = [];
 	const literals = literalRanges(text);
 	let literal = 0, i = 0, plain = 0;
@@ -45,7 +45,7 @@ export function readContentSpans(text: string): ContentSpan[] {
 		while (literal < literals.length && literals[literal]!.end <= i) literal++;
 		const barrier = literals[literal]?.start ?? Infinity;
 		if (i >= barrier) { opaque(literals[literal]!.end); continue; }
-		let open = "", close = "", display = false, after = -1, at = -1;
+		let open = "", close = "", display = false, after = -1, at = -1, misplacedFence = false;
 		if (text[i] === "\\" && !escaped(text, i) && ["(", "["].includes(text[i + 1] ?? "")) {
 			open = text.slice(i, i + 2); close = open === "\\(" ? "\\)" : "\\]"; display = open === "\\[";
 			for (let j = i + 2; j < text.length - 1; j++) {
@@ -58,12 +58,34 @@ export function readContentSpans(text: string): ContentSpan[] {
 			const before = text.slice(text.lastIndexOf("\n", i - 1) + 1, i);
 			display = size >= 2 && /^[ \t]{0,3}$/.test(before) && !text.slice(i + size, eol < 0 ? text.length : eol).includes("$");
 			if (display) {
+				const openingTail = eol < 0 ? "" : text.slice(i + size, eol);
+				let recover = recoverDisplayFences;
 				let start = eol;
 				while (start >= 0 && start < text.length) {
 					start++;
 					const next = text.indexOf("\n", start);
-					const match = /^([ \t]{0,3})(\$+)[ \t]*\r?$/.exec(text.slice(start, next < 0 ? text.length : next));
-					if (match && match[2]!.length >= size) { at = start + match[1]!.length; close = match[2]!; after = at + close.length; break; }
+					const line = text.slice(start, next < 0 ? text.length : next);
+					const match = /^([ \t]{0,3})(\$+)[ \t]*\r?$/.exec(line);
+					if (match && match[2]!.length >= size) {
+						at = start + match[1]!.length; close = match[2]!; after = at + close.length;
+						misplacedFence = recover && at < barrier && !!openingTail.trim() &&
+							canParseTex(text.slice(i + size, at), true);
+						break;
+					}
+					// Only recover a matching trailing run inside the same paragraph.
+					// A broken flow opener can hide Markdown code from literalRanges.
+					if (start >= barrier || /^[ \t\r]*$|^ {0,3}(?:`{3,}|~{3,})/.test(line)) recover = false;
+					const tail = recover ? /(?<!\$)\$+[ \t]*\r?$/.exec(line) : null;
+					if (tail && tail.index > 0 && tail[0].trimEnd().length === size) {
+						const end = start + tail.index;
+						const body = text.slice(i + size, end);
+						if (end < barrier && !escaped(text, end) &&
+							!texRanges(body).some(r => r.kind === "comment" && r.start >= start - i - size) &&
+							canParseTex(body, true)) {
+							at = end; close = open; after = end + size; misplacedFence = true;
+							break;
+						}
+					}
 					start = next;
 				}
 			} else {
@@ -79,7 +101,7 @@ export function readContentSpans(text: string): ContentSpan[] {
 		}
 		if (at >= 0) {
 			if (plain < i) spans.push({ kind: "prose", raw: text.slice(plain, i) });
-			spans.push({ kind: "math", raw: text.slice(i, after), open, body: text.slice(i + open.length, at), close, display });
+			spans.push({ kind: "math", raw: text.slice(i, after), open, body: text.slice(i + open.length, at), close, display, misplacedFence });
 			i = plain = after;
 		} else i += open.length || 1;
 	}

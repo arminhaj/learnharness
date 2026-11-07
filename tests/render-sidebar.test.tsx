@@ -14,7 +14,7 @@ import React from "react";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionRow, timeAgo } from "../components/sidebar.tsx";
+import { SessionDateSection, SessionRow, timeAgo } from "../components/sidebar.tsx";
 import type { ChatListItem } from "../src/core/index.ts";
 
 function item(overrides: Partial<ChatListItem>): ChatListItem {
@@ -38,7 +38,47 @@ function render(chat: ChatListItem, active = false) {
 	return renderToStaticMarkup(<SessionRow chat={chat} active={active} onOpen={() => {}} />);
 }
 
+describe("SessionDateSection", () => {
+	it("connects an expanded date disclosure to its sessions", () => {
+		const html = renderToStaticMarkup(
+			<SessionDateSection dateKey="2026-11-02" label="Today" count={1} expanded onToggle={() => {}}>
+				<SessionRow chat={item({})} active={false} onOpen={() => {}} />
+			</SessionDateSection>,
+		);
+		assert.match(html, /aria-expanded="true"/);
+		assert.match(html, /aria-controls="sessions-2026-11-02"/);
+		assert.match(html, /id="sessions-2026-11-02"/);
+		assert.match(html, /Today/);
+		assert.match(html, /data-session-id="c1"/);
+	});
+
+	it("removes collapsed session controls from the focus and keyboard walk", () => {
+		const html = renderToStaticMarkup(
+			<SessionDateSection dateKey="2026-11-02" label="Today" count={1} expanded={false} onToggle={() => {}}>
+				<SessionRow chat={item({})} active={false} onOpen={() => {}} />
+			</SessionDateSection>,
+		);
+		assert.match(html, /aria-expanded="false"/);
+		assert.match(html, /id="sessions-2026-11-02" hidden/);
+		assert.doesNotMatch(html, /data-session-id/);
+	});
+});
+
 describe("SessionRow", () => {
+	it("completed and archived sessions identify their section without changing their titles", () => {
+		const completed = item({ lessonCompletion: { total: 2, completed: 2 }, pendingQuestion: true });
+		assert.match(render(completed), /Completed ·/);
+		assert.match(render({ ...completed, archivedAt: new Date().toISOString() }), /Archived ·/);
+		assert.match(render({ ...completed, busy: true }), /Working…/);
+		assert.match(render(completed), /Test session/);
+	});
+
+	it("explicit lesson completion labels partial and unplanned lessons, and reopening overrides full progress", () => {
+		assert.match(render(item({ lessonCompleted: true, lessonCompletion: { total: 13, completed: 12 }, pendingQuestion: true })), /Completed ·/);
+		assert.match(render(item({ lessonCompleted: true })), /Completed ·/);
+		assert.doesNotMatch(render(item({ lessonCompleted: false, lessonCompletion: { total: 1, completed: 1 } })), /Completed ·/);
+	});
+
 	it("no phase strips, no phase colors — the retired decoration", () => {
 		const html = render(item({ phase: "teach" }));
 		assert.ok(!html.includes("phase-strip"), "strip removed by design (too busy)");

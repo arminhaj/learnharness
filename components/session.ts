@@ -112,8 +112,8 @@ export function useChatSession({ chatId, initialMessages, initialQuestionDraft, 
 	const reconcileTurn = useCallback(() => model.reconcileTurn(), [model]);
 	const steer = useCallback((text: string) => void model.steer(text), [model]);
 	const submitAnswer = useCallback(
-		(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string) =>
-			void model.submitAnswer(tool, toolCallId, output, questionKey),
+		(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string, codeRunId?: string) =>
+			model.submitAnswer(tool, toolCallId, output, questionKey, codeRunId),
 		[model],
 	);
 	const dismissQuestion = useCallback(

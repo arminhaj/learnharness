@@ -56,6 +56,7 @@ export interface EffectiveSlot {
 	provider: string;
 	id: string;
 	thinkingLevel?: ThinkingLevel;
+	fastMode?: boolean;
 }
 
 /** A fully-resolved model pin for one role — same shape/level semantics
@@ -65,6 +66,7 @@ export interface EffectiveModelSpec {
 	provider: string;
 	id: string;
 	thinkingLevel?: ThinkingLevel;
+	fastMode?: boolean;
 }
 
 /** The concrete appearance view — same shape as the factory's. */
@@ -119,6 +121,8 @@ export function resolveConversationSpec(
 		provider: model.provider,
 		id: model.id,
 		thinkingLevel: chat?.thinkingLevel ?? strong?.thinkingLevel,
+		// Existing sessions never inherit a later change to the draft's speed.
+		...(chat?.fastMode !== undefined ? { fastMode: chat.fastMode } : {}),
 	};
 }
 
@@ -140,7 +144,9 @@ export function resolveRoleSpec(role: ModelRole, record: UserSettings | null): E
  *  to ride without the factory floor). */
 export function resolveSlot(slot: ModelSlot | undefined): EffectiveSlot | null {
 	if (!slot?.model) return null;
-	return { provider: slot.model.provider, id: slot.model.id, thinkingLevel: slot.thinkingLevel };
+	return { provider: slot.model.provider, id: slot.model.id, thinkingLevel: slot.thinkingLevel,
+		...(slot.fastMode !== undefined ? { fastMode: slot.fastMode } : {}),
+	};
 }
 
 /** Resolve one role's spec — the BYOK chain (owner 2026-09-22): role
@@ -162,6 +168,7 @@ export function resolveModelSpec(
 		provider: model.provider,
 		id: model.id,
 		thinkingLevel: override?.thinkingLevel ?? slot?.thinkingLevel,
+		...((override?.fastMode ?? slot?.fastMode) !== undefined ? { fastMode: override?.fastMode ?? slot?.fastMode } : {}),
 	};
 }
 

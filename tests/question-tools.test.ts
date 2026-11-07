@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { Value } from "typebox/value";
+import { createFauxCore } from "@earendil-works/pi-ai";
 import {
 	askUserQuestionTool,
 	createProberTools,
@@ -31,7 +32,14 @@ import { jobStore } from "../src/store/jobs.ts";
 import { probeQuizInputSchema, quizInputObject, quizInputProblems } from "../src/core/question-core.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { PATHS } from "../config.ts";
-import { composeInstructions } from "../src/agent/teacher-agent.ts";
+import {
+	composeExplorationInstructions,
+	composeInstructions,
+	createExplorationAgent,
+	createPracticeAgent,
+	createProberAgent,
+	createTeacherAgent,
+} from "../src/agent/teacher-agent.ts";
 import { parseExplainInput } from "../src/core/tool-parts.ts";
 
 const dataDir = path.join(PATHS.root, "data");
@@ -297,10 +305,10 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 			spawn: () => {},
 		};
 		const full = Object.keys(createTeacherTools(ctx)).sort();
-		assert.deepEqual(full, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "research", "visual"]);
+		assert.deepEqual(full, ["ask_user_question", "demo", "find", "grep", "lesson_set_completed", "ls", "pause_teaching", "pdf", "plan_init", "plan_set_completed", "quiz", "read", "research", "visual"]);
 
 		const noResearch = Object.keys(createTeacherTools(ctx, { research: false })).sort();
-		assert.deepEqual(noResearch, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "visual"]);
+		assert.deepEqual(noResearch, ["ask_user_question", "demo", "find", "grep", "lesson_set_completed", "ls", "pause_teaching", "pdf", "plan_init", "plan_set_completed", "quiz", "read", "visual"]);
 
 		// absent = enabled: an empty record and undefined behave identically
 		assert.deepEqual(
@@ -311,7 +319,7 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 
 		// The mechanic switch (owner 2026-09-27): free-recall swaps the teach
 		// quiz for the teach explain — one quizzing tool, whichever is armed.
-		const freeFull = ["ask_user_question", "demo", "explain", "find", "grep", "ls", "pdf", "plan_init", "read", "research", "visual"];
+		const freeFull = ["ask_user_question", "demo", "explain", "find", "grep", "lesson_set_completed", "ls", "pause_teaching", "pdf", "plan_init", "plan_set_completed", "read", "research", "visual"];
 		assert.deepEqual(Object.keys(createTeacherTools(ctx, { explain: true })).sort(), freeFull);
 		assert.deepEqual(
 			Object.keys(createTeacherTools(ctx, { explain: true, research: false })).sort(),
@@ -320,32 +328,62 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 		);
 	});
 
-	it("requires hidden choices when authoring a Focused check and still reads older questions", () => {
+	it("requires hidden choices for Focused and Mad Max checks and still reads older questions", () => {
 		const ctx = { chatId: newChat("Focused lesson"), chatStore, deliver: () => {}, jobStore, spawn: () => {} };
 		const original = { explain: true };
-		const focus = "focused";
-		for (const [kind, makeTools, name] of [
-			["prober", createProberTools, "recall"],
-			["teacher", createTeacherTools, "explain"],
-		] as const) {
-			assert.equal(composeInstructions(kind, {}, "original"), composeInstructions(kind));
-			assert.match(composeInstructions(kind, {}, focus), /## Focused teaching configuration/);
-			const originalSchema = makeTools(ctx, original, "original")[name]!.parameters;
-			const focusedSchema = makeTools(ctx, original, focus)[name]!.parameters;
-			const question = {
-				question: "What is twice five?",
-				correctAnswer: "Ten.",
-				...(kind === "teacher" ? { type: "check", nodeId: "doubling" } : {}),
-			};
-			const choiceHints = [{ label: "Ten" }, { label: "Seven" }];
-			assert.equal(Value.Check(originalSchema, question), true);
-			assert.equal(originalSchema.properties.choiceHints, undefined);
-			assert.equal(Value.Check(focusedSchema, question), false);
-			assert.equal(Value.Check(focusedSchema, { ...question, choiceHints }), true);
-			assert.equal(parseExplainInput(question)?.question, question.question);
-			assert.deepEqual(parseExplainInput({ ...question, choiceHints })?.choiceHints, choiceHints);
+		for (const profile of ["focused", "mad-max"] as const) {
+			for (const [kind, makeTools, name] of [
+				["prober", createProberTools, "recall"],
+				["teacher", createTeacherTools, "explain"],
+			] as const) {
+				assert.equal(composeInstructions(kind, {}, "original"), composeInstructions(kind));
+				assert.match(composeInstructions(kind, {}, profile), /## Focused teaching configuration/);
+				const originalSchema = makeTools(ctx, original, "original")[name]!.parameters;
+				const focusedSchema = makeTools(ctx, original, profile)[name]!.parameters;
+				const question = {
+					question: "What is twice five?",
+					correctAnswer: "Ten.",
+					...(kind === "teacher" ? { type: "check", nodeId: "doubling" } : {}),
+				};
+				const choiceHints = [{ label: "Ten" }, { label: "Seven" }];
+				assert.equal(Value.Check(originalSchema, question), true);
+				assert.equal(originalSchema.properties.choiceHints, undefined);
+				assert.equal(Value.Check(focusedSchema, question), false);
+				assert.equal(Value.Check(focusedSchema, { ...question, choiceHints }), true);
+				assert.equal(parseExplainInput(question)?.question, question.question);
+				assert.deepEqual(parseExplainInput({ ...question, choiceHints })?.choiceHints, choiceHints);
+			}
+			assert.equal(composeInstructions("practice", {}, profile), composeInstructions("practice"));
 		}
-		assert.equal(composeInstructions("practice", {}, focus), composeInstructions("practice"));
+	});
+
+	it("constructs Mad Max agents with the selected prompt and tools without prompt override switches", () => {
+		const faux = createFauxCore({});
+		const engine = { model: faux.getModel(), streamFn: faux.streamSimple };
+		const ctx = { chatId: newChat("Mad Max runtime"), chatStore, deliver: () => {}, jobStore, spawn: () => {} };
+		const opts = { engine, teachingProfile: "mad-max" as const };
+		for (const [kind, agent] of [
+			["prober", createProberAgent(ctx, opts)],
+			["teacher", createTeacherAgent(ctx, opts)],
+		] as const) {
+			assert.equal(agent.state.systemPrompt, composeInstructions(kind, undefined, "mad-max"));
+			assert.match(agent.state.systemPrompt, /## Mad Max teaching configuration/);
+			assert.ok(agent.state.tools.some((tool) => tool.name === (kind === "prober" ? "recall" : "explain")));
+			assert.ok(!agent.state.tools.some((tool) => tool.name === "quiz" || tool.name === "probe"));
+			assert.match(agent.state.tools.find((tool) => tool.name === "ask_user_question")!.description, /codeExercise/);
+		}
+		const probeDone = createProberTools(ctx, undefined, "mad-max").probe_done!;
+		assert.match(probeDone.description, /goal is concrete and you can choose a starting point/);
+		assert.doesNotMatch(probeDone.description, /every strand.*bracketed/);
+
+		const exploration = createExplorationAgent(ctx, opts);
+		assert.equal(exploration.state.systemPrompt, composeExplorationInstructions(undefined, "mad-max"));
+		assert.ok(exploration.state.systemPrompt.indexOf("# Inline exploration") < exploration.state.systemPrompt.indexOf("## Mad Max teaching configuration"));
+		assert.match(exploration.state.systemPrompt, /do not answer or grade its pending question, advance its plan, or resume its sequence/);
+		const practice = createPracticeAgent(ctx, opts);
+		assert.equal(practice.state.systemPrompt, composeInstructions("practice"));
+		assert.doesNotMatch(practice.state.systemPrompt, /## Mad Max teaching configuration|## Focused teaching configuration/);
+		assert.doesNotMatch(createTeacherAgent(ctx, { engine }).state.systemPrompt, /## Mad Max teaching configuration/);
 	});
 });
 

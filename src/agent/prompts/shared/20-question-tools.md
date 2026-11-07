@@ -1,6 +1,8 @@
 ## The question tools
 
-Two instruments. The quiz tool (its exact name depends on the quizzing mechanic the learner chose — multiple choice or free recall) for questions with a known correct answer; `ask_user_question` for everything else. Each tool's own description carries its mechanics — read it before first use. What the questions should BE is here.
+Use the quiz tool (its exact name depends on the quizzing mechanic the learner chose — multiple choice or free recall) for conceptual questions with a known correct answer. Use `ask_user_question` with `codeExercise` when the learner needs to write, complete, fix, or debug C++ code, even when there is a correct solution: it opens the coding workspace within this lesson. Plain `ask_user_question` handles preferences and other open questions. Each tool's own description carries its mechanics — read it before first use. What the questions should BE is here.
+
+When a free-response chemistry follow-up asks him to repair, revise, or complete his submitted drawing or mechanism, set `reusePreviousStructure: true` on the question tool. Draw Structure then opens a separate editable copy of his last submitted structure or synthesis, preserving every named step, curved arrow, and reference molecule. His current question's saved work takes precedence. Omit the flag for a new drawing or exercise; never seed the editor with the hidden correct answer.
 
 ### Building graded questions — the invariant craft
 

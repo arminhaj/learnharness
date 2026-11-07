@@ -68,6 +68,11 @@ export interface ChatStore {
 	 * Like saveSettings: a rename is NOT conversation activity — updatedAt
 	 * stays put, so sidebar order never churns on a rename. */
 	renameChat(id: string, title: string): ChatRecord;
+	/** Archive or restore without changing conversation activity or content.
+	 * Repeating the current state performs no write or list announcement. */
+	setArchived(id: string, archived: boolean): ChatRecord;
+	/** Complete or reopen the lesson without changing plan-step evidence. */
+	setLessonCompleted(id: string, completed: boolean): ChatRecord;
 	/** Delete the session record entirely (session-deletion wave 6, owner
 	 *  2026-09-22). False when the id is unknown. The graph-ledger purge and
 	 *  job cleanup are the caller's choreography (core/graph-deletion.ts +
@@ -148,10 +153,12 @@ export interface CreateJobInit {
 	activity?: string;
 	/** Saved on the job before its worker is spawned. */
 	input?: unknown;
+	/** Retains attempt history for a learner-requested retry. */
+	retryOf?: string;
 }
 
-/** Mergeable fields — identity (id, kind, chatId, toolCallId, createdAt) is immutable. */
-export type JobPatch = Partial<Omit<JobRecord, "id" | "kind" | "chatId" | "toolCallId" | "createdAt">>;
+/** Mergeable fields — identity and retry ancestry are immutable. */
+export type JobPatch = Partial<Omit<JobRecord, "id" | "kind" | "chatId" | "toolCallId" | "createdAt" | "retryOf">>;
 
 export interface JobStore {
 	/** Create a running job (keyed by toolCallId for spawn dedup). */

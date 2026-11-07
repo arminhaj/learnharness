@@ -37,6 +37,23 @@ existing history or prior summary; a later attempt can retry normally.
 
 ## Conversation meter
 
+Before a conversation request is serialized, `toLlmMessages` applies a lossless
+chemistry projection to learner and tool-result text in the retained history.
+Large complete `molecule` fences become `chemistry-context` fences with format
+`chemistry-context-v1`. KET changes from an escaped, often indented JSON string
+to its complete JSON object. All editor fields, atom and arrow coordinates,
+annotations, stereo properties, and charge values remain present. Molfile and
+SMILES strings remain exact. A synthesis's `firstStep` identifies the step
+whose identical Molfile/SMILES/KET/SDF supplies the root, removing only that
+duplicate; labels, names, order, and every step remain present.
+
+This is a local request transformation, not another summarizer call. The saved
+record, editable documents, portable transcript, assistant messages, signed
+reasoning, system prompt, model, reasoning settings, and speed settings are not
+rewritten. Invalid or unsupported sources, numbers that cannot be preserved,
+incomplete fences, and representations that would grow retain their original
+text. The existing history-compaction threshold and lifecycle still apply.
+
 The numerator is the latest qualifying completed conversation response's native
 Pi `input + output + cacheRead + cacheWrite`. Reasoning is already inside output;
 `totalTokens` is not an override. Partial stream updates, errors, aborts, invalid

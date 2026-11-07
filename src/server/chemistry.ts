@@ -5,7 +5,7 @@ import path from "node:path";
 import {
 	ChemistryInputError, MAX_CHEMISTRY_REQUEST_BYTES, MAX_MOLECULE_ATOMS,
 	moleculeInput, parseMoleculeDocument, parseMoleculeSource,
-	type ConformerResult, type MoleculeDocument, type MoleculeSource,
+	type ConformerResult, type MoleculeDocument, type MoleculeSource, type MoleculeStepDocument,
 } from "../core/chemistry.ts";
 
 let rdkitPromise: Promise<MainModule> | undefined;
@@ -15,7 +15,7 @@ function rdkit(): Promise<MainModule> {
 
 /** Authoritative validation is performed again on the server before storage.
  * A client-supplied SMILES never overrides a submitted Molfile. */
-export async function normalizeMolecule(source: MoleculeSource): Promise<MoleculeDocument> {
+async function normalizeSingleMolecule(source: Omit<MoleculeSource, "steps">): Promise<Omit<MoleculeDocument, "steps">> {
 	const parsed = parseMoleculeSource(source);
 	const engine = await rdkit();
 	let molecule;
@@ -29,11 +29,20 @@ export async function normalizeMolecule(source: MoleculeSource): Promise<Molecul
 		canonical = engine.get_mol_copy(molecule);
 		if (!canonical) throw new ChemistryInputError("This structure could not be copied.");
 		canonical.remove_hs_in_place();
+		const smiles = canonical.get_smiles();
+		if (parsed.ket) {
+			// Restoring a drawing must never replace a newer molecular graph
+			// with stale editor JSON. Compare independently derived chemistry.
+			const { moleculeFromEditorDocument } = await import("../chemistry/editor-document.ts");
+			const drawing = await normalizeSingleMolecule({ molfile: moleculeFromEditorDocument(parsed.ket) });
+			if (drawing.smiles !== smiles) throw new ChemistryInputError("The saved editor drawing does not match this molecular structure. Reopen and save the complete drawing again.");
+		}
 		return {
 			version: 1,
 			molfile: molecule.get_molblock(),
-			smiles: canonical.get_smiles(),
+			smiles,
 			...(parsed.label && { label: parsed.label }),
+			...(parsed.ket && { ket: parsed.ket }),
 		};
 	} catch (error) {
 		if (error instanceof ChemistryInputError) throw error;
@@ -44,12 +53,32 @@ export async function normalizeMolecule(source: MoleculeSource): Promise<Molecul
 	}
 }
 
+/** Validate every saved step before the complete synthesis can be stored.
+ * The root remains the first step for older renderers and single-molecule IO. */
+export async function normalizeMolecule(source: MoleculeSource): Promise<MoleculeDocument> {
+	const parsed = parseMoleculeSource(source);
+	if (!parsed.steps) return normalizeSingleMolecule(parsed);
+	const steps: MoleculeStepDocument[] = [];
+	for (const [index, step] of parsed.steps.entries()) {
+		try {
+			steps.push({ ...await normalizeSingleMolecule(step), id: step.id, name: step.name });
+		} catch (error) {
+			if (error instanceof ChemistryInputError) throw new ChemistryInputError(`Step ${index + 1} (${step.name}): ${error.message}`);
+			throw error;
+		}
+	}
+	const first = steps[0]!;
+	return parseMoleculeDocument({
+		version: 1, molfile: first.molfile, smiles: first.smiles,
+		...(first.ket && { ket: first.ket }), ...(parsed.label && { label: parsed.label }), steps,
+	});
+}
+
 /** Keeps the editable document while independently deriving the chemical
  * interchange source. KET remains inert JSON, never executable content. */
 export async function normalizeMoleculeDocument(value: unknown): Promise<MoleculeDocument> {
 	const document = parseMoleculeDocument(value);
-	const normalized = await normalizeMolecule(document);
-	return { ...normalized, ...(document.ket && { ket: document.ket }) };
+	return normalizeMolecule(document);
 }
 
 export class ChemistryUnavailableError extends Error {}

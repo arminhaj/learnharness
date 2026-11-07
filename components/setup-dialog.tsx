@@ -40,7 +40,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useBackdropDismiss } from "@/components/backdrop-dismiss";
 import type React from "react";
-import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings, CUSTOM_PROVIDER } from "@/src/core";
+import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings, CUSTOM_PROVIDER, supportsFastMode } from "@/src/core";
 import { prettyModel } from "@/components/usage-format";
 import { ModelMenuList } from "@/components/settings/model-menu";
 import { MenuShell } from "@/components/menu-shell";
@@ -72,7 +72,7 @@ interface ModelsBody {
 	/** The three tiers' RESOLVED pins (BYOK: NULL per unset tier) — the
 	 *  PREFILL + "needed" marks (owner, 2026-09-22): pinned tiers open
 	 *  with their pick, unpinned tiers carry the mark. */
-	slots?: Record<ModelSlotName, { model: { provider: string; id: string }; thinkingLevel?: ThinkingLevel } | null>;
+	slots?: Record<ModelSlotName, { model: { provider: string; id: string }; thinkingLevel?: ThinkingLevel; fastMode?: boolean } | null>;
 }
 
 /** Pure: which stage the flow opens at — no keyed provider = keys first
@@ -409,9 +409,11 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 		const models: ModelsSettings = {};
 		for (const slot of SLOT_ORDER) {
 			const level = levels[slot];
+			const fastMode = catalog?.slots?.[slot]?.fastMode;
 			models[slot] = {
 				model: { provider: picked[slot]!.provider, id: picked[slot]!.id },
 				...(level ? { thinkingLevel: level } : {}),
+				...(fastMode !== undefined ? { fastMode: fastMode && supportsFastMode(picked[slot]!.provider, picked[slot]!.id) } : {}),
 			};
 		}
 		const res = await fetch("/api/settings/models", {

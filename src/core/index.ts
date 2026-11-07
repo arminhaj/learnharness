@@ -24,6 +24,7 @@ export * from "./learning-session.ts";
 export * from "./learning-history.ts";
 export * from "./extraction-progress.ts";
 export * from "./render-settings.ts";
+export * from "./model-speed.ts";
 
 export * from "./question-core.ts";
 export * from "./chat-drafts.ts";
@@ -79,6 +80,8 @@ export * from "./settings-resolution.ts";
 export * from "./search.ts"; // search port (search wave, 2026-09-20)
 export * from "./session-find.ts";
 export * from "./session-navigation.ts";
+export * from "./session-date-groups.ts";
+export * from "./session-sections.ts";
 export { birthSessionOf } from "./session-clusters.ts";
 // auth-keys.ts (auth-keys wave, 2026-09-19): the curated key catalog +
 // shape rules + masking — pure, browser-safe (the auth page binds to the
@@ -98,3 +101,8 @@ export * from "./code-completion.ts";
 export * from "./code-diagnostics.ts";
 export * from "./api-code-completion.ts";
 export * from "./chemistry.ts";
+export * from "./local-images.ts";
+
+export { lessonProgress } from "./lesson-progress.ts";
+export * from "./chemistry-references.ts";
+export * from "./chemistry-continuation.ts";

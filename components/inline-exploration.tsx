@@ -14,6 +14,7 @@ import { PlanBlock } from "@/components/plan-block";
 import { artifactRenderers } from "@/components/artifacts";
 import { LiveToolCard } from "@/components/artifacts/live-tool-card";
 import { SubagentSteerCard } from "@/components/artifacts/steer-card";
+import { withCompletedVisuals } from "@/components/artifacts/completed-visuals";
 import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog";
 import { CompactionCutDivider, CompactionMomentDivider, type CompactionDividerData } from "@/components/compaction-divider";
 import { Composer } from "@/components/composer";
@@ -24,7 +25,7 @@ import { SourcePassage } from "@/components/source-passage";
 import { persistChatDraft } from "@/components/chat-drafts";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import { finishDictation, isDictationActive, joinDictation, useDictationTarget } from "@/components/dictation";
-import { endsInFailedTurn, firstSourceTextParts, messageAnchorId, textPartMessageId, findPendingToolCall, pendingQuestionOf, phaseAt3, questionNeedsReveal, dismissedAnswer, toolQuestionKind, type ArtifactPartProps, type ChatRecord, type JobRecord, type LhViewMessage, type PlanBlockData, type QuestionAnswerData, type SavedChatDraft } from "@/src/core";
+import { endsInFailedTurn, firstSourceTextParts, publicChemistryContext, questionChemistryContinuation, messageAnchorId, textPartMessageId, findPendingToolCall, pendingQuestionOf, phaseAt3, questionNeedsReveal, dismissedAnswer, toolQuestionKind, type ArtifactPartProps, type ChatRecord, type JobRecord, type LhViewMessage, type PlanBlockData, type QuestionAnswerData, type SavedChatDraft } from "@/src/core";
 
 export type ExplorationRecord = ChatRecord & { exploration: NonNullable<ChatRecord["exploration"]>; draft?: SavedChatDraft };
 
@@ -526,7 +527,7 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 				{currentTrail.join(" › ")}
 			</nav>
 			<div data-testid="exploration-transcript" className="space-y-3 py-3">
-				{messages.map(message => {
+				{withCompletedVisuals(messages, jobs, chat.id).map(message => {
 					if (message.parts.some(part => part.type === "data-subagent-artifact" || part.type === "data-subagent-aborted")) {
 						return <SourcePassage key={message.id} messageId={message.id}><SubagentSteerCard message={message} /></SourcePassage>;
 					}
@@ -573,6 +574,8 @@ function ExplorationConversation({ chat, active, changing, initialPrompt, onInit
 						saveQuestionDraft(pending.key, { readingThinking: value });
 					}} onEscape={() => { void finishDictation(); }} onOpen={revealPending ? reveal : undefined} claim={canInteract && revealPending} />}
 					<div className="rounded-xl border bg-background"><QuestionDock key={pending.key}
+						draftKey={`${chat.id}:${pending.key}`} chemistryContext={publicChemistryContext(messages, pending.toolCallId)}
+						structureContinuation={questionChemistryContinuation(messages, pending.toolCallId, chat.id)}
 						toolName={pending.tool as "quiz" | "explain" | "ask_user_question" | "probe" | "recall"} toolCallId={pending.toolCallId} input={pending.input as never}
 						expanded={!revealPending} reveal={revealPending} phase={phase} onExpand={reveal} onSubmit={answer}
 						initialDraft={questionDraft(pending.key)?.form} onSaveDraft={form => saveQuestionDraft(pending.key, { form })}

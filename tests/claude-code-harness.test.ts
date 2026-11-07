@@ -50,6 +50,12 @@ function streamEvent(event: object): string {
 	return JSON.stringify({ type: "stream_event", event });
 }
 
+function finalizedQuestionInput(id: string, input: object): string {
+	return JSON.stringify({ type: "assistant", message: { content: [
+		{ type: "tool_use", id, name: "mcp__learnharness__ask_user_question", input },
+	] } });
+}
+
 function toAskScenario(): string[] {
 	return [
 		streamEvent({ type: "message_start", message: { usage: {} } }),
@@ -59,6 +65,7 @@ function toAskScenario(): string[] {
 			content_block: { type: "tool_use", id: ASK_ID, name: "mcp__learnharness__ask_user_question", input: {} },
 		}),
 		streamEvent({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(ASK_INPUT) } }),
+		finalizedQuestionInput(ASK_ID, ASK_INPUT),
 		streamEvent({ type: "content_block_stop", index: 0 }),
 		streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} }),
 		streamEvent({ type: "message_stop" }),
@@ -233,9 +240,10 @@ test("a question pauses later calls from the same CLI response until the learner
 	const secondId = "toolu_second_question";
 	const secondQuestion = "What do you want to learn next?";
 	const scenario = toAskScenario();
-	scenario.splice(4, 0,
+	scenario.splice(5, 0,
 		streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: secondId, name: "mcp__learnharness__ask_user_question", input: {} } }),
 		streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ question: secondQuestion }) } }),
+		finalizedQuestionInput(secondId, { question: secondQuestion }),
 		streamEvent({ type: "content_block_stop", index: 1 }),
 	);
 	scenario.splice(scenario.length - 1, 0, JSON.stringify({ fake: "call", id: secondId, name: "ask_user_question", arguments: { question: secondQuestion } }));
@@ -261,9 +269,10 @@ test("an individually cancelled MCP question queued behind a learner wait never 
 	const cancelledId = "toolu_cancelled_question";
 	const question = "This cancelled question must never be posed";
 	const scenario = toAskScenario();
-	scenario.splice(4, 0,
+	scenario.splice(5, 0,
 		streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: cancelledId, name: "mcp__learnharness__ask_user_question", input: {} } }),
 		streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ question }) } }),
+		finalizedQuestionInput(cancelledId, { question }),
 		streamEvent({ type: "content_block_stop", index: 1 }),
 	);
 	scenario.splice(scenario.length - 2, 2,
@@ -312,8 +321,8 @@ test("a question answered after the idle timeout starts a fresh CLI process that
 	assert.equal(getLastAssistantText(chatId), "hello there");
 
 	const replay = readFileSync(fakeRun.stdinFiles[1] ?? "", "utf8");
-	assert.ok(replay.includes("[tool call ask_user_question]"), replay);
+	assert.ok(replay.includes("[tool call mcp__learnharness__ask_user_question]"), replay);
 	assert.ok(replay.includes(ASK_INPUT.question), replay);
-	assert.ok(replay.includes("[tool result ask_user_question]"), replay);
+	assert.ok(replay.includes("[tool result mcp__learnharness__ask_user_question]"), replay);
 	assert.ok(replay.includes(ANSWER_TEXT), replay);
 });

@@ -1,8 +1,9 @@
 /**
  * JobStore — the fs JSON adapter: one file per background sub-agent job in
  * data/jobs/ (contracts.ts "THE ASYNC PROTOCOL"). Keyed by toolCallId for
- * dedup: the chat-handler spawn hook never creates two jobs for the same
- * tool part. Implements core/ports.ts JobStore. Idioms: sync fs, id-guarded
+ * dedup: repeated dispatch resolves the latest attempt; an explicit learner
+ * retry links a new attempt to the failed job. Implements core/ports.ts
+ * JobStore. Idioms: sync fs, id-guarded
  * filenames, JSON with tab indentation. Writes are small and rare (activity
  * line updates); the read-modify-write sections in the runner contain no
  * awaits, so they are atomic within the single-threaded event loop.
@@ -15,6 +16,7 @@ import { emit } from "../core/events.ts";
 import type { JobStore } from "../core/ports.ts";
 import type { CreateJobInit, JobPatch } from "../core/ports.ts";
 import type { JobRecord } from "../core/contracts.ts";
+import { latestJobAttempt } from "../core/contracts/jobs.ts";
 
 /** Background jobs (data/jobs). Not in config.ts PATHS (orchestrator-owned). */
 const JOBS_DIR = path.join(PATHS.data, "jobs");
@@ -36,6 +38,7 @@ function createJob(init: CreateJobInit): JobRecord {
 		chatId: init.chatId,
 		toolCallId: init.toolCallId,
 		...(init.input !== undefined ? { input: init.input } : {}),
+		...(init.retryOf ? { retryOf: init.retryOf } : {}),
 		status: "running",
 		activity: init.activity ?? "starting",
 		createdAt: now,
@@ -87,7 +90,7 @@ function listJobs(chatId: string): JobRecord[] {
 
 /** The job fulfilling a given tool part, if any (spawn-hook dedup). */
 function findJobByToolCallId(chatId: string, toolCallId: string): JobRecord | null {
-	return listJobs(chatId).find((j) => j.toolCallId === toolCallId) ?? null;
+	return latestJobAttempt(listJobs(chatId), toolCallId);
 }
 
 /** Delete every job record file for a chat (session-deletion wave 6) —

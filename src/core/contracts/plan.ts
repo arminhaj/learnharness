@@ -11,6 +11,13 @@
 // One substrate with the global graph: tree nodes fold into graph nodes.
 
 import type { CodingMode } from "../coding-session.ts";
+import { parseAskInput } from "../tool-parts.ts";
+
+/** A coding question carries position, but a preference question never does. */
+export function isPlanQuestion(tool: string | undefined, input: unknown): boolean {
+	return tool === "quiz" || tool === "explain" ||
+		(tool === "ask_user_question" && !!parseAskInput(input)?.codeExercise);
+}
 
 export interface PlanNode {
 	/** Opaque, agent-chosen slug, stable across edits: "chain-rule-intuition". */
@@ -31,17 +38,16 @@ export interface PlanEdge {
 }
 
 export interface PlanTree {
+	/** Explicit tutor completion; absent on existing sessions until assessed. */
+	completedNodeIds?: string[];
 	nodes: PlanNode[];
 	edges: PlanEdge[];
 	/** Increments on every mutation — lets the UI animate/react to changes. */
 	version: number;
 }
 
-// NOTE (2026-09-11 pivot, docs/probe-teach-split.md): the tree once carried
-// `currentNodeId` / `doneNodeIds` — progress fields. They are GONE by
-// design: the tree carries structure ONLY; position and visited-ness derive
-// from the transcript at render time (derivePlanStatuses below). There is no
-// done ledger of any kind. No backwards compatibility for old records.
+// Position remains transcript-derived. Lesson completion is explicitly stored
+// in completedNodeIds and is independent of visiting or quizzing a node.
 
 /** Derived, never stored: status of a node for the panel (vision §2). */
 export type PlanNodeStatus = "current" | "visited" | "upcoming";
@@ -49,7 +55,8 @@ export type PlanNodeStatus = "current" | "visited" | "upcoming";
 // ─── derived statuses: position from CALLS, never from results ─────────────
 //
 // (2026-09-11 pivot — docs/probe-teach-split.md §3.) The teacher AUTHORS the
-// map (plan_init, mermaid — re-callable rewrite) and never tracks progress.
+// map (plan_init, mermaid — re-callable rewrite). Position remains derived;
+// explicit completion is tracked separately through plan_set_completed.
 // The quiz `nodeId` means "this question is ABOUT this node" — a position
 // signal, never a completion signal. Derivation reads CALLS only:
 //   current — the node of the most RECENT tagged quiz call (any state)
@@ -91,7 +98,7 @@ export function derivePlanStatuses(tree: PlanTree, messages: readonly PartsCarri
 		for (const part of m.parts) {
 			// Either quizzing tool (quiz/explain) tags position — the mechanic
 			// is a settings switch; the fold recognizes both (owner 2026-09-27).
-			if (part.type !== "tool-quiz" && part.type !== "tool-explain") continue;
+			if (!isPlanQuestion(part.type.replace(/^tool-/, ""), part.input)) continue;
 			const nodeId = (part.input as { nodeId?: unknown } | undefined)?.nodeId;
 			if (typeof nodeId !== "string" || !ids.has(nodeId)) continue; // untagged/unknown — moves nothing
 			if (runs.at(-1) !== nodeId) runs.push(nodeId);
@@ -110,8 +117,8 @@ export function derivePlanStatuses(tree: PlanTree, messages: readonly PartsCarri
  * tool, plan_init (tools/plan.ts) — a mermaid `graph TD` block canonicalized
  * into the structured tree, called once at the probe→teach seam and
  * re-callable to rewrite. The former mutation/tracking tools are gone:
- * statuses derive from check outcomes (derivePlanStatuses above), so the
- * tree carries structure, never progress. The tree panel still derives its
+ * position derives from question tags (derivePlanStatuses above). Completion
+ * is explicit through plan_set_completed. The tree panel still derives its
  * display from the LATEST plan tool output in the transcript — plus the
  * derived statuses — with no separate state channel.
  */
@@ -141,7 +148,7 @@ export function derivePlanStatusesLh(tree: PlanTree, messages: readonly LhMessag
 		const content = (m as { content?: unknown }).content;
 		if (!Array.isArray(content)) continue;
 		for (const block of content as Array<{ type?: string; name?: string; arguments?: unknown }>) {
-			if (block.type !== "toolCall" || (block.name !== "quiz" && block.name !== "explain")) continue;
+			if (block.type !== "toolCall" || !isPlanQuestion(block.name, block.arguments)) continue;
 			const nodeId = (block.arguments as { nodeId?: unknown } | undefined)?.nodeId;
 			if (typeof nodeId !== "string" || !ids.has(nodeId)) continue;
 			if (runs.at(-1) !== nodeId) runs.push(nodeId);

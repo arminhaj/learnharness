@@ -1,11 +1,15 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import type { MoleculeDocument, MoleculeSource } from "@/src/core";
+import type { MoleculeDocument, MoleculeSource, MoleculeReference } from "@/src/core";
+import type { StructureEditorDraft, SynthesisEditorDraft } from "./synthesis-draft";
 
 export interface StructureEditorProps {
-	initial?: MoleculeSource | MoleculeDocument;
-	onChange?: (document: MoleculeDocument | null) => void;
+	initial?: MoleculeSource | MoleculeDocument | SynthesisEditorDraft;
+	problemReferences?: MoleculeReference[];
+	savedReferences?: MoleculeReference[];
+	onReferencesChange?: (references: MoleculeReference[]) => void;
+	onChange?: (document: StructureEditorDraft | null) => void;
 	onSave: (document: MoleculeDocument) => void;
 	onCancel: () => void;
 }

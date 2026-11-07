@@ -1,6 +1,8 @@
 "use client";
 
 import { CheckIcon, CircleX } from "lucide-react";
+import { useContext } from "react";
+import { JobsContext } from "@/components/jobs-context";
 import type { PdfResult, ResearchResult, SubagentArtifactData } from "@/src/core";
 import type { LhViewMessage } from "@/src/core";
 import { isSubagentFailure } from "@/src/core";
@@ -25,7 +27,9 @@ import { VisualOutputCard } from "@/components/artifacts/visual-card";
  *     The sub-agent's verification notes are model-facing glue and do NOT
  *     render; only a failure note does.
  */
-export function SubagentSteerCard({ message }: { message: LhViewMessage }) {
+export function SubagentSteerCard({ message, onCloseDemo }: { message: LhViewMessage; onCloseDemo?: () => void }) {
+	const jobs = useContext(JobsContext);
+	const job = jobs.find(candidate => `steer_${candidate.id}` === message.id);
 	const artifactPart = message.parts.find((p) => p.type === "data-subagent-artifact");
 	const data = artifactPart?.data as SubagentArtifactData | undefined;
 	// The abort steer (2026-09 dock semantics): its message-type part is
@@ -56,9 +60,9 @@ export function SubagentSteerCard({ message }: { message: LhViewMessage }) {
 				<PdfCompleteBadge result={data.result as PdfResult} />
 			);
 		case "demo":
-			return <DemoOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? false} />;
+			return <DemoOutputCard output={data.result} messageId={onCloseDemo ? undefined : message.id} initialInverted={data.ui?.inverted ?? job?.ui?.inverted ?? false} retryJob={job} onClose={onCloseDemo} />;
 		case "visual":
-			return <VisualOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? false} />;
+			return <VisualOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? job?.ui?.inverted ?? false} />;
 	}
 }
 

@@ -14,6 +14,7 @@ import {
 	FACTORY_SETTINGS,
 	BACKGROUND_MODEL_ROLES,
 	isHexColor,
+	isFocusedTeachingProfile,
 	sanitizeUserSettings,
 } from "../src/core/settings.ts";
 
@@ -53,6 +54,18 @@ describe("isHexColor", () => {
 });
 
 describe("sanitizeUserSettings", () => {
+	it("preserves teaching profiles through JSON storage and drops invalid profiles without losing sibling settings", () => {
+		for (const teachingProfile of ["original", "focused", "mad-max"] as const) {
+			const record = { version: 1, agent: { teachingProfile, tools: { research: false } } };
+			assert.deepEqual(sanitizeUserSettings(JSON.parse(JSON.stringify(record))), record);
+		}
+		for (const teachingProfile of ["mad max", "", null, true, {}]) {
+			assert.deepEqual(sanitizeUserSettings({ agent: { teachingProfile, tools: { research: false } } })?.agent, {
+				tools: { research: false },
+			});
+		}
+	});
+
 	it("round-trips a fully valid record field-for-field", () => {
 		const record = {
 			version: 1,
@@ -212,5 +225,14 @@ describe("sanitizeUserSettings", () => {
 			"extractor",
 			"auditor",
 		]);
+	});
+});
+
+describe("isFocusedTeachingProfile", () => {
+	it("shares Focused mechanics with Mad Max while keeping Original and unset profiles unchanged", () => {
+		assert.equal(isFocusedTeachingProfile("focused"), true);
+		assert.equal(isFocusedTeachingProfile("mad-max"), true);
+		assert.equal(isFocusedTeachingProfile("original"), false);
+		assert.equal(isFocusedTeachingProfile(), false);
 	});
 });

@@ -36,6 +36,19 @@ describe("parseGeneralSettingsBody", () => {
 });
 
 describe("parseAgentSettingsBody", () => {
+	it("accepts each teaching profile and rejects unknown or malformed selections", () => {
+		for (const teachingProfile of ["original", "focused", "mad-max"] as const) {
+			const result = parseAgentSettingsBody({ teachingProfile, tools: { research: false } });
+			assert.ok(result.ok);
+			assert.deepEqual(result.settings, { teachingProfile, tools: { research: false } });
+		}
+		for (const teachingProfile of ["mad max", "Mad Max", "", null, true, 1, {}]) {
+			const result = parseAgentSettingsBody({ teachingProfile });
+			assert.equal(result.ok, false);
+			if (!result.ok) assert.match(result.error, /teachingProfile must be "original", "focused", or "mad-max"/);
+		}
+	});
+
 	it("models: valid roles with model pair and/or thinkingLevel; unknown role is a 400 with the list", () => {
 		const r = parseAgentSettingsBody({
 			models: {

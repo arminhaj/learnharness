@@ -59,6 +59,7 @@ export interface RoleModelOverride {
 	model?: { provider: string; id: string };
 	/** The thinking budget swap. */
 	thinkingLevel?: ThinkingLevel;
+	fastMode?: boolean;
 }
 
 // ─── Model slots (model slots wave, 2026-09-20) ──────────────────────────────
@@ -196,6 +197,8 @@ export interface ModelSlot {
 	model?: { provider: string; id: string };
 	/** The thinking budget swap. */
 	thinkingLevel?: ThinkingLevel;
+	/** Fast processing is independent of the thinking budget; absent = off. */
+	fastMode?: boolean;
 }
 
 /** The `models` settings section (owner decision 2026-09-20: a dedicated
@@ -335,7 +338,12 @@ export interface DictationSettings {
 	language?: DictationLanguage;
 }
 
-export type TeachingProfile = "original" | "focused";
+export type TeachingProfile = "original" | "focused" | "mad-max";
+
+/** Focused question mechanics are shared by both goal-directed profiles. */
+export function isFocusedTeachingProfile(profile?: TeachingProfile): boolean {
+	return profile === "focused" || profile === "mad-max";
+}
 
 /** Agent settings — everything about the non-conversation machinery. */
 export interface AgentSettings {
@@ -583,6 +591,7 @@ function sanitizeRoleOverride(raw: unknown): RoleModelOverride | undefined {
 	if (typeof r.thinkingLevel === "string" && THINKING_LEVELS.includes(r.thinkingLevel as ThinkingLevel)) {
 		out.thinkingLevel = r.thinkingLevel as ThinkingLevel;
 	}
+	if (typeof r.fastMode === "boolean") out.fastMode = r.fastMode;
 	return Object.keys(out).length ? out : undefined;
 }
 
@@ -683,7 +692,7 @@ function sanitizeBooleanMap(raw: unknown): Record<string, boolean> | undefined {
 
 function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 	const out: AgentSettings = {};
-	if (raw.teachingProfile === "original" || raw.teachingProfile === "focused") {
+	if (raw.teachingProfile === "original" || raw.teachingProfile === "focused" || raw.teachingProfile === "mad-max") {
 		out.teachingProfile = raw.teachingProfile;
 	}
 	if (raw.models !== null && typeof raw.models === "object" && !Array.isArray(raw.models)) {

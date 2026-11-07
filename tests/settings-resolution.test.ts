@@ -22,6 +22,14 @@ import {
 import { BACKGROUND_MODEL_ROLES, type UserSettings } from "../src/core/settings.ts";
 
 describe("resolveSettings", () => {
+	it("preserves an explicitly selected teaching profile and defaults missing profiles to Original", () => {
+		assert.equal(resolveSettings(null).agent.teachingProfile, "original");
+		assert.equal(resolveSettings({ version: 1, agent: {} }).agent.teachingProfile, "original");
+		for (const teachingProfile of ["original", "focused", "mad-max"] as const) {
+			assert.equal(resolveSettings({ version: 1, agent: { teachingProfile } }).agent.teachingProfile, teachingProfile);
+		}
+	});
+
 	it("null record (first boot): non-model knobs land on factory defaults; every model view is EMPTY", () => {
 		const eff = resolveSettings(null);
 		assert.deepEqual(eff.general, { autoUpdate: true });

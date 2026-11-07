@@ -82,6 +82,12 @@ function streamEvent(event: object): string {
 	return JSON.stringify({ type: "stream_event", event });
 }
 
+function finalizedToolInputs(toolUses: ToolUse[]): string {
+	return JSON.stringify({ type: "assistant", error: null, parent_tool_use_id: null, message: {
+		content: toolUses.map((call) => ({ type: "tool_use", id: call.id, name: `mcp__learnharness__${call.name}`, input: call.arguments })),
+	} });
+}
+
 function exitWith(code: number, stderr: string): string {
 	return JSON.stringify({ fake: "exit", code, stderr });
 }
@@ -179,6 +185,7 @@ function toToolUseMessage(toolUses: ToolUse[]): string[] {
 				index,
 				delta: { type: "input_json_delta", partial_json: JSON.stringify(toolUse.arguments) },
 			}),
+			finalizedToolInputs([toolUse]),
 			streamEvent({ type: "content_block_stop", index }),
 		]),
 		streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} }),
@@ -414,7 +421,7 @@ test("unsupported native tool intent fails without exposing executable calls", a
 	]);
 
 	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
-	assert.match(getErrorMessage(events) ?? "", /unsupported native tool/);
+	assert.equal(getErrorMessage(events), 'claude CLI emitted an unsupported native tool call: "Bash"');
 });
 
 test("usage maps input/output/cacheRead/cacheWrite with zero cost, message_delta overriding message_start", async (t) => {
@@ -570,7 +577,8 @@ test("cwd is an empty temp dir; prompt and mcp config live in a separate private
 	assert.notEqual(privateDir, call.cwd);
 	assert.ok(!privateDir.startsWith(call.cwd + sep));
 	assert.equal(dirname(getFlagValue(call.args, "--mcp-config")), privateDir);
-	assert.equal(call.systemPrompt, "You are a tutor.");
+	assert.ok(call.systemPrompt.startsWith("You are a tutor.\n\n"));
+	assert.match(call.systemPrompt, /read → mcp__learnharness__read/);
 	assert.equal(call.mcpConfigMode, 0o600);
 
 	const mcpConfig = JSON.parse(call.mcpConfig) as { mcpServers: Record<string, { url: string }> };
@@ -714,7 +722,7 @@ test("user message after tool results starts fresh with unfinished calls in the 
 	await assertCleanedUp(oldCall);
 
 	const stdin = readFileSync(stdinFile, "utf8");
-	assert.ok(stdin.includes('[tool call read] {\\"path\\":\\"a\\"}'), stdin);
+	assert.ok(stdin.includes('[tool call mcp__learnharness__read] {\\"path\\":\\"a\\"}'), stdin);
 	assert.ok(stdin.includes("wait, explain sockets first"), stdin);
 });
 
@@ -899,8 +907,8 @@ test("a tool result arriving after the idle timeout starts fresh with the call a
 	await assertCleanedUp(getOnlyCall(fresh.calls));
 
 	const stdin = readFileSync(stdinFile, "utf8");
-	assert.ok(stdin.includes('[tool call read] {\\"path\\":\\"a\\"}'), stdin);
-	assert.ok(stdin.includes("[tool result read]"), stdin);
+	assert.ok(stdin.includes('[tool call mcp__learnharness__read] {\\"path\\":\\"a\\"}'), stdin);
+	assert.ok(stdin.includes("[tool result mcp__learnharness__read]"), stdin);
 	assert.ok(stdin.includes("contents of a"), stdin);
 });
 
@@ -1027,6 +1035,234 @@ test("a mismatched MCP identity cannot admit a streamed call", async (t) => {
 	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
 	assert.match(getErrorMessage(events) ?? "", /does not match its streamed tool intent/);
 	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("CLI-normalized Unicode in a finalized tool input matches the authenticated MCP call", async (t) => {
+	// Real Sonnet demo failure: the streamed JS escape becomes a literal minus
+	// in both the finalized assistant block and the MCP request.
+	const raw: ToolUse = { id: "toolu_unicode_demo", name: "read", arguments: { html: String.raw`<script>const MINUS = '\u2212';</script>` } };
+	const final: ToolUse = { ...raw, arguments: { html: "<script>const MINUS = '−';</script>" } };
+	const scenario = toToolUseMessage([raw]).map((line) => line === finalizedToolInputs([raw]) ? finalizedToolInputs([final]) : line);
+	const { events, calls } = await runScenario(t, [...scenario, callTool(final), HOLD], { sessionId: undefined });
+	assert.equal(getLastEvent(events).type, "done");
+	const admitted = events.filter((event) => event.type === "toolcall_end");
+	assert.equal(admitted.length, 1);
+	assert.deepEqual(admitted[0]!.toolCall.arguments, final.arguments);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("finalized literal escapes, nested strings, and whitespace reach the tool unchanged", async (t) => {
+	const call: ToolUse = { id: "toolu_literals", name: "read", arguments: {
+		path: String.raw`C:\users\u2212\new`, nested: { literal: String.raw`\u2212`, array: ["π", "\r\n trailing \n", "\\n"] },
+	} };
+	const { events } = await runScenario(t, [...toToolUseMessage([call]), callTool(call), HOLD]);
+	assert.equal(getLastEvent(events).type, "done");
+	const admitted = events.find((event) => event.type === "toolcall_end");
+	assert.ok(admitted);
+	assert.deepEqual(admitted.toolCall.arguments, call.arguments);
+});
+
+test("MCP arguments must match the finalized input even when they match the raw deltas", async (t) => {
+	const raw: ToolUse = { id: "toolu_wrong_arguments", name: "read", arguments: { path: "raw" } };
+	const final = { ...raw, arguments: { path: "final" } };
+	const scenario = toToolUseMessage([raw]).map((line) => line === finalizedToolInputs([raw]) ? finalizedToolInputs([final]) : line);
+	const { events } = await runScenario(t, [...scenario, callTool(raw), HOLD]);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	assert.match(getErrorMessage(events)!, /finalized tool input.*arguments differ/);
+});
+
+for (const change of ["id", "name"] as const) test(`a finalized ${change} mismatch cannot replace the streamed tool identity`, async (t) => {
+	const call: ToolUse = { id: "toolu_final_identity", name: "read", arguments: { path: "one" } };
+	const wrong = { ...call, [change]: "someone_else" };
+	const scenario = toToolUseMessage([call]).map((line) => line === finalizedToolInputs([call]) ? finalizedToolInputs([wrong]) : line);
+	const { events } = await runScenario(t, [...scenario, callTool(call), HOLD]);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	assert.match(getErrorMessage(events)!, /finalized tool input does not match.*call ID or tool name/);
+});
+
+test("the finalized input may arrive after message_stop and before the MCP request", async (t) => {
+	const call: ToolUse = { id: "toolu_final_after_stop", name: "read", arguments: { path: "one" } };
+	const raw = toToolUseMessage([call]).filter((line) => line !== finalizedToolInputs([call]));
+	const { events } = await runScenario(t, [...raw, finalizedToolInputs([call]), callTool(call), HOLD]);
+	assert.equal(getLastEvent(events).type, "done");
+	assert.equal(events.filter((event) => event.type === "toolcall_end").length, 1);
+});
+
+test("an early MCP request waits for finalized input before any executable event", async (t) => {
+	const call: ToolUse = { id: "toolu_mcp_before_final", name: "read", arguments: { path: "one" } };
+	const raw = toToolUseMessage([call]).filter((line) => line !== finalizedToolInputs([call]));
+	const { runClaude, calls } = createFakeRun(t, [...raw,
+		JSON.stringify({ fake: "start-call", ...call }), JSON.stringify({ fake: "checkpoint" }),
+		JSON.stringify({ fake: "wait-for-message" }), finalizedToolInputs([call]), HOLD]);
+	const events: AssistantMessageEvent[] = [];
+	const result = collectEvents(createClaudeCodeStreamFunction(runClaude)(getModel(), normalizeContext({ messages: [HI], tools: [READ_TOOL] })), (event) => events.push(event));
+	while (!calls.length) await sleep(5);
+	await once(getOnlyCall(calls).child, "message", { signal: AbortSignal.timeout(2000) });
+	await sleep(20);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	getOnlyCall(calls).child.send("continue");
+	assert.equal(getLastEvent(await result).type, "done");
+	assert.equal(events.filter((event) => event.type === "toolcall_end").length, 1);
+});
+
+test("a request without finalized input cannot execute from stdout deltas alone", async (t) => {
+	const call: ToolUse = { id: "toolu_missing_final", name: "read", arguments: { path: "one" } };
+	const raw = toToolUseMessage([call]).filter((line) => line !== finalizedToolInputs([call]));
+	const { events } = await runScenario(t, [...raw, JSON.stringify({ fake: "start-call", ...call }),
+		JSON.stringify({ type: "result", is_error: false }), HOLD]);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	assert.match(getErrorMessage(events)!, /ended without admitting/);
+});
+
+test("conflicting finalized inputs for the same ID fail without executing", async (t) => {
+	const call: ToolUse = { id: "toolu_conflicting_final", name: "read", arguments: { path: "one" } };
+	const { events } = await runScenario(t, [...toToolUseMessage([call]),
+		finalizedToolInputs([{ ...call, arguments: { path: "two" } }]), callTool(call), HOLD]);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	assert.match(getErrorMessage(events)!, /conflicting finalized tool inputs/);
+});
+
+test("finalized tool inputs parse separately from partial events and ignore nested CLI agents", () => {
+	const call: ToolUse = { id: "toolu_final_parse", name: "read", arguments: { path: "π" } };
+	const line = finalizedToolInputs([call]);
+	assert.deepEqual(parseCliLine(line), { type: "toolInputs", calls: [{ ...call, name: "mcp__learnharness__read" }] });
+	assert.equal(parseCliLine(JSON.stringify({ ...JSON.parse(line), parent_tool_use_id: "parent" })), null);
+	for (const input of [null, [], "encoded input"]) {
+		assert.deepEqual(parseCliLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: call.id, name: call.name, input }] } })),
+			{ type: "resultError", text: "claude CLI emitted a malformed finalized tool input" });
+	}
+});
+
+test("cancelling a request awaiting finalized input releases its ready sibling", async (t) => {
+	const a: ToolUse = { id: "toolu_cancel_head", name: "read", arguments: { path: "a" } };
+	const b: ToolUse = { id: "toolu_ready_sibling", name: "read", arguments: { path: "b" } };
+	const source = toToolUseMessage([a, b]).filter((line) => line !== finalizedToolInputs([a]));
+	const { events } = await runScenario(t, [...source,
+		JSON.stringify({ fake: "start-call", ...a }), JSON.stringify({ fake: "start-call", ...b }),
+		JSON.stringify({ fake: "cancel-call", id: a.id }), HOLD,
+	], { sessionId: undefined, signal: AbortSignal.timeout(2000) });
+	assert.equal(getLastEvent(events).type, "done");
+	assert.deepEqual(events.filter((event) => event.type === "toolcall_end").map((event) => event.toolCall.id), [b.id]);
+});
+
+for (const abandonedBlock of ["text", "tool"] as const) test(`a mid-stream retry discards abandoned ${abandonedBlock} state`, async (t) => {
+	const prefix = [streamEvent({ type: "message_start", message: { usage: {} } }),
+		streamEvent({ type: "content_block_start", index: 0, content_block: abandonedBlock === "text"
+			? { type: "text", text: "" }
+			: { type: "tool_use", id: "toolu_interrupted", name: "mcp__learnharness__read", input: {} } }),
+		streamEvent({ type: "content_block_delta", index: 0, delta: abandonedBlock === "text"
+			? { type: "text_delta", text: "ABANDONED" }
+			: { type: "input_json_delta", partial_json: '{"path":"unfinished' } }),
+		JSON.stringify({ type: "system", subtype: "api_retry", attempt: 1 })];
+	const { events } = await runScenario(t, [...prefix, ...readFixtureLines("text.jsonl")]);
+	const last = getLastEvent(events);
+	assert.equal(last.type, "done");
+	if (last.type === "done") {
+		assert.equal(getText(last.message), "hello there");
+		assert.equal(last.message.content.some((block) => block.type === "toolCall"), false);
+	}
+});
+
+test("a replacement after all unadmitted calls cancel keeps separate message usage", async (t) => {
+	const call: ToolUse = { id: "toolu_cancel_all", name: "read", arguments: { path: "a" } };
+	const source = toToolUseMessage([call]).filter((line) => line !== finalizedToolInputs([call]));
+	source[0] = streamEvent({ type: "message_start", message: { usage: { input_tokens: 7 } } });
+	source[source.length - 2] = streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } });
+	const replacement = [
+		streamEvent({ type: "message_start", message: { usage: { input_tokens: 3 } } }),
+		streamEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+		streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Replacement" } }),
+		streamEvent({ type: "content_block_stop", index: 0 }),
+		streamEvent({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }),
+		streamEvent({ type: "message_stop" }),
+	];
+	const { events } = await runScenario(t, [...source,
+		JSON.stringify({ fake: "start-call", ...call }), JSON.stringify({ fake: "cancel-call", id: call.id }), ...replacement]);
+	const last = getLastEvent(events);
+	assert.equal(last.type, "done");
+	if (last.type === "done") {
+		assert.equal(getText(last.message), "Replacement");
+		assert.equal(last.message.usage.totalTokens, 17);
+	}
+});
+
+test("nested CLI streams and errors cannot alter or finish the parent response", async (t) => {
+	const root = readFixtureLines("text.jsonl").filter((line) => JSON.parse(line).type === "stream_event");
+	const nested = root.map((line) => {
+		const frame = JSON.parse(line);
+		if (frame.event?.delta?.type === "text_delta") frame.event.delta.text = "NESTED";
+		return JSON.stringify({ ...frame, parent_tool_use_id: "nested-parent" });
+	});
+	const { events } = await runScenario(t, [root[0]!, ...nested,
+		JSON.stringify({ type: "assistant", parent_tool_use_id: "nested-parent", error: "nested_error", message: { content: [{ type: "text", text: "Nested failure" }] } }),
+		...root.slice(1)]);
+	const last = getLastEvent(events);
+	assert.equal(last.type, "done");
+	if (last.type === "done") assert.equal(getText(last.message), "hello there");
+});
+
+test("nested tool results cannot deny a pending parent MCP request", async (t) => {
+	const call: ToolUse = { id: "toolu_parent_scope", name: "read", arguments: { path: "a" } };
+	const { events } = await runScenario(t, [...toToolUseMessage([call]),
+		JSON.stringify({ type: "user", parent_tool_use_id: "nested-parent", message: { content: [{ type: "tool_result", tool_use_id: call.id, is_error: true }] } }),
+		callTool(call), HOLD,
+	], { sessionId: undefined });
+	assert.equal(getLastEvent(events).type, "done");
+	assert.equal(events.filter((event) => event.type === "toolcall_end").length, 1);
+});
+
+function permutations<T>(values: T[]): T[][] {
+	return values.length === 0 ? [[]] : values.flatMap((value, index) =>
+		permutations(values.filter((_, candidate) => candidate !== index)).map((rest) => [value, ...rest]));
+}
+
+for (const order of permutations(["finalA", "mcpA", "finalB", "mcpB"] as const)) {
+	test(`parallel handoff executes each call once: ${order.join(" → ")}`, { timeout: 5000 }, async (t) => {
+		const a: ToolUse = { id: "toolu_order_a", name: "read", arguments: { path: "a" } };
+		const b: ToolUse = { id: "toolu_order_b", name: "read", arguments: { path: "b" } };
+		const source = toToolUseMessage([a, b]).filter((line) => ![finalizedToolInputs([a]), finalizedToolInputs([b])].includes(line));
+		const frames = {
+			finalA: finalizedToolInputs([a]), finalB: finalizedToolInputs([b]),
+			mcpA: JSON.stringify({ fake: "start-call", ...a }), mcpB: JSON.stringify({ fake: "start-call", ...b }),
+		};
+		const { runClaude, calls } = createFakeRun(t, [...source, ...order.map((step) => frames[step]), REPLY]);
+		const executed: string[] = [];
+		const agent = new Agent({ sessionId: SESSION_ID, initialState: { model: getModel(), tools: [{
+			name: "read", label: "Read", description: "Read", parameters: Type.Object({ path: Type.String() }),
+			execute: async (_id, args) => {
+				const { path } = args as { path: string };
+				executed.push(path);
+				return { content: [{ type: "text", text: path }], details: null };
+			},
+		}] }, streamFn: createClaudeCodeStreamFunction(runClaude) });
+		await agent.prompt("hi");
+		assert.deepEqual(executed.sort(), ["a", "b"]);
+		const last = agent.state.messages.at(-1);
+		assert.ok(last?.role === "assistant");
+		assert.equal(last.stopReason, "stop");
+		assert.equal(calls.length, 1, "all slices must use the same CLI process");
+		await assertCleanedUp(getOnlyCall(calls));
+	});
+}
+
+test("large demo input survives chunk boundaries and CLI Unicode normalization", async (t) => {
+	const raw: ToolUse = { id: "toolu_large_demo", name: "read", arguments: { html: String.raw`<script>const glyph = '\u2212';</script>`.repeat(4096) } };
+	const final = { ...raw, arguments: { html: "<script>const glyph = '−';</script>".repeat(4096) } };
+	const source = toToolUseMessage([raw]).flatMap((line) => {
+		const frame = JSON.parse(line);
+		if (frame.event?.delta?.type === "input_json_delta") {
+			const json = frame.event.delta.partial_json as string;
+			return Array.from({ length: Math.ceil(json.length / 1023) }, (_, index) => streamEvent({
+				type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: json.slice(index * 1023, (index + 1) * 1023) },
+			}));
+		}
+		return [line === finalizedToolInputs([raw]) ? finalizedToolInputs([final]) : line];
+	});
+	const { events } = await runScenario(t, [...source, callTool(final), HOLD], { sessionId: undefined });
+	assert.equal(getLastEvent(events).type, "done");
+	const admitted = events.find((event) => event.type === "toolcall_end");
+	assert.ok(admitted);
+	assert.deepEqual(admitted.toolCall.arguments, final.arguments);
 });
 
 for (const change of ["model", "effort", "system prompt", "tool schema", "tool description", "history", "authentication environment"] as const) {

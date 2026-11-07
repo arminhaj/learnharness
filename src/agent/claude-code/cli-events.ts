@@ -1,8 +1,9 @@
-import type { Usage } from "@earendil-works/pi-ai";
+import type { JsonObject, Usage } from "@earendil-works/pi-ai";
 
 export type CliUsage = Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite">>;
 
 export type CliBlock = { type: "text" } | { type: "thinking" } | { type: "toolUse"; id: string; name: string };
+export type CliToolInput = { id: string; name: string; arguments: JsonObject };
 
 export type CliEvent =
 	| { type: "messageStart"; usage: CliUsage }
@@ -13,6 +14,7 @@ export type CliEvent =
 	| { type: "blockStop"; index: number }
 	| { type: "messageDelta"; stopReason: string | null; usage: CliUsage; refusalCategory?: string }
 	| { type: "messageStop" }
+	| { type: "toolInputs"; calls: CliToolInput[] }
 	| { type: "assistantError"; error: string; text: string }
 	| { type: "resultError"; text: string }
 	| { type: "result"; stopReason: string | null }
@@ -49,7 +51,8 @@ type RawCliLine = {
 	type?: string;
 	event?: RawStreamEvent;
 	error?: string | null;
-	message?: { content?: { type: string; text?: string; tool_use_id?: string }[] };
+	message?: { content?: { type: string; text?: string; tool_use_id?: string; id?: string; name?: string; input?: unknown }[] };
+	parent_tool_use_id?: string | null;
 	is_error?: boolean;
 	result?: string;
 	subtype?: string;
@@ -156,6 +159,20 @@ function getResultErrorText(line: RawCliLine): string {
 	return `claude CLI failed: ${line.subtype ?? "unknown error"}`;
 }
 
+function parseAssistant(line: RawCliLine): CliEvent | null {
+	if (typeof line.error === "string") return { type: "assistantError", error: line.error, text: getText(line) };
+	const calls: CliToolInput[] = [];
+	for (const block of Array.isArray(line.message?.content) ? line.message.content : []) {
+		if (block.type !== "tool_use") continue;
+		if (typeof block.id !== "string" || typeof block.name !== "string" ||
+			typeof block.input !== "object" || block.input === null || Array.isArray(block.input)) {
+			return { type: "resultError", text: "claude CLI emitted a malformed finalized tool input" };
+		}
+		calls.push({ id: block.id, name: block.name, arguments: block.input as JsonObject });
+	}
+	return calls.length ? { type: "toolInputs", calls } : null;
+}
+
 export function parseCliLine(text: string): CliEvent | null {
 	let parsed: unknown;
 	try {
@@ -167,14 +184,16 @@ export function parseCliLine(text: string): CliEvent | null {
 	if (typeof parsed !== "object" || parsed === null) return null;
 
 	const line = parsed as RawCliLine;
+	// Every nested frame belongs to another run, including partial streams,
+	// tool denials and errors. None may mutate or finish the parent turn.
+	if (line.parent_tool_use_id != null) return null;
 
 	switch (line.type) {
 		case "stream_event":
 			return line.event ? parseStreamEvent(line.event) : null;
 
 		case "assistant":
-			if (typeof line.error !== "string") return null;
-			return { type: "assistantError", error: line.error, text: getText(line) };
+			return parseAssistant(line);
 
 		case "user": {
 			const blocks = Array.isArray(line.message?.content) ? line.message.content : [];

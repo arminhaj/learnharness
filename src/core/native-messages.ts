@@ -1,3 +1,4 @@
+import { teachingPauseReason } from "./teaching-flow.ts";
 /**
  * THE NATIVE MESSAGE RECORD (Wave B, owner-approved 2026-09-26): chat
  * records store pi's own message shapes — the exact history the agent
@@ -46,6 +47,8 @@ import {
 import { compactAnswerForModel, type QuestionAnswerData } from "./question-core.ts";
 import { activeCompactionOf, keptIndexFor } from "./compaction.ts";
 import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
+import { compactChemistryMessages } from "./chemistry-model-context.ts";
+import type { ProcessingTier } from "./model-speed.ts";
 
 /** The hard-invariant wording for an aborted turn's unanswered calls —
  *  carried over verbatim from the pre-native era so the model's view
@@ -101,6 +104,8 @@ export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | Lh
 	/** Provider-reported refusal during this response, even if the CLI
 	 * subsequently returned a normal explanation. Never model input. */
 	providerRefusal?: { provider: string; category?: string };
+	/** Final processing-tier report for this response, never model input. */
+	processingTier?: ProcessingTier;
 };
 
 /** Latest response only: never borrow an older process/model's window when
@@ -326,7 +331,7 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
  *  payload for the transcript card. One problem may carry many
  *  submissions. */
 export function newThinkingMessage(problemCallId: string, text: string, codeResult?: import("./code-workspace.ts").CodeRunResult, molecule?: MoleculeDocument): LhMarkerMessage {
-	const snapshot = molecule ? { ...molecule } : undefined;
+	const snapshot = molecule ? structuredClone(molecule) : undefined;
 	return {
 		id: newMessageId(),
 		role: "custom",
@@ -591,8 +596,9 @@ function resultIdsFrom(messages: readonly AgentMessage[]): Set<string> {
  * by pi-agent-core's loop config, the ONE place model-facing decisions
  * live):
  *
- * - user / assistant / toolResult pass through VERBATIM — signatures,
- *   usage, provider stamps all native — minus our record-`id` field.
+ * - assistant messages pass through VERBATIM — signatures, usage, provider
+ *   stamps all native — minus our record-`id` field. Learner/tool text also
+ *   receives the lossless request-only chemistry projection below.
  * - markers flatten to a user message carrying their content (the
  *   canonical text single-sourced in core/contracts); plan blocks are
  *   UI-only and filtered.
@@ -663,7 +669,7 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			continue;
 		}
 		// Strip app-only id/CLI context metadata: the wire carries the native shape only.
-		const { id: _id, cliContextWindow: _cliContextWindow, providerRefusal: _providerRefusal, ...native } = m as LhMessage;
+		const { id: _id, cliContextWindow: _cliContextWindow, providerRefusal: _providerRefusal, processingTier: _processingTier, ...native } = m as LhMessage;
 		out.push(native as Message);
 		// Repair unanswered calls from completed generations, not calls in
 		// failed generations. Pi filters error/aborted assistants itself;
@@ -687,7 +693,7 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			}
 		}
 	}
-	return out;
+	return compactChemistryMessages(out);
 }
 
 // ─── native scans (the UIMessage-era pending/phase seams, natively) ──────────
@@ -913,6 +919,7 @@ export function needsContinuation(messages: readonly LhMessage[]): boolean {
 	const content = (owner as { content?: unknown }).content;
 	if (!Array.isArray(content)) return false;
 	const results = messages.slice(start) as ToolResultMessage[];
+	if (results.some(result => teachingPauseReason(result))) return false;
 	// PRACTICE (owner design, 2026-10-04): a batch acking a problem POSE
 	// owes nothing — terminate:true ended that turn DELIBERATELY (the
 	// learner's next thinking submission is the next turn), and unlike a

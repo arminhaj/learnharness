@@ -55,6 +55,8 @@ export interface LhViewPart extends Record<string, unknown> {
 	/** Native call location, or result id once answered so learning evidence can link to the answer. */
 	sourceMessageId?: string;
 	sourceContentIndex?: number;
+	/** Draft identity retained after sourceMessageId becomes the answer id. */
+	questionKey?: string;
 	input?: unknown;
 	output?: unknown;
 	rawInput?: unknown;
@@ -129,6 +131,14 @@ function lastSuccessfulPlanInit(parts: LhViewPart[]): number {
  *  view messages. Pure: the same input always projects to the same list. */
 export function projectView(messages: readonly LhMessage[], live?: LiveTurnState): LhViewMessage[] {
 	const out: LhViewMessage[] = [];
+	const questionOccurrences = new Map<string, number>();
+	for (const message of messages) {
+		if (message.role !== "assistant" || message.id.startsWith("c_")) continue;
+		for (const block of message.content) {
+			if (block.type === "toolCall") questionOccurrences.set(block.id, (questionOccurrences.get(block.id) ?? 0) + 1);
+		}
+	}
+
 	// Output calls become text rather than tool parts, so read settled
 	// failures up front: a failed call must retain the normal error path.
 	const outputErrors = new Map<string, ToolResultMessage>();
@@ -238,6 +248,7 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					if ((QUESTION_TOOLS as readonly string[]).includes(block.name)) {
 						part.sourceMessageId = m.id;
 						part.sourceContentIndex = contentIndex;
+						part.questionKey = (questionOccurrences.get(block.id) ?? 0) > 1 ? JSON.stringify([m.id, contentIndex, block.id]) : block.id;
 					}
 					if (block.name === SEND_TO_USER_TOOL) {
 						// Failed/aborted generations never execute their calls;
@@ -266,6 +277,11 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					}
 					rest.push(part);
 				}
+			}
+			const tier = m.processingTier;
+			if (assistant.provider === "chatgpt" && assistant.stopReason !== "pending" && assistant.stopReason !== "error" && assistant.stopReason !== "aborted"
+				&& (tier?.requested === "priority" || tier?.requested === "fast") && tier.served === "default") {
+				rest.push({ type: "data-processing-tier", id: `${m.id}-processing-tier`, sourceMessageId: m.id, data: { ...tier } });
 			}
 			const parts: LhViewPart[] = [...reasoning, ...rest];
 			if (parts.length === 0) {

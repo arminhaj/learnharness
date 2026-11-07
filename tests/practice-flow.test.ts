@@ -33,6 +33,7 @@ import { chatStore } from "../src/store/chats.ts";
 import { activeProblemOf, needsContinuation } from "../src/core/index.ts";
 import { PATHS } from "../config.ts";
 import { CONCLUDE_ACK_TEXT } from "../src/core/contracts/chat.ts";
+import { curvedArrowsKet } from "./fixtures/curved-arrows.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 
@@ -147,14 +148,19 @@ describe("practice flow (scripted model)", () => {
 		assert.equal(rejected.status, 400);
 		assert.equal(chatStore.getChat(chat.id)!.messages.length, before);
 		assert.equal(calls.length, 1, "invalid input does not start a tutor turn");
-		await drainTurn(post(chat.id, { type: "thinking", problemCallId: "call-molecule", text: "", molecule: { ...molecule, smiles: "CCN", ket: '{"root":{}}' } }), factory);
+		const stale = await handleChatRequest(post(chat.id, { type: "thinking", problemCallId: "call-molecule", text: "", molecule: { ...await normalizeMolecule({ smiles: "CCN" }), ket: curvedArrowsKet } }), factory);
+		assert.equal(stale.status, 400);
+		assert.equal(chatStore.getChat(chat.id)!.messages.length, before, "a mismatched saved drawing never appends learner evidence");
+		await drainTurn(post(chat.id, { type: "thinking", problemCallId: "call-molecule", text: "", molecule: { ...molecule, smiles: "CCN", ket: curvedArrowsKet } }), factory);
 		const stored = chatStore.getChat(chat.id)!.messages.find(m => m.role === "custom" && m.customType === "practice-thinking");
 		assert.ok(stored && stored.role === "custom");
 		const details = stored.details as { molecule: { smiles: string; ket: string } };
 		assert.equal(details.molecule.smiles, "CCO", "Molfile owns chemical identity, not client-supplied SMILES");
-		assert.equal(details.molecule.ket, '{"root":{}}');
+		assert.equal(details.molecule.ket, curvedArrowsKet);
 		assert.ok(lastSaw(calls, "Submitted molecular structure"));
 		assert.ok(lastSaw(calls, "CCO"));
+		assert.ok(lastSaw(calls, "elliptical-arc-arrow-open-angle"));
+		assert.ok(lastSaw(calls, "elliptical-arc-arrow-open-half-angle"));
 		assert.equal(activeProblemOf(chatStore.getChat(chat.id)!.messages)?.toolCallId, "call-molecule");
 	});
 

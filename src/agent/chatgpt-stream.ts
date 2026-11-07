@@ -6,10 +6,14 @@ import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages"
 import type { ResponseOutputMessage, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { chatGPTAbortController, chatGPTScope, chatGPTScopeCurrent, chatGPTLease, chatGPTDenial } from "./chatgpt-bridge.ts";
 import type { AdmissionScope, ChatGPTDispatchLifecycle } from "./chatgpt-request-cycle.ts";
+import { currentActivityTrace } from "./activity-trace.ts";
+import type { ProcessingTier } from "../core/model-speed.ts";
+import { traceLease } from "./trace-model-stream.ts";
 
 const USAGE = "https://chatgpt.com/settings/usage";
 export function chatGPTStreamError(message: string): string {
 	if (/subscription_sharing_usage_limit_exceeded|quota|429/.test(message)) return `ChatGPT plan usage limit reached. Manage usage at ${USAGE}. No API-key fallback was used.`;
+	if (/service_tier|priority|fast mode/i.test(message)) return "Fast mode is unavailable for this ChatGPT model or account. Turn Fast off and try again.";
 	if (/scope|authorization_context|permission/.test(message)) return "ChatGPT plan permission is missing. Reconnect in Providers and authorize plan use. No API-key fallback was used.";
 	if (/expired|invalid_grant|401|invalid_user/.test(message)) return "Your ChatGPT session expired. Reconnect in Providers. No API-key fallback was used.";
 	if (/background|Background/.test(message)) return "ChatGPT background use is off in this app. Enable Allow background use for all ChatGPT accounts in Providers to run this work. No API-key fallback was used.";
@@ -27,6 +31,7 @@ export function chatGPTPayload(raw: unknown, selectedModelId: string): Record<st
 	for (const key of ["instructions", "reasoning", "include", "text", "tool_choice", "parallel_tool_calls", "prompt_cache_key"]) {
 		if (payload[key] !== undefined) out[key] = payload[key];
 	}
+	if (payload.service_tier === "priority" || payload.service_tier === "default") out.service_tier = payload.service_tier;
 	if (!Array.isArray(payload.input)) throw new Error("ChatGPT requires stateless input history");
 	out.input = payload.input.map((item) => item?.role === "system" ? { ...item, role: "developer" } : item);
 	if (Array.isArray(payload.tools) && payload.tools.length) {
@@ -95,7 +100,9 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 		const { controller, release } = chatGPTAbortController(purpose);
 		const signal = options?.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
 		void (async () => {
-			let partial = empty(logicalModel);
+			let partial: AssistantMessage & { processingTier?: ProcessingTier } = empty(logicalModel);
+			let requestedFastTier: "priority" | "fast" | undefined;
+			let processingTier: ProcessingTier | undefined;
 			let completed = false;
 			let failure = "";
 			let scope: AdmissionScope | undefined;
@@ -110,7 +117,16 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 				if (Object.keys(options?.headers ?? {}).some((key) => key.toLowerCase() === "authorization")) throw new Error("Authorization override is forbidden");
 				scope = chatGPTScope(logicalModel.id);
 				lifecycle?.captured(scope);
-				const credentials = await chatGPTLease(scope, purpose);
+				const trace = currentActivityTrace();
+				const leaseStarted = performance.now();
+				trace?.mark("lease.start");
+				const credentials = await chatGPTLease(scope, purpose).then(value => {
+					traceLease(trace, leaseStarted, "completed");
+					return value;
+				}, error => {
+					traceLease(trace, leaseStarted, "error");
+					throw error;
+				});
 				check();
 				// NEVER dispatch through Models under openai: that would expose ambient API-key fallback.
 				const transport: Model<"openai-responses"> = { ...logicalModel, api: "openai-responses", provider: "openai", baseUrl: "https://api.openai.com/v1", headers: undefined, samplingParams: undefined, compat: { ...logicalModel.compat, supportsDeveloperRole: true } };
@@ -131,14 +147,22 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 					onPayload: async (raw, model) => {
 						const replacement = await options?.onPayload?.(raw, model);
 						const payload = chatGPTPayload(replacement === undefined ? raw : replacement, logicalModel.id);
+						requestedFastTier = payload.service_tier === "priority" || payload.service_tier === "fast" ? payload.service_tier : undefined;
 						check();
 						return payload;
 					},
 					onProviderStreamEvent: async (raw, model) => {
-						const event = raw as { type?: string; output_index?: number; item?: { id?: string; type?: string }; code?: string; error?: { code?: string }; response?: { error?: { code?: string }; status?: string; output?: unknown[] } };
+						const event = raw as { type?: string; output_index?: number; item?: { id?: string; type?: string }; code?: string; error?: { code?: string }; response?: { error?: { code?: string }; status?: string; service_tier?: unknown; output?: unknown[] } };
 						if (event.type === "response.completed" && event.response?.status === "completed" && !event.response?.error) {
 							completed = true;
 							completedOutput = Array.isArray(event.response.output) ? event.response.output : undefined;
+							// Early events commonly say auto. Only the successful terminal
+							// response reports which processing tier actually served this call.
+							const served = event.response.service_tier;
+							if (requestedFastTier && (served === "default" || served === "priority" || served === "fast")) {
+								processingTier = { requested: requestedFastTier, served };
+								if (served === "default") trace?.mark("processing.fallback", { requestedServiceTier: requestedFastTier, returnedServiceTier: served });
+							}
 						}
 						if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
 							const type = event.item?.type === "message" ? "text" : event.item?.type === "reasoning" ? "thinking" : ["function_call", "custom_tool_call"].includes(event.item?.type ?? "") ? "toolCall" : undefined;
@@ -157,6 +181,7 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 					if (event.type === "done") {
 						if (!completed || failure) throw new Error(failure || "missing terminal response.completed");
 						if (completedOutput) partial = await preserveCompletedText(partial, logicalModel, completedOutput, streamedItems);
+						if (processingTier) partial = { ...partial, processingTier };
 						terminal = true;
 						output.push({ ...event, message: partial });
 					} else if (event.type === "error") {

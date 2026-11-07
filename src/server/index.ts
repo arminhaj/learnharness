@@ -6,6 +6,7 @@
 
 export * from "./chat-handler.ts";
 export { chemistryNormalizeResponse, chemistryConformerResponse } from "./chemistry.ts";
+export { chemistryNameSearchResponse } from "./chemical-name-search.ts";
 export * from "./events-stream.ts";
 export * from "./chats.ts";
 export * from "./explorations.ts";

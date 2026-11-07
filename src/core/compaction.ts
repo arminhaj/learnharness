@@ -343,8 +343,8 @@ export function serializeForSummary(messages: readonly LhMessage[]): string {
 
 /** Render the plan dependency tree verbatim (owner requirement: the tree
  * persists through compaction). Structure from record.tree, statuses
- * derived from the transcript (the record's own law: the tree carries
- * structure only). Empty tree → absent section (nothing persisted). */
+ * derived from the transcript, with explicit lesson completion from the tree.
+ * Empty tree → absent section (nothing persisted). */
 export function planTreeToText(tree: PlanTree | undefined, messages: readonly LhMessage[]): string | null {
 	if (!tree || tree.nodes.length === 0) return null;
 	const statuses = derivePlanStatusesLh(tree, messages);
@@ -353,7 +353,7 @@ export function planTreeToText(tree: PlanTree | undefined, messages: readonly Lh
 	for (const node of tree.nodes) {
 		const status = derivedNodeStatus(statuses, node.id);
 		const summary = node.summary ? ` — ${node.summary}` : "";
-		lines.push(`- [${status}] ${node.title} (${node.id})${summary}`);
+		lines.push(`- [${status}] ${node.title} (${node.id})${summary}${tree.completedNodeIds?.includes(node.id) ? " [lesson step complete]" : ""}`);
 	}
 	for (const edge of tree.edges) {
 		const from = byId.get(edge.from);

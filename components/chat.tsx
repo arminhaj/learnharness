@@ -23,6 +23,8 @@ import { Separator } from "@/components/ui/separator";
 import { AnsweredCard } from "@/components/answered-card";
 import { artifactRenderers } from "@/components/artifacts";
 import { SubagentSteerCard } from "@/components/artifacts/steer-card";
+import { withCompletedVisuals } from "@/components/artifacts/completed-visuals";
+import { DemoPicker, completedDemos } from "@/components/artifacts/demo-picker";
 import { Composer } from "@/components/composer";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { blurAfterPointerClick } from "@/components/focus-hygiene";
@@ -40,6 +42,8 @@ import {
 	firstSourceTextParts,
 	cliContextWindowOf,
 	messageAnchorId,
+	publicChemistryContext,
+	questionChemistryContinuation,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
 	type ChatInput,
@@ -59,7 +63,7 @@ import { LearningMomentsProvider, MarkLearningMoment } from "@/components/learni
 import { SourcePassage } from "@/components/source-passage";
 import { SessionMessageNavigation } from "@/components/session-navigation";
 import { PracticeDock } from "@/components/practice-dock";
-import type { MoleculeDocument } from "@/src/core";
+import type { MoleculeDocument, QuestionChemistryContinuation } from "@/src/core";
 import { ThinkingCard, type PracticeThinkingData } from "@/components/practice-cards";
 import { GraphContextCard, type GraphContextData } from "@/components/graph-context-card";
 import { TopBar } from "@/components/top-bar";
@@ -71,7 +75,7 @@ import {
 	CompactionMomentDivider,
 	type CompactionDividerData,
 } from "@/components/compaction-divider";
-import { CoverageRing } from "@/components/extraction-coverage";
+import { LessonProgressRing } from "@/components/lesson-progress-ring";
 import { Button } from "@/components/ui/button";
 import {
 	activeProblemOf,
@@ -84,6 +88,7 @@ import {
 	teachStepIndex,
 	toolQuestionKind,
 	questionNeedsReveal,
+	parseAskInput,
 } from "@/src/core";
 import { ReadingThinkingField } from "@/components/reading-thinking";
 import { persistChatDraft } from "@/components/chat-drafts";
@@ -131,6 +136,9 @@ const EXPAND_DIST = 16;
 export const ChatActionsContext = createContext<{
 	chatId: string;
 	syncFromServer: () => Promise<void>;
+	/** Refresh job state after an explicit retry, including idempotent replies
+	 * that emitted no new store event. Does not send teacher input. */
+	refreshJobs?: () => void;
 	/** Send a user message into the session (demo error-fix loop, W6). */
 	sendText: (text: string) => void;
 	/** Opens the model setup dialog (BYOK, 2026-09-22): refused job cards
@@ -472,6 +480,9 @@ export function Chat({
 	// replaces the composer. Computed from the NATIVE record (the fold is
 	// the gate the tools themselves read), not the projected view.
 	const activeProblem = activeProblemOf(nativeMessages);
+	const chemistrySubjectId = pending?.toolCallId ?? activeProblem?.toolCallId ?? "";
+	const chemistryContext = useMemo(() => publicChemistryContext(messages, chemistrySubjectId), [messages, chemistrySubjectId]);
+	const structureContinuation = useMemo(() => questionChemistryContinuation(messages, pending?.toolCallId ?? "", chatId), [messages, pending?.toolCallId, chatId]);
 	const activeProblemRef = useRef(activeProblem);
 	activeProblemRef.current = activeProblem;
 
@@ -902,9 +913,6 @@ export function Chat({
 	// (invisible, clickable) button in the bottom-right whenever a question
 	// was pending with no plan yet (owner report, UI round 2026-10-01).
 	const hasPlan = useMemo(() => planExists(messages), [messages]);
-	// The coverage ring's refresh chain (extraction-UX redesign): bumped at
-	// turn settle — the moment this session's uncovered mass changes.
-	const [coverageTick, setCoverageTick] = useState(0);
 	// The mermaid focus (chrome-melt wave, 2026-09-19): md-blocks' expand
 	// button registers the chart source here; the overlay (and the plan
 	// popup) mount INSIDE the session-area div — both are session-scoped, so
@@ -974,9 +982,6 @@ export function Chat({
 		// branch — the re-fire-on-dep-churn wart, fixed S3).
 		prevStatusRef.current = status;
 		if (!transitioned) return;
-		// The coverage ring re-reads at turn settle too (extraction-UX
-		// redesign, 2026-09-24); the ring's own running-poll handles runs.
-		setCoverageTick((t) => t + 1);
 		// Reconcile even when the independent settle notification was missed.
 		// Ownership checks prevent this read from replacing a newer turn.
 		void syncFromServer();
@@ -1028,6 +1033,11 @@ export function Chat({
 	// (duplicate message ids). So: a settle during a busy turn defers the
 	// sync; the next idle fetch adopts the finished record.
 	const [jobs, setJobs] = useState<JobRecord[]>([]);
+	const transcript = useMemo(() => withCompletedVisuals(messages, jobs, chatId), [messages, jobs, chatId]);
+	const demos = useMemo(() => completedDemos(transcript), [transcript]);
+	const [selectedDemoId, setSelectedDemoId] = useState<string | null>(null);
+	const selectedDemo = demos.find(demo => demo.message.id === selectedDemoId);
+	const demosButtonRef = useRef<HTMLButtonElement>(null);
 	const localStreamRef = useRef(false);
 	localStreamRef.current = localStream;
 	const jobStatusRef = useRef<Map<string, string>>(new Map());
@@ -1045,11 +1055,14 @@ export function Chat({
 	// old chatId).
 	const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const fetchJobsRef = useRef<() => void>(() => {});
+	const jobsReadSequence = useRef(0);
 	const fetchJobs = useCallback(async () => {
+		const sequence = ++jobsReadSequence.current;
 		try {
 			const res = await fetch(`/api/jobs?chatId=${encodeURIComponent(chatId)}`);
 			if (!res.ok) return;
 			const data = (await res.json()) as { jobs?: JobRecord[]; turnInFlight?: boolean };
+			if (sequence !== jobsReadSequence.current) return;
 			const list = data.jobs ?? [];
 			for (const j of list) {
 				const prev = jobStatusRef.current.get(j.id);
@@ -1227,6 +1240,7 @@ export function Chat({
 			value={{
 				chatId,
 				syncFromServer,
+				refreshJobs: () => fetchJobsRef.current(),
 				sendText: (t: string) => {
 					if (explorationPausedRef.current) return;
 					void send({ type: "text", text: t });
@@ -1324,6 +1338,7 @@ export function Chat({
 							<div className="min-w-4 flex-1" aria-hidden="true" />
 					</>
 					)}
+					{demos.length > 0 && <DemoPicker demos={demos} buttonRef={demosButtonRef} onSelect={setSelectedDemoId} />}
 					{/* The plan chip (owner, plan-placement round): session-level
 					    structure beside the phase chip — access to the full-DAG popup
 					    at every width; the marginalia is the wide-screen glance view. */}
@@ -1350,7 +1365,7 @@ export function Chat({
 					{/* Practice (owner, 2026-10-04): the coverage ring hides —
 				    practice never extracts, so an ever-filling ring with no
 				    run behind it would lie. */}
-					{kind !== "practice" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
+					{kind !== "practice" && <LessonProgressRing tree={planTree} />}
 					{/* Practice sessions: no phase arc — a quiet Practice tag
 					    instead of the phase chip. */}
 					{kind === "practice" ? (
@@ -1369,7 +1384,9 @@ export function Chat({
 				</TopBar>
 
 				<SessionFind scopeRef={sessionFindScopeRef} scrollContextRef={scrollContextRef} />
-				<div ref={sessionFindScopeRef} className="relative flex min-h-0 flex-1" onFocusCapture={event => {
+				<div className="@container flex min-h-0 flex-1">
+				<div className="flex min-h-0 min-w-0 flex-1 flex-col @[52rem]:flex-row">
+				<div ref={sessionFindScopeRef} className="relative flex min-h-0 min-w-0 flex-1" onFocusCapture={event => {
 					const element = event.target;
 					if (element.closest("[data-lesson-dock]")) explorationReturn.trackField(element);
 				}}>
@@ -1384,7 +1401,7 @@ export function Chat({
 								/>
 							)}
 
-							{messages.map((m, mi) =>
+							{transcript.map((m, mi) =>
 								m.role === "user" && isSubagentSteer(m) ? (
 									// Sub-agent delivery (wake-pipeline steer): NO message bubble — the
 									// artifact card sits in the transcript column directly, full width
@@ -1528,6 +1545,8 @@ export function Chat({
 													);
 												}
 												switch (part.type) {
+													case "data-processing-tier":
+														return <p key={part.id || pi} role="status" data-testid="processing-tier-notice" className="my-2 text-xs text-muted-foreground">Fast was requested, but OpenAI reported Standard processing for this response.</p>;
 													case "text": {
 														const sourceId = textPartMessageId(part.id);
 														const anchor = sourceId && sourceTextParts.get(sourceId) === part.id ? messageAnchorId(sourceId) : undefined;
@@ -1651,6 +1670,8 @@ export function Chat({
 				<DockOverlay
 					paused={explorations.paused}
 					pending={pending}
+					chemistryContext={chemistryContext}
+					structureContinuation={structureContinuation}
 					initialQuestionDraft={pending ? questionDraft(pending.key)?.form : undefined}
 					onSaveQuestionDraft={(form) => { if (pending) saveQuestionDraft(pending.key, { form }); }}
 					practice={activeProblem}
@@ -1715,8 +1736,11 @@ export function Chat({
 							placeholder={nextReady ? "Ask anything, or press Enter for the next one." : undefined}
 						/>
 					}
-					onSubmitAnswer={(output) => {
-						if (!pending || explorationPausedRef.current) return;
+					onSubmitAnswer={(output, codeRunId) => {
+						if (!pending || explorationPausedRef.current) {
+							if (codeRunId) return Promise.reject(new Error("The coding question is no longer available for submission."));
+							return;
+						}
 						// THE ANSWER IS THE QUESTION CALL'S TOOL RESULT (fork 1, owner
 						// 2026-09-26): one input event, one turn — the hook appends
 						// the optimistic graded result (the AnsweredCard shows at
@@ -1729,7 +1753,7 @@ export function Chat({
 						const reading = readingThinkingRef.current.trim() || undefined;
 						// The pending-id effect clears this only when the question
 						// actually leaves. An offline preflight keeps the draft visible.
-						submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output, pending.key);
+						return submitAnswer(pending.tool, pending.toolCallId, reading ? { ...output, readingThinking: reading } : output, pending.key, codeRunId);
 					}}
 				/>
 				</Conversation>
@@ -1751,6 +1775,16 @@ export function Chat({
 				{planOpen && !explorationPlan && <PlanPopup messages={messages} chatId={chatId} onClose={() => setPlanOpen(false)} />}
 				{explorationPlan && <PlanPopup messages={explorationPlan.messages} onClose={() => setExplorationPlan(null)} />}
 				<AbortTurnDialog mode={abortAsk} onClose={() => setAbortAsk(null)} onConfirm={confirmAbort} busy={busy} />
+				</div>
+				{selectedDemo && (
+					<aside aria-label="Demo pane" className="h-2/5 min-h-0 min-w-0 shrink-0 border-t bg-card @[52rem]:h-auto @[52rem]:w-[45%] @[52rem]:border-t-0 @[52rem]:border-l">
+						<SubagentSteerCard key={selectedDemo.message.id} message={selectedDemo.message} onCloseDemo={() => {
+							setSelectedDemoId(null);
+							demosButtonRef.current?.focus();
+						}} />
+					</aside>
+				)}
+				</div>
 				</div>
 			</div>
 		</div>
@@ -1888,6 +1922,8 @@ export function shouldStampGeometryMute(nextH: number, prevH: number, pending: b
 function DockOverlay({
 	paused,
 	pending,
+	chemistryContext,
+	structureContinuation,
 	initialQuestionDraft,
 	onSaveQuestionDraft,
 	practice,
@@ -1915,6 +1951,8 @@ function DockOverlay({
 }: {
 	paused: boolean;
 	pending: ReturnType<typeof pendingQuestionOf>;
+	chemistryContext?: readonly string[];
+	structureContinuation?: QuestionChemistryContinuation;
 	initialQuestionDraft?: QuestionFormDraft;
 	onSaveQuestionDraft: (draft: QuestionFormDraft) => void;
 	/** Compaction running for this chat (round 14) — the docks' submit
@@ -1940,7 +1978,7 @@ function DockOverlay({
 	cliContextWindow: ReturnType<typeof cliContextWindowOf>;
 	pricing?: SessionPricing;
 	composer: React.ReactNode;
-	onSubmitAnswer: (output: QuestionAnswerData) => void;
+	onSubmitAnswer: (output: QuestionAnswerData, codeRunId?: string) => void | Promise<void>;
 	/** The model control's pass-through (the stats bar hosts it). */
 	chatId: string;
 	onModelChange: (model: string | undefined) => void;
@@ -1966,6 +2004,7 @@ function DockOverlay({
 	setupCta?: React.ReactNode;
 }) {
 	const { isAtBottom, scrollToBottom, scrollRef } = useStickToBottomContext();
+	const codingQuestion = pending?.tool === "ask_user_question" && !!parseAskInput(pending.input)?.codeExercise;
 	const pausedRef = useRef(paused);
 	pausedRef.current = paused;
 	// Render-fresh bottom state (flicker round): the arrival block below reads
@@ -1975,12 +2014,12 @@ function DockOverlay({
 	atBottomRef.current = isAtBottom;
 	// A draft belongs to a check the learner already revealed. Otherwise the
 	// reloaded check starts as a collapsed invitation.
-	const [expanded, setExpanded] = useState(!requiresReveal || !!initialQuestionDraft);
+	const [expanded, setExpanded] = useState(codingQuestion || !requiresReveal || !!initialQuestionDraft);
 	// Reveal state (W5): false until the learner clicks the invitation. While
 	// false, the scroll machine must NOT auto-expand at the bottom — the
 	// learner reads the teaching first and opens the check when ready. Once
 	// revealed, the normal collapse machine rules apply untouched.
-	const [revealed, setRevealed] = useState(!!initialQuestionDraft);
+	const [revealed, setRevealed] = useState(codingQuestion || !!initialQuestionDraft);
 	const revealPending = requiresReveal && !revealed;
 	const pauseSnapshotRef = useRef({ paused, expanded, revealed });
 	const returnGeometryUntilRef = useRef(0);
@@ -2012,7 +2051,10 @@ function DockOverlay({
 	if (pendingId !== prevPendingIdRef.current) {
 		const wasQuestion = prevPendingIdRef.current !== null;
 		prevPendingIdRef.current = pendingId;
-		if (pendingId && requiresReveal) {
+		if (pendingId && codingQuestion) {
+			setExpanded(true);
+			setRevealed(true);
+		} else if (pendingId && requiresReveal) {
 			const arrival = revealArrival(wasQuestion);
 			setExpanded(arrival.expanded);
 			setRevealed(arrival.revealed);
@@ -2033,7 +2075,7 @@ function DockOverlay({
 	// starts in its initial state — no scroll, no morph.
 	useEffect(() => {
 		if (!pendingId || pendingId === initialPendingRef.current) return;
-		if (!requiresReveal && atBottomRef.current) void suppressFoldDuringReveal();
+		if (codingQuestion || (!requiresReveal && atBottomRef.current)) void suppressFoldDuringReveal();
 		// fire only when a NEW question lands
 	}, [pendingId]);
 
@@ -2049,7 +2091,7 @@ function DockOverlay({
 	const pendingRef = useRef(!!pending || !!practice);
 	pendingRef.current = !!pending || !!practice;
 	const requiresRevealRef = useRef(requiresReveal);
-	requiresRevealRef.current = requiresReveal;
+	requiresRevealRef.current = requiresReveal || codingQuestion;
 	const revealedRef = useRef(revealed);
 	revealedRef.current = revealed;
 
@@ -2329,7 +2371,7 @@ function DockOverlay({
 		<div data-lesson-dock="" inert={paused} aria-hidden={paused || undefined} className={`pointer-events-none absolute inset-x-0 bottom-0 ${paused ? "invisible" : ""}`} style={{ right: sbInset }}>
 			<div className="h-24 bg-gradient-to-t from-background via-background/85 to-transparent" />
 			<div ref={blockRef} className="relative bg-background pb-5">
-				<div className={DOCK}>
+				<div className={codingQuestion && expanded ? "mx-auto w-full max-w-[90rem] px-4" : DOCK} data-coding-layout={codingQuestion && expanded ? "open" : undefined}>
 					<div ref={viewportRef} data-dock-viewport="" className="pointer-events-auto">
 					<div ref={bodyRef}>
 					{setupCta}
@@ -2338,6 +2380,15 @@ function DockOverlay({
 					    rounding starts, truncated, no background, no container. A
 					    line dies when its card lands (visibleQueuedSteers). */}
 					<QueuedSteersBody steers={queuedSteers} />
+					{codingQuestion && expanded && (
+						<div className="mb-2 flex items-center justify-between gap-2 text-xs">
+							<span className="text-muted-foreground">Coding workspace · current lesson</span>
+							<div className="flex gap-2">
+								<Button type="button" variant="ghost" size="sm" onClick={() => { setExpanded(false); setRevealed(false); }}>Read lesson</Button>
+								{plan && <Button type="button" variant="ghost" size="sm" onClick={onOpenPlan}>Lesson plan</Button>}
+							</div>
+						</div>
+					)}
 					{/* The reading-thinking field (owner 2026-10-03): mounted while a
 					    teach-phase check waits — the same cue that collapses it. It
 					    claims dictated speech until the learner reveals the check
@@ -2375,6 +2426,8 @@ function DockOverlay({
 									toolCallId={pending.toolCallId}
 									draftKey={`${chatId}:${pending.key}`}
 									input={pending.input as never}
+									chemistryContext={chemistryContext}
+									structureContinuation={structureContinuation}
 									expanded={expanded}
 									reveal={revealPending}
 									phase={phase}
@@ -2394,6 +2447,7 @@ function DockOverlay({
 									paused={paused}
 									problemCallId={practice.toolCallId}
 									input={practice.input as { statement: string; chemistry?: { startingStructure?: string; instructions?: string } }}
+									chemistryContext={chemistryContext}
 									expanded={expanded}
 									onExpand={() => {
 										setExpanded(true);
@@ -2445,7 +2499,7 @@ function DockOverlay({
 				    the flank; below MARGIN_MIN_W it FADES (never pops away — no
 				    mid-question unmount), and widening past the floor fades it
 				    back in. */}
-				{pending && plan && (
+				{pending && plan && !codingQuestion && (
 					<Hint label="Open the full plan" side="bottom">
 <button
 						type="button"

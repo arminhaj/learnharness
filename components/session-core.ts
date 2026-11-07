@@ -851,7 +851,7 @@ export class SessionModel {
 				// flow parses them. Retry's 400s are ordinary user-facing
 				// guidance, so show their error text without JSON syntax.
 				let message = (await res.text()) || `The send failed (${res.status}).`;
-				if ((input.type === "retry" && res.status === 400) || (input.type === "thinking" && input.codeRunId && res.status === 422)) {
+				if ((input.type === "retry" && res.status === 400) || ((input.type === "thinking" || input.type === "answer") && input.codeRunId && res.status === 422)) {
 					try {
 						const refusal = JSON.parse(message) as { error?: unknown } | null;
 						if (typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;
@@ -971,9 +971,10 @@ export class SessionModel {
 
 	/** The answer path (the dock): the answer IS the question call's tool
 	 *  result (fork 1), riding as its input event. */
-	submitAnswer(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string): Promise<void> {
+	async submitAnswer(tool: string, toolCallId: string, output: QuestionAnswerData, questionKey?: string, codeRunId?: string): Promise<void> {
 		void tool;
-		return this.send({ type: "answer", toolCallId, answer: output }, undefined, questionKey).then(() => undefined);
+		const accepted = await this.send({ type: "answer", toolCallId, answer: output, ...(codeRunId ? { codeRunId } : {}) }, undefined, questionKey);
+		if (codeRunId && !accepted) throw new Error(this.errorValue?.message ?? "The code answer was not accepted. Your draft is saved; try again when the question is available.");
 	}
 
 	/** The dismissal path (owner design 2026-10-03, "A2"): the skipped

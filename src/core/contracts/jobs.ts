@@ -23,9 +23,11 @@ export interface JobRecord {
 	toolCallId: string;
 	/** Dispatch-time arguments, saved before spawn. Older jobs resolve from history. */
 	input?: unknown;
+	/** Previous failed attempt, when the learner retries this same dispatch. */
+	retryOf?: string;
 	/** Session-owned delivery, independent of the worker's terminal outcome.
 	 * Absent on legacy records: old terminal jobs must never be replayed. */
-	delivery?: { kind: "result" | "abort"; status: "pending" | "delivered" };
+	delivery?: { kind: "result" | "abort"; status: "pending" | "delivered" | "superseded" };
 	/** Worker computation only; a pending delivery does not keep it running. */
 	status: JobStatus;
 	/** Latest human-readable activity line, e.g. `web_search: "sigma.js v3"`. */
@@ -34,12 +36,29 @@ export interface JobRecord {
 	updatedAt: string;
 	/** The sub-agent's result (steer-artifact payload). */
 	result?: unknown;
+	/** Figure display preferences saved before its teacher-facing delivery. */
+	ui?: { inverted?: boolean };
 	error?: string;
 	/** Money channel (observability, 2026-09): accumulated token usage of
 	 * the sub-agent's run, written by the runner as steps complete. Cost is
 	 * inferred at read time (core/prices.ts). Absent on pre-2026-09 jobs and
 	 * until the runner's capture lands — renderers show "—", never zero. */
 	usage?: JobUsage;
+}
+
+/** Retry links, unlike activity timestamps, survive delayed acknowledgments
+ * and clock changes. Only a leaf attempt can fulfill a dispatch now. */
+export function latestJobAttempt(jobs: readonly JobRecord[], toolCallId: string): JobRecord | null {
+	const attempts = jobs.filter(job => job.toolCallId === toolCallId);
+	const replaced = new Set(attempts.map(job => job.retryOf).filter((id): id is string => !!id));
+	return attempts.filter(job => !replaced.has(job.id))
+		.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0] ?? null;
+}
+
+/** A retry's saved link also covers a crash before delivery bookkeeping. */
+export function hasJobRetry(job: JobRecord, jobs: readonly JobRecord[]): boolean {
+	return jobs.some(attempt => attempt.retryOf === job.id && attempt.chatId === job.chatId &&
+		attempt.toolCallId === job.toolCallId && attempt.kind === job.kind);
 }
 
 /** A sub-agent run's accumulated usage — the same accounting shape as a
@@ -164,6 +183,9 @@ export function accumulateJobUsage(
  *     details carry the full artifact payload for the UI. Worker resources
  *     are released even if a question keeps the result pending indefinitely.
  *     Only computing workers appear in Background agents or accept abort.
+ *     Completed figures also render directly from the job feed while delivery
+ *     waits. These view-only entries share the eventual marker id, so the UI
+ *     replaces them without duplication and never changes the question state.
  *
  *  4. Session delivery owns one registry entry per deterministic steer ID,
  *     including while a wake is in flight or a 409/403 returns its cargo.
@@ -180,6 +202,9 @@ export function accumulateJobUsage(
  *     result become finished/pending; legacy terminal records with no
  *     delivery metadata remain untouched. Session deletion discards pending
  *     deliveries rather than treating them as running work.
+	 *     Explicit learner demo retries save a new linked attempt with the
+	 *     original brief. Pending failure notices are superseded; saved history
+	 *     stays intact. In-flight teacher deliveries must settle before retry.
  *
  *  5. No pending job parts ever exist, so the composer never gates on jobs
  *     (the learner can interject mid-job; the steer queues behind their

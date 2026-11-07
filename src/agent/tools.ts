@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { invalidInputResult, questionResult, serverExecute } from "./tool-execute.ts";
 import {
 	askInputSchema,
-	askOptionProblems,
+	askInputProblems,
 	explainInputBase,
 	explainInputObject,
 	explainInputProblems,
@@ -19,6 +19,7 @@ import type { JobRecord } from "../core/contracts.ts";
 import type { JobStore } from "../core/ports.ts";
 import { jobTools, type DemoInput, type PdfInput, type ResearchInput, type VisualInput } from "./tools/jobs.ts";
 import { planTools, type PlanToolContext } from "./tools/plan.ts";
+import { teachingPauseTool } from "./tools/teaching-pause.ts";
 import { probeDoneTool, type ProbeDoneContext } from "./tools/probe.ts";
 import { proberGraphTools } from "./tools/graph.ts";
 import { readTool } from "./tools/read.ts";
@@ -27,7 +28,7 @@ import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
 import { healToolRecord } from "./tools/heal.ts";
 import type { GraphStore } from "../core/ports.ts";
-import type { TeachingProfile } from "../core/settings.ts";
+import { isFocusedTeachingProfile, type TeachingProfile } from "../core/settings.ts";
 
 export { jobTools };
 export type { ProbeDoneContext } from "./tools/probe.ts";
@@ -83,15 +84,18 @@ export const askUserQuestionTool: AgentTool<typeof askInputSchema> = {
 	name: "ask_user_question",
 	label: "ask_user_question",
 	description:
-		"Ask the learner a single question and pause until they answer. NOT graded — there is no correct answer. " +
+		"Ask the learner a single question and pause until they answer. No automatic grading; the tutor reviews coding submissions. " +
 		"Use when requirements are ambiguous, preferences are needed, a decision would materially affect the lesson, " +
 		"or you need an open-ended response. ONE question per turn: call a single ask_user_question, then end your " +
-		"turn — his answer determines the next.",
+		"turn — his answer determines the next. Whenever the learner needs to write, complete, fix, or debug C++ code, " +
+		"use this tool with codeExercise instead of explain or quiz, even when the task has a correct solution. " +
+		"Include the lesson nodeId when on the plan and omit options and multiSelect. Supply the necessary scaffold and meaningful tests; " +
+		"the native C++20 workspace opens automatically and returns saved code and compiler/test evidence without changing session mode.",
 	parameters: askInputSchema,
 	prepareArguments: prepareQuestionArguments,
 	executionMode: "sequential",
 	execute: async (_toolCallId, input) => {
-		const problems = askOptionProblems(input.options ?? []);
+		const problems = askInputProblems(input);
 		if (problems.length > 0) return invalidInputResult("ask_user_question", problems);
 		return questionResult();
 	},
@@ -146,7 +150,7 @@ export const quizExampleBody = {
 function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types: boolean }): string {
 	const base =
 		"Ask the learner a GRADED question with a known correct answer, then instantly grade and give feedback. " +
-		"Unlike ask_user_question (which collects preferences/decisions with no right answer), " +
+		"For implementation or debugging tasks use ask_user_question with codeExercise instead. For conceptual checks, " +
 		delta.name +
 		" always has a " +
 		"correct answer supplied by you, marks the learner's selection right/wrong, reveals the correct answer, and " +
@@ -186,7 +190,7 @@ function explainDescription(name: "explain" | "recall", nodeId: boolean, focused
 		(focused
 			? "Ask a graded question that starts as free response. Include choiceHints with every question; they become visible only on request. "
 			: "Ask the learner to EXPLAIN something in his own words — a graded check with NO options: he types a free-text answer. ") +
-		"Unlike ask_user_question (no right answer), " +
+		"For C++ implementation or debugging use ask_user_question with codeExercise instead. For conceptual checks, " +
 		name +
 		" always has one. THE COMMITMENT RULE: " +
 		"correctAnswer is the FULL correct answer in your own words, reasoning included, COMMITTED before he ever " +
@@ -297,7 +301,7 @@ export function createProberTools(
 ): Record<string, AgentTool<any>> {
 	// probe_done is re-added AFTER the filter, always-on by construction — it
 	// is how the phase ENDS; a prober that can never conclude is a lockout.
-	const focused = profile === "focused";
+	const focused = isFocusedTeachingProfile(profile);
 	const done = probeDoneTool(ctx, focused);
 	// The job tools build over the SAME context/gates as the teacher's
 	// (one builder, one gating semantic); the prober carries a SUBSET:
@@ -417,6 +421,20 @@ export interface TeacherToolContext extends PlanToolContext {
 	searchAvailable?: () => boolean;
 }
 
+/** Coding uses ask's submission channel while retaining its lesson position. */
+export function teachAskToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStore">): AgentTool<typeof askInputSchema> {
+	return {
+		...askUserQuestionTool,
+		execute: async (id, input, signal, update) => {
+			if (input.codeExercise && input.nodeId) {
+				const problem = nodeIdProblem(ctx, input.nodeId);
+				if (problem) return invalidInputResult("ask_user_question", [problem]);
+			}
+			return askUserQuestionTool.execute(id, input, signal, update);
+		},
+	};
+}
+
 /**
  * Per-request teacher tool registry: teach questions (validated nodeId) +
  * plan tools + job tools, all closing over the ctx.
@@ -455,7 +473,7 @@ export function createTeacherTools(
 	// quiz for the teach explain — one quizzing tool at a time, whichever
 	// the settings arm. ask stays always-on.
 	const mechanics = quizMechanics(enabled);
-	const focused = profile === "focused";
+	const focused = isFocusedTeachingProfile(profile);
 	// Same widening as the prober's (see above) — the conditional spread of
 	// two differently-typed literals collapses into an unusable union type.
 	const quizzing: Record<string, AgentTool<any>> =
@@ -465,7 +483,8 @@ export function createTeacherTools(
 		filterEnabledTools(
 			{
 			...quizzing,
-			ask_user_question: askUserQuestionTool,
+			ask_user_question: teachAskToolFor(ctx),
+			pause_teaching: teachingPauseTool(ctx),
 			// The learner-filesystem set is always-on (user-decided 2026-09,
 			// sources v1): the teacher locates and reads learner-referenced
 			// files on its own terms — nothing auto-injects. Read-only by

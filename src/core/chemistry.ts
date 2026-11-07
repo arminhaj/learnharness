@@ -7,7 +7,14 @@ export interface MoleculeSource {
 	label?: string;
 	caption?: string;
 	sdf?: string;
+	/** Full editable drawing, including curved electron-flow arrows. The
+	 * molecular encodings still establish chemical identity. */
+	ket?: string;
+	/** Complete ordered synthesis, including the first step mirrored above. */
+	steps?: MoleculeStepSource[];
 }
+
+export type MoleculeStepSource = Omit<MoleculeSource, "steps"> & { id: string; name: string };
 
 /** An editable answer snapshot; SVG and generated conformers are not answers. */
 export interface MoleculeDocument {
@@ -16,7 +23,11 @@ export interface MoleculeDocument {
 	smiles: string;
 	ket?: string;
 	label?: string;
+	/** Every step is a complete independently editable molecular snapshot. */
+	steps?: MoleculeStepDocument[];
 }
+
+export type MoleculeStepDocument = Omit<MoleculeDocument, "steps"> & { id: string; name: string };
 
 /** A conservative geometric classification for an isolated, saturated,
  * six-carbon ring. Other rings are omitted, not assigned a guessed shape. */
@@ -80,6 +91,7 @@ export interface ConformerResult {
 
 export const MAX_MOLECULE_ATOMS = 512;
 export const MAX_CHEMISTRY_REQUEST_BYTES = 1_000_000;
+export const MAX_SYNTHESIS_STEPS = 12;
 const LIMITS = { smiles: 16_000, molfile: 200_000, sdf: 200_000, ket: 500_000, label: 240, caption: 2_000 };
 
 export class ChemistryInputError extends Error {}
@@ -106,8 +118,7 @@ function optionalText(value: Record<string, unknown>, key: keyof typeof LIMITS):
 	return text.trim() ? text : undefined;
 }
 
-export function parseMoleculeSource(value: unknown): MoleculeSource {
-	const input = record(value);
+function parseSingleMoleculeSource(input: Record<string, unknown>): Omit<MoleculeSource, "steps"> {
 	if (input.version !== undefined && input.version !== 1) throw new ChemistryInputError("Unsupported molecule version.");
 	const smiles = optionalText(input, "smiles")?.trim();
 	const molfile = optionalText(input, "molfile");
@@ -115,13 +126,59 @@ export function parseMoleculeSource(value: unknown): MoleculeSource {
 	if (sdf?.split("$$$$").slice(1).some(part => part.trim())) throw new ChemistryInputError("Provide one SDF molecule at a time.");
 	const label = optionalText(input, "label");
 	const caption = optionalText(input, "caption");
+	const ket = optionalText(input, "ket");
+	if (ket) {
+		try { record(JSON.parse(ket)); }
+		catch { throw new ChemistryInputError("The saved editor document is not valid JSON."); }
+	}
 	if (!smiles && !molfile && !sdf) throw new ChemistryInputError("Add a SMILES string or Molfile to display a molecule.");
-	return { version: 1, ...(smiles && { smiles }), ...(molfile && { molfile }), ...(sdf && { sdf }), ...(label && { label }), ...(caption && { caption }) };
+	return { version: 1, ...(smiles && { smiles }), ...(molfile && { molfile }), ...(sdf && { sdf }), ...(label && { label }), ...(caption && { caption }), ...(ket && { ket }) };
+}
+
+function stepIdentity(input: Record<string, unknown>): { id: string; name: string } {
+	if (typeof input.id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(input.id)) {
+		throw new ChemistryInputError("Each synthesis step requires a unique ID of at most 100 letters, numbers, hyphens, or underscores.");
+	}
+	if (typeof input.name !== "string" || !input.name.trim() || input.name.length > 120 || /[\u0000-\u001f\u007f]/.test(input.name)) {
+		throw new ChemistryInputError("Name each synthesis step using at most 120 characters.");
+	}
+	return { id: input.id, name: input.name.trim() };
+}
+
+function checkMoleculeSize(source: MoleculeSource): void {
+	if (new TextEncoder().encode(JSON.stringify(source)).byteLength > MAX_CHEMISTRY_REQUEST_BYTES) {
+		throw new ChemistryInputError("This molecular drawing or synthesis is too large. Keep all steps together under 1 MB.");
+	}
+}
+
+export function parseMoleculeSource(value: unknown): MoleculeSource {
+	const input = record(value);
+	const source: MoleculeSource = parseSingleMoleculeSource(input);
+	if (input.steps !== undefined) {
+		if (!Array.isArray(input.steps) || input.steps.length < 1 || input.steps.length > MAX_SYNTHESIS_STEPS) {
+			throw new ChemistryInputError(`A synthesis requires between 1 and ${MAX_SYNTHESIS_STEPS} complete steps.`);
+		}
+		const ids = new Set<string>();
+		source.steps = input.steps.map(value => {
+			const step = record(value);
+			if (step.steps !== undefined) throw new ChemistryInputError("Synthesis steps cannot contain nested steps.");
+			const identity = stepIdentity(step);
+			if (ids.has(identity.id)) throw new ChemistryInputError("Each synthesis step must have a unique ID.");
+			ids.add(identity.id);
+			return { ...parseSingleMoleculeSource(step), ...identity };
+		});
+		const first = source.steps[0]!;
+		if ((["smiles", "molfile", "ket", "sdf"] as const).some(key => source[key] !== first[key])) {
+			throw new ChemistryInputError("The synthesis must mirror its first step in the root molecular structure.");
+		}
+	}
+	checkMoleculeSize(source);
+	return source;
 }
 
 /** Called only for a complete fence; partial streamed JSON is not chemistry. */
 export function parseMoleculeBlock(source: string, language = "molecule"): MoleculeSource {
-	if (source.length > MAX_CHEMISTRY_REQUEST_BYTES) throw new ChemistryInputError("This molecule block is too large.");
+	if (new TextEncoder().encode(source).byteLength > MAX_CHEMISTRY_REQUEST_BYTES) throw new ChemistryInputError("This molecule block is too large.");
 	if (language === "smiles") return parseMoleculeSource({ smiles: source.trim() });
 	try {
 		return parseMoleculeSource(JSON.parse(source));
@@ -131,21 +188,23 @@ export function parseMoleculeBlock(source: string, language = "molecule"): Molec
 	}
 }
 
-export function parseMoleculeDocument(value: unknown): MoleculeDocument {
-	const input = record(value);
-	const source = parseMoleculeSource(input);
+function singleMoleculeDocument(input: Record<string, unknown>, source: MoleculeSource): Omit<MoleculeDocument, "steps"> {
 	if (input.version !== 1 || !source.molfile || !source.smiles) {
 		throw new ChemistryInputError("A molecular answer requires version 1, Molfile, and SMILES.");
 	}
-	const ket = optionalText(input, "ket");
-	if (ket) {
-		try {
-			record(JSON.parse(ket));
-		} catch {
-			throw new ChemistryInputError("The saved editor document is not valid JSON.");
-		}
-	}
+	const ket = source.ket;
 	return { version: 1, molfile: source.molfile, smiles: source.smiles, ...(source.label && { label: source.label }), ...(ket && { ket }) };
+}
+
+export function parseMoleculeDocument(value: unknown): MoleculeDocument {
+	const input = record(value);
+	const source = parseMoleculeSource(input);
+	const document: MoleculeDocument = singleMoleculeDocument(input, source);
+	if (source.steps) {
+		const steps = input.steps as unknown[];
+		document.steps = source.steps.map((step, index) => ({ ...singleMoleculeDocument(record(steps[index]), step), id: step.id, name: step.name }));
+	}
+	return document;
 }
 
 export function moleculeInput(source: MoleculeSource): string {

@@ -1,5 +1,6 @@
 import type { ImageContent, Message, TextContent, Tool } from "@earendil-works/pi-ai";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import { toolNameToMcp } from "./tool-bridge.ts";
 
 export type ClaudeContentBlock =
 	| { type: "text"; text: string }
@@ -37,12 +38,13 @@ function getReplayParts(message: Message): ReplayPart[] {
 		case "assistant":
 			return message.content.flatMap((block) => {
 				if (block.type === "text") return [`[assistant]\n${block.text}`];
-				if (block.type === "toolCall") return [`[tool call ${block.name}] ${JSON.stringify(block.arguments)}`];
+				if (block.type === "toolCall") return [`[tool call ${toolNameToMcp(block.name)}] ${JSON.stringify(block.arguments)}`];
 				return [];
 			});
 
 		case "toolResult": {
-			const label = message.isError ? `[tool result ${message.toolName} error]` : `[tool result ${message.toolName}]`;
+			const name = toolNameToMcp(message.toolName);
+			const label = message.isError ? `[tool result ${name} error]` : `[tool result ${name}]`;
 			return getLabelledParts(label, message.content);
 		}
 	}
@@ -86,10 +88,19 @@ function toUserContent(conversation: Message[]): ClaudeContentBlock[] {
 
 export function toClaudeInput(messages: Message[]): ClaudeInput {
 	const conversation = messages.filter((message) => message.role !== "system");
+	const tools = getCurrentTools(messages);
+	const systemPrompt = getCurrentSystemPrompt(messages);
+	// The app stores short tool names; the CLI registers their MCP names.
+	// Fresh replay (including a figure's render image) must teach the same
+	// names as the actual registry, or Claude may call a nonexistent bare tool.
+	const toolNames = tools.length === 0 ? "" : [
+		"Tool names in the instructions and tool results are shorthand. When calling a tool, use its exact registered MCP name below:",
+		...tools.map((tool) => `- ${tool.name} → ${toolNameToMcp(tool.name)}`),
+	].join("\n");
 
 	return {
-		systemPrompt: getCurrentSystemPrompt(messages),
-		tools: getCurrentTools(messages),
+		systemPrompt: [systemPrompt, toolNames].filter(Boolean).join("\n\n"),
+		tools,
 		userContent: toUserContent(conversation),
 	};
 }

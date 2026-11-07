@@ -34,13 +34,17 @@ function replaceEscapedDollars(content: string): string {
 	return out;
 }
 
-/** Read old \(...\)/\[...\] syntax without touching literal content or
- * reparsing native math as Markdown. Dollar authoring remains native. */
+/** Read old \(...\)/\[...\] syntax and repair misplaced display fences
+ * without touching literal content or correctly delimited dollar math. */
 export function transformMathDelimiters(markdown: string): string {
 	let offset = 0;
-	return readContentSpans(markdown).map(span => {
+	return readContentSpans(markdown, true).map(span => {
 		const start = offset; offset += span.raw.length;
 		if (span.kind !== "math") return span.raw;
+		if (span.misplacedFence) {
+			const newline = span.body.includes("\r\n") ? "\r\n" : "\n";
+			return span.open + newline + span.body.trim() + newline + span.close;
+		}
 		if (span.open === "$") return "$" + replaceEscapedDollars(span.body) + span.close;
 		if (span.open !== "\\(" && span.open !== "\\[") return span.raw;
 		const body = span.body.trim();

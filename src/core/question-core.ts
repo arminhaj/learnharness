@@ -20,6 +20,7 @@
 import { Type, type Static } from "typebox";
 import { stripModelValueDebris } from "./value-debris.ts";
 import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
+import { parseCodeExercise, type CodeRunResult } from "./code-workspace.ts";
 
 // ─── shared types ───────────────────────────────────────────────────────────
 
@@ -301,6 +302,10 @@ export const quizDisplayInputSchema = Type.Object({
 // Mechanics doctrine lives in the TOOL DESCRIPTIONS (pi-native ruling),
 // not in the system prompt.
 
+const reusePreviousStructure = Type.Optional(Type.Boolean({
+	description: "Set true when this free-response question asks the learner to edit or repair their previously submitted molecular drawing or synthesis. Draw Structure starts with a separate copy of that answer, including all named steps and curved arrows. Omit for a new drawing; false explicitly starts without a previous answer. Never use a hidden expected answer as the starting draft.",
+}));
+
 export const explainInputBase = Type.Object({
 	question: Type.String({
 		description:
@@ -316,6 +321,7 @@ export const explainInputBase = Type.Object({
 	details: Type.Optional(
 		Type.String({ description: "Optional extra context or instructions shown under the question." }),
 	),
+	reusePreviousStructure,
 });
 
 /** The TEACH-side explain object: base + the plan-position field (same
@@ -387,6 +393,7 @@ export const askInputSchema = Type.Object({
 	details: Type.Optional(
 		Type.String({ description: "Optional extra context or instructions shown under the question." }),
 	),
+	reusePreviousStructure,
 	options: Type.Optional(
 		Type.Array(Type.Object(askOptionProps), {
 			minItems: 2,
@@ -398,8 +405,28 @@ export const askInputSchema = Type.Object({
 	multiSelect: Type.Optional(
 		Type.Boolean({ description: "Set to true to allow multiple answers to the same question." }),
 	),
+	nodeId: Type.Optional(Type.String({ minLength: 1, description: "For a Teaching codeExercise, the current lesson-plan node ID. Use its exact plan_init slug to keep coding attached to the lesson. Omit for ordinary preference questions." })),
+	codeExercise: Type.Optional(Type.Object({
+		language: Type.Literal("cpp"),
+		starterCode: Type.String({ description: "A complete compilable C++20 program with an unfinished function and supplied input/output boilerplate. Maximum 64 KiB. Keep the solution out of the starter." }),
+		tests: Type.Array(Type.Object({
+			name: Type.String({ minLength: 1, maxLength: 120 }),
+			stdin: Type.String({ description: "Test standard input, at most 8 KiB." }),
+			expectedStdout: Type.String({ description: "Exact expected standard output, at most 8 KiB. Checks normalize CRLF and final newlines only." }),
+		}), { minItems: 1, maxItems: 12 }),
+	}, { description: "Optional native coding workspace for this free-response question. Omit options and multiSelect. The learner can edit, compile, test, and submit saved code with compiler evidence while staying in Teaching." })),
 });
 
+/** Shared authoring/display validation for a free-response coding question. */
+export function askInputProblems(input: { options?: { label: string; value?: string }[]; multiSelect?: boolean; codeExercise?: unknown }): string[] {
+	const problems = askOptionProblems(input.options ?? []);
+	if (input.codeExercise !== undefined) {
+		if ((input.options?.length ?? 0) > 0 || input.multiSelect) problems.push("A code exercise requires free-response input: omit options and multiSelect.");
+		try { parseCodeExercise(input.codeExercise); }
+		catch (error) { problems.push(error instanceof Error ? error.message : "Invalid code exercise."); }
+	}
+	return problems;
+}
 // Ask's option sanity (labels non-empty, values distinct — ask is not
 // graded, but duplicate values break the dock's value keying) runs at the
 // call boundary in execute (askOptionProblems, above).
@@ -493,6 +520,8 @@ export interface QuestionAnswerData {
 	text?: string; // ask/explain: text-mode answer
 	/** A saved structure submitted with a free-response answer. */
 	molecule?: MoleculeDocument;
+	/** Compiler evidence resolved by the server from an opaque check ID. */
+	codeResult?: CodeRunResult;
 	/** The learner's reasoning on the QUESTION (renamed from `note`, owner
 	 *  2026-10-03 — "that's what it is"). */
 	thinking?: string;
@@ -784,7 +813,7 @@ export function buildAnswer(qd: QuestionData, req: AnswerRequest, tool?: string)
 	if (req.other?.trim()) base.other = req.other.trim();
 	if (req.text?.trim()) base.text = req.text.trim();
 	if (qd.mode === "text" && qd.kind !== "quiz" && !base.dontKnow && req.molecule) {
-		base.molecule = { ...req.molecule };
+		base.molecule = structuredClone(req.molecule);
 	}
 	if (!base.dontKnow && req.confidence !== undefined &&
 		(qd.kind === "quiz" || (base.choicesShown && base.answers.length > 0))) {
@@ -840,6 +869,7 @@ export function compactAnswerForModel(ad: QuestionAnswerData): Record<string, un
 		out.answers = ad.answers.map((a) => ({ index: a.index, label: a.label }));
 	if (ad.text) out.text = ad.text;
 	if (ad.molecule) out.molecule = moleculeMarkdown(ad.molecule);
+	if (ad.codeResult) out.codeResult = ad.codeResult;
 	if (ad.other) out.other = ad.other;
 	// The verdict + stated confidence are the learner's PERFORMANCE — new
 	// information the model needs for its next move. (dontKnow implies

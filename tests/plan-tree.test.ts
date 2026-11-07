@@ -186,9 +186,9 @@ describe("plan_init — the author-once mermaid tool (execute against the real s
 		assert.equal(res.tree, undefined, "no tree echo on failure (context diet, 2026-10-09)");
 	});
 
-	it("only plan_init exists — the seven mutation/tracking tools are gone by design", () => {
+	it("plan tools expose authorship and explicit completion", () => {
 		const tools = planTools({ chatId: "chat_x", chatStore });
-		assert.deepEqual(Object.keys(tools), ["plan_init"]);
+		assert.deepEqual(Object.keys(tools).sort(), ["lesson_set_completed", "plan_init", "plan_set_completed"]);
 	});
 
 	it("unknown chat returns ok:false with the empty tree", async () => {
@@ -450,4 +450,24 @@ describe("derivePlanStatuses: tagged explain calls move the map like quiz calls"
 		assert.equal(st.current, "b");
 		assert.deepEqual([...st.visited], ["a"]);
 	});
+});
+
+
+describe("explicit lesson completion", () => {
+ it("persists, is idempotent, reaches the final step, and supports reopening", async () => {
+  const id = newChat("Completion test");
+  const tools = planTools({ chatId: id, chatStore });
+  await exec(tools, "plan_init", { mermaid: "graph TD\n a[A] --> b[B]" });
+  const update = (nodeId: string, completed = true) => exec(tools, "plan_set_completed", { nodeId, completed, reason: "Learner explained the concept independently." });
+  const first = await update("a");
+  assert.deepEqual(chatStore.getChat(id)!.tree!.completedNodeIds, ["a"]);
+  assert.equal((await update("a")).tree!.version, first.tree!.version);
+  assert.deepEqual((await update("b")).tree!.completedNodeIds, ["a", "b"]);
+  assert.deepEqual((await update("a", false)).tree!.completedNodeIds, ["b"]);
+  assert.equal((await update("missing")).ok, false);
+  await exec(tools, "plan_init", { mermaid: "graph TD\n b[B] --> c[C]" });
+  assert.deepEqual(chatStore.getChat(id)!.tree!.completedNodeIds, ["b"]);
+  await exec(tools, "plan_init", { mermaid: "graph TD\n c[C]" });
+  assert.deepEqual(chatStore.getChat(id)!.tree!.completedNodeIds ?? [], []);
+ });
 });

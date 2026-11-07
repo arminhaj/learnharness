@@ -365,23 +365,27 @@ function createWindow(url) {
 	trustedAppWindows.add(win);
 	win.once("closed", () => trustedAppWindows.delete(win));
 	const allowedOrigin = () => new URL(url).origin;
-	// Deny-by-default; the ONLY grants are media (mic/STT groundwork) and
-	// clipboard-sanitized-write — the copy affordances in the transcript
-	// (md-blocks copy corners) call navigator.clipboard.writeText(), which
-	// Chromium only honors with that permission (chrome-melt tweaks wave,
-	// 2026-09-19; before this grant every copy silently rejected). Still
-	// loopback-origin only — Electron's default is auto-approve-everything,
-	// and we do not ship that.
-	// "local-fonts": the appearance section's reading-font picker (2026-09-26).
+	// Ketcher's Paste needs clipboard-read as well as clipboard writes.
+	// Limit reads to the focused app document, excluding embedded demos.
 	const allowedPermissions = new Set(["media", "clipboard-sanitized-write", "local-fonts"]);
 	const fromOwnOrigin = (origin, permission) =>
 		origin === allowedOrigin() && allowedPermissions.has(permission);
-	session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-		const requestOrigin = details.requestingUrl ? new URL(details.requestingUrl).origin : null;
-		callback(fromOwnOrigin(requestOrigin, permission));
+	const canReadClipboard = (contents, origin, details) => {
+		try {
+			if (!contents || contents.isDestroyed() || origin !== allowedOrigin() || details?.isMainFrame !== true) return false;
+			const owner = BrowserWindow.fromWebContents(contents);
+			return !!owner && trustedAppWindows.has(owner) && !owner.isDestroyed() && owner.isFocused()
+				&& new URL(details.requestingUrl).origin === allowedOrigin()
+				&& new URL(contents.mainFrame.url).origin === allowedOrigin();
+		} catch { return false; }
+	};
+	session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+		let requestOrigin = null;
+		try { requestOrigin = new URL(details.requestingUrl).origin; } catch { /* missing/opaque request stays denied */ }
+		callback(permission === "clipboard-read" ? canReadClipboard(contents, requestOrigin, details) : fromOwnOrigin(requestOrigin, permission));
 	});
-	session.defaultSession.setPermissionCheckHandler((_wc, permission, origin) => {
-		return fromOwnOrigin(origin, permission);
+	session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) => {
+		return permission === "clipboard-read" ? canReadClipboard(contents, origin, details) : fromOwnOrigin(origin, permission);
 	});
 
 	win.webContents.on("will-navigate", (event, target) => {

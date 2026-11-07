@@ -80,6 +80,21 @@ describe("repairMathForDisplay — the existing composition, unchanged", () => {
 });
 
 describe("upgraded KaTeX rendering on real question and practice surfaces", () => {
+	it("renders both formulas and the following prose in a saved Explain question with misplaced display fences", () => {
+		const first = String.raw`\mathcal V(t)=(10\,\mathrm{mV})e^{i\omega t},\qquad`;
+		const second = String.raw`\mathcal I(t)=(2\,\mathrm{mA})e^{i\pi/3}e^{i\omega t}.`;
+		const ratio = String.raw`\mathcal V(t)/\mathcal I(t)`;
+		const question = ["Suppose", "$$" + first, second + "$$", "Divide the **whole complex functions**, $" +
+			ratio + "$. What magnitude and angle remain after canceling their shared rotation?"].join("\n");
+		const input = Object.freeze({ question, correctAnswer: String.raw`$5e^{-i\pi/3}\,\Omega$` });
+		const html = renderToStaticMarkup(<QuestionDock toolName="explain" toolCallId="saved_display_math"
+			input={input} expanded onExpand={() => {}} onSubmit={() => {}} />);
+		assertMath(html, [first + "\n" + second, ratio], ["ω", "π"]);
+		const { document } = parseHTML(html);
+		assert.equal(document.querySelector("strong")?.textContent, "whole complex functions");
+		assert.equal(parseExplainInput(input)?.question, question);
+	});
+
 	for (const [name, formula, glyphs] of [
 		["fraction and root", String.raw`\frac{1}{\sqrt{x}}`, ["1", "x"]],
 		["accents", String.raw`\hat{x}+\bar{y}`, ["x", "y"]],

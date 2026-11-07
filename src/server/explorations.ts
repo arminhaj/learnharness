@@ -94,6 +94,8 @@ export function createExploration(parentChatId: string, input: { sourceMessageId
 	const settings = parent.settings?.model ? parent.settings : strong?.model ? {
 		model: { provider: strong.model.provider, id: strong.model.id },
 		thinkingLevel: parent.settings?.thinkingLevel ?? strong.thinkingLevel,
+		// A branch carries its parent's speed, including a legacy parent's off.
+		fastMode: parent.settings?.fastMode ?? false,
 	} : parent.settings;
 	// One synchronous create: no transient sidebar entry or partially seeded
 	// child can be observed, and the parent record is never rewritten.

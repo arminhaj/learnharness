@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteSessionDialog } from "@/components/delete-session-dialog";
 import type { ChatDeleteMode } from "@/src/core";
-import { Code2Icon, DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { ChevronRightIcon, Code2Icon, DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
 import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
@@ -17,7 +17,7 @@ import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { fuzzyScore } from "@/src/core";
+import { fuzzyScore, groupSessionsForSidebar, sessionLessonComplete } from "@/src/core";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
 import { kbdEventForAction } from "@/src/core";
@@ -274,11 +274,13 @@ export function timeAgo(iso: string, now = new Date()): string {
  *  ever wanted. */
 function sessionMeta(chat: ChatListItem): string {
 	if (chat.compacting) return `Compacting context · ${timeAgo(chat.updatedAt)}`;
+	if (chat.busy) return "Working…";
+	if (chat.archivedAt) return `Archived · ${timeAgo(chat.updatedAt)}`;
+	if (sessionLessonComplete(chat)) return `Completed · ${timeAgo(chat.updatedAt)}`;
 	if (chat.pendingQuestion) return `Waiting for input · ${timeAgo(chat.updatedAt)}`;
 	if ((chat.kind ?? "teach") === "practice" && chat.pendingProblem) {
 		return `Problem waiting · ${timeAgo(chat.updatedAt)}`;
 	}
-	if (chat.busy) return "Working…";
 	return timeAgo(chat.updatedAt);
 }
 
@@ -309,6 +311,7 @@ export function SessionRow({
 			onClick={onOpen}
 			onContextMenu={onContextMenu}
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
+			data-session-id={chat.id}
 			className={cn(
 				"relative mb-0.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
 				active && "bg-accent",
@@ -391,10 +394,63 @@ export function RenameRow({ chat, onCommit, onCancel }: { chat: ChatListItem; on
 export type SessionKindFilter = "teach" | "all" | "practice";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
 
+export function SessionDateSection({ dateKey, label, count, expanded, onToggle, children }: {
+	dateKey: string;
+	label: string;
+	count: number;
+	expanded: boolean;
+	onToggle: () => void;
+	children: React.ReactNode;
+}) {
+	return (
+		<section className="mb-2" aria-label={label} data-testid="session-date-group" data-date={dateKey}>
+			<button
+				type="button"
+				aria-expanded={expanded}
+				aria-controls={`sessions-${dateKey}`}
+				onClick={onToggle}
+				title={dateKey === "last-week" ? "2–6 days ago" : dateKey === "older" ? "7 or more days ago" : dateKey === "completed" || dateKey === "archive" ? label : dateKey}
+				className="mb-0.5 flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+			>
+				<ChevronRightIcon aria-hidden="true" className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+				<span className="flex-1 text-left">{label}</span>
+				<span className="text-[10px] tabular-nums text-muted-foreground/70">{count}</span>
+			</button>
+			<div id={`sessions-${dateKey}`} hidden={!expanded}>{expanded && children}</div>
+		</section>
+	);
+}
+
 function SessionsSidebar() {
 	const { open, toggle } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
 	const [query, setQuery] = useState("");
+	const [collapsedDates, setCollapsedDates] = useState<Set<string>>(() => new Set(["completed", "archive"]));
+	const [archiveError, setArchiveError] = useState<string | null>(null);
+	const [archivingId, setArchivingId] = useState<string | null>(null);
+	const [completingId, setCompletingId] = useState<string | null>(null);
+	const [kbdIndex, setKbdIndex] = useState<number | null>(null);
+	const [calendarNow, setCalendarNow] = useState(() => new Date());
+	// Refresh relative day labels at local midnight and after waking a
+	// backgrounded window. Adding 24 hours would be wrong at DST changes.
+	useEffect(() => {
+		let timer: ReturnType<typeof setTimeout>;
+		const update = () => {
+			clearTimeout(timer);
+			const now = new Date();
+			setCalendarNow(now);
+			const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+			timer = setTimeout(update, midnight.getTime() - now.getTime() + 100);
+		};
+		update();
+		window.addEventListener("focus", update);
+		document.addEventListener("visibilitychange", update);
+		return () => {
+			clearTimeout(timer);
+			window.removeEventListener("focus", update);
+			document.removeEventListener("visibilitychange", update);
+		};
+	}, []);
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
 	useEffect(() => {
 		const stored = window.localStorage.getItem(KIND_FILTER_KEY);
@@ -402,6 +458,7 @@ function SessionsSidebar() {
 	}, []);
 	const setFilter = useCallback((f: SessionKindFilter) => {
 		setKindFilter(f);
+		setKbdIndex(null);
 		window.localStorage.setItem(KIND_FILTER_KEY, f);
 	}, []);
 	const pathname = usePathname();
@@ -416,30 +473,37 @@ function SessionsSidebar() {
 		router.push("/chat/new");
 	}, [router]);
 
-	/* FUZZY (owner round 8, 2026-10-05): subsequence match ranked by
-	 * fuzzyScore — prefix beats word-boundary beats scattered. Empty query
-	 * keeps the natural list order (scores are all 0, sort is stable). */
-	const shown = useMemo(() => {
+	// Date groups stay newest-first; fuzzy search ranks matches within
+	// each group. The keyboard walks exactly the expanded, rendered rows.
+	const dateGroups = useMemo(() => {
 		const q = query.trim();
 		let list = chats;
 		if (list && kindFilter !== "all") {
 			list = list.filter((c) => (c.kind ?? "teach") === kindFilter);
 		}
 		if (!list) return list;
-		if (!q) return list;
-		return list
-			.map((c) => ({ c, score: fuzzyScore(q, c.title) }))
-			.filter((r): r is { c: (typeof list)[number]; score: number } => r.score !== null)
-			.sort((a, b) => b.score - a.score)
-			.map((r) => r.c);
-	}, [chats, query, kindFilter]);
+		const groups = groupSessionsForSidebar(list, calendarNow);
+		if (!q) return groups;
+		return groups.map((group) => ({
+			...group,
+			sessions: group.sessions
+				.map((c) => ({ c, score: fuzzyScore(q, c.title) }))
+				.filter((r): r is { c: ChatListItem; score: number } => r.score !== null)
+				.sort((a, b) => b.score - a.score)
+				.map((r) => r.c),
+		})).filter((group) => group.sessions.length > 0);
+	}, [chats, query, kindFilter, calendarNow]);
+	const shown = useMemo(() => dateGroups?.flatMap((group) => collapsedDates.has(group.key) ? [] : group.sessions) ?? null, [dateGroups, collapsedDates]);
 
 	const refreshInFlightRef = useRef(false);
-	const refresh = useCallback(async () => {
-		// In-flight coalesce (S6): event bursts may land several refresh
-		// calls at once — one fetch serves them all; anything newer arrives
-		// with the next event's fetch.
-		if (refreshInFlightRef.current) return;
+	const refreshQueuedRef = useRef(false);
+	const refresh = useCallback(async function fetchChats() {
+		// Keep a trailing read: an in-flight snapshot may predate a completion,
+		// archive, or turn event, so dropping its refresh could strand stale rows.
+		if (refreshInFlightRef.current) {
+			refreshQueuedRef.current = true;
+			return;
+		}
 		refreshInFlightRef.current = true;
 		try {
 			const res = await fetch("/api/chats", { cache: "no-store" });
@@ -450,6 +514,10 @@ function SessionsSidebar() {
 			setChats((prev) => prev ?? []);
 		} finally {
 			refreshInFlightRef.current = false;
+			if (refreshQueuedRef.current) {
+				refreshQueuedRef.current = false;
+				void fetchChats();
+			}
 		}
 	}, []);
 
@@ -482,7 +550,7 @@ function SessionsSidebar() {
 			const { id, running } = (e as CustomEvent<{ id: string; running: boolean }>).detail;
 			if (running) {
 				if (chatsRef.current?.some((c) => c.id === id)) {
-					setChats((prev) => (prev ? prev.map((c) => (c.id === id ? { ...c, busy: true } : c)) : prev));
+					setChats((prev) => (prev ? prev.map((c) => (c.id === id ? { ...c, busy: true, updatedAt: new Date().toISOString() } : c)) : prev));
 				} else {
 					void refresh(); // the brand-new session: it isn't in the snapshot yet
 				}
@@ -536,7 +604,6 @@ function SessionsSidebar() {
 	   follows whatever the query + kind filter leave. Mouse and keyboard
 	   coexist: hovering doesn't claim, a click or an open clears the
 	   selection. */
-	const [kbdIndex, setKbdIndex] = useState<number | null>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
 
@@ -607,6 +674,64 @@ function SessionsSidebar() {
 		}
 	}, []);
 
+	const changeArchived = useCallback(async (chat: ChatListItem, archived: boolean) => {
+		setCtxChatId(null);
+		setArchivingId(chat.id);
+		setArchiveError(null);
+		try {
+			const response = await fetch(`/api/chats/${chat.id}/archive`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ archived }),
+			});
+			if (!response.ok) throw new Error(`archive failed: ${response.status}`);
+			const result = await response.json() as { archivedAt: string | null };
+			const updated = { ...(chatsRef.current?.find(item => item.id === chat.id) ?? chat), archivedAt: result.archivedAt ?? undefined };
+			setChats(previous => previous?.map(item => item.id === chat.id ? { ...item, archivedAt: updated.archivedAt } : item) ?? previous);
+			setKbdIndex(null);
+			setCollapsedDates(previous => {
+				const next = new Set(previous);
+				const destination = groupSessionsForSidebar([updated]).find(group => group.sessions.length > 0)?.key;
+				if (destination) next.delete(destination);
+				return next;
+			});
+			void refresh();
+		} catch {
+			setArchiveError(`Could not ${archived ? "archive" : "restore"} the session. Try again.`);
+		} finally {
+			setArchivingId(null);
+		}
+	}, [refresh]);
+
+	const changeCompleted = useCallback(async (chat: ChatListItem, completed: boolean) => {
+		setCtxChatId(null);
+		setCompletingId(chat.id);
+		setArchiveError(null);
+		try {
+			const response = await fetch(`/api/chats/${chat.id}/completion`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ completed }),
+			});
+			if (!response.ok) throw new Error(`completion failed: ${response.status}`);
+			const result = await response.json() as { lessonCompleted: boolean };
+			const updated = { ...(chatsRef.current?.find(item => item.id === chat.id) ?? chat), lessonCompleted: result.lessonCompleted };
+			setChats(previous => previous?.map(item => item.id === chat.id ? { ...item, lessonCompleted: updated.lessonCompleted } : item) ?? previous);
+			setKbdIndex(null);
+			setCollapsedDates(previous => {
+				const next = new Set(previous);
+				const destination = groupSessionsForSidebar([updated]).find(group => group.sessions.length > 0)?.key;
+				if (destination) next.delete(destination);
+				return next;
+			});
+			void refresh();
+		} catch {
+			setArchiveError(`Could not ${completed ? "complete" : "reopen"} the lesson. Try again.`);
+		} finally {
+			setCompletingId(null);
+		}
+	}, [refresh]);
+
 	// Delete success: patch the list instantly (the poll is the backstop),
 	// navigate home if the open session died (the chat view unmounts —
 	// drafts die with it, no orphan bubbles), and announce the graph
@@ -633,12 +758,11 @@ function SessionsSidebar() {
 		return () => window.removeEventListener("lh:kbd-sessions-search", onFocusSearch);
 	}, [open, toggle]);
 
-	// Keep the kbd-selected row in view (the rows are the container's only
-	// buttons, so the index matches).
+	// Date disclosure buttons are not session rows.
 	useEffect(() => {
 		if (kbdIndex === null) return;
-		listRef.current?.querySelectorAll("button")[kbdIndex]?.scrollIntoView({ block: "nearest" });
-	}, [kbdIndex]);
+		listRef.current?.querySelector('[data-testid="session-row-kbd"]')?.scrollIntoView({ block: "nearest" });
+	}, [kbdIndex, shown]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -739,6 +863,8 @@ function SessionsSidebar() {
 							value={query}
 							onChange={(e) => {
 								setQuery(e.target.value);
+								// A search reveals matches in previously collapsed days.
+								setCollapsedDates(new Set());
 								// The list reorders under the query every keystroke —
 								// a stale walk index would point at the wrong row.
 								setKbdIndex(null);
@@ -803,6 +929,7 @@ function SessionsSidebar() {
 							key={f}
 							type="button"
 							data-testid={`kind-filter-${f}`}
+							aria-pressed={kindFilter === f}
 							onClick={() => setFilter(f)}
 							className={cn(
 								"flex-1 rounded-sm px-2 py-1 text-[11px] uppercase tracking-wider transition-colors",
@@ -817,35 +944,57 @@ function SessionsSidebar() {
 				</div>
 
 				<div ref={listRef} className="flex-1 overflow-y-auto p-2">
-					{shown === null ? (
+					{archiveError && <p role="alert" className="px-2 py-2 text-xs text-destructive">{archiveError}</p>}
+					{dateGroups && dateGroups.length > 0 && dateGroups.every(group => group.sessions.length === 0) && <p className="px-2 py-4 text-xs text-muted-foreground">No sessions yet.</p>}
+					{dateGroups === null ? (
 						<div className="px-2 py-4 text-xs text-muted-foreground">Loading…</div>
-					) : shown.length === 0 ? (
+					) : dateGroups.length === 0 ? (
 						<div className="px-2 py-4 text-xs text-muted-foreground">
 							{query.trim() ? "No sessions match." : "No sessions yet."}
 						</div>
 					) : (
-						shown.map((c, i) =>
-							renamingId === c.id ? (
-								<RenameRow
-									key={c.id}
-									chat={c}
-									onCommit={(next) => void commitRename(c.id, next)}
-									onCancel={() => setRenamingId(null)}
-								/>
-							) : (
-								<SessionRow
-									key={c.id}
-									chat={c}
-									active={pathname === `/chat/${c.id}`}
-									kbdSelected={i === kbdIndex}
-									onOpen={() => {
-										setKbdIndex(null);
-										router.push(`/chat/${c.id}`);
-									}}
-									onContextMenu={(e) => openContext(e, c)}
-								/>
-							),
-						)
+						dateGroups.map((group) => (
+							<SessionDateSection
+								key={group.key}
+								dateKey={group.key}
+								label={group.label}
+								count={group.sessions.length}
+								expanded={!collapsedDates.has(group.key)}
+								onToggle={() => {
+									setKbdIndex(null);
+									setCollapsedDates((previous) => {
+										const next = new Set(previous);
+										if (next.has(group.key)) next.delete(group.key);
+										else next.add(group.key);
+										return next;
+									});
+								}}
+							>
+							{group.sessions.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">{group.key === "completed" ? "No completed sessions yet." : "No archived sessions."}</p>}
+							{group.sessions.map((c) =>
+									renamingId === c.id ? (
+										<RenameRow
+											key={c.id}
+											chat={c}
+											onCommit={(next) => void commitRename(c.id, next)}
+											onCancel={() => setRenamingId(null)}
+										/>
+									) : (
+										<SessionRow
+											key={c.id}
+											chat={c}
+											active={pathname === `/chat/${c.id}`}
+											kbdSelected={kbdIndex !== null && shown?.[kbdIndex]?.id === c.id}
+											onOpen={() => {
+												setKbdIndex(null);
+												router.push(`/chat/${c.id}`);
+											}}
+											onContextMenu={(e) => openContext(e, c)}
+										/>
+									),
+							)}
+							</SessionDateSection>
+						))
 					)}
 				</div>
 
@@ -874,9 +1023,8 @@ function SessionsSidebar() {
 					</div>
 				</div>
 
-				{/* The context menu (wave 6 + the extraction-UX redesign): the
-				    coverage block above, then exactly two management actions
-				    (owner ruling — no more). MenuShell owns placement/focus/arrow
+				{/* Session management and extraction coverage.
+				    MenuShell owns placement/focus/arrow
 				    cycling; the dismissal effect above owns the contract. */}
 				{ctxChatId !== null && (
 					<MenuShell
@@ -885,12 +1033,7 @@ function SessionsSidebar() {
 						preferredSide="down"
 						menuClass="flex w-52 flex-col gap-0.5 rounded-xl border bg-card p-2 text-xs shadow-xl"
 					>
-						{/* The two management actions first, then the extraction block
-						    (owner refinement round, 2026-09-24): Rename/Delete stay at the
-						    top, the coverage numbers + Extract affordance sit below the
-						    hairline — the block is info + a stateful affordance, the
-						    actions above it. Fetched on menu open (the block mounts WITH
-						    the menu); 409 = benign. Renders nothing on a failed read. */}
+						{/* Management actions precede extraction coverage. */}
 						<button
 							type="button"
 							data-testid="ctx-rename"
@@ -901,6 +1044,30 @@ function SessionsSidebar() {
 							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-foreground transition-colors hover:bg-accent"
 						>
 							Rename
+						</button>
+						<button
+							type="button"
+							data-testid="ctx-complete"
+							disabled={completingId !== null}
+							onClick={() => {
+								const target = chats?.find(chat => chat.id === ctxChatId);
+								if (target) void changeCompleted(target, !sessionLessonComplete(target));
+							}}
+							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+						>
+							{sessionLessonComplete(chats?.find(chat => chat.id === ctxChatId) ?? {}) ? "Mark as incomplete" : "Mark as complete"}
+						</button>
+						<button
+							type="button"
+							data-testid="ctx-archive"
+							disabled={archivingId !== null}
+							onClick={() => {
+								const target = chats?.find(chat => chat.id === ctxChatId);
+								if (target) void changeArchived(target, !target.archivedAt);
+							}}
+							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+						>
+							{chats?.find(chat => chat.id === ctxChatId)?.archivedAt ? "Restore" : "Archive"}
 						</button>
 						{/* Export as Markdown (owner, release polish 2026-10-06): the
 					    session-markdown engine's user-facing debut — same-origin

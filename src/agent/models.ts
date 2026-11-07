@@ -13,6 +13,7 @@ import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
+import { supportsFastMode } from "../core/model-speed.ts";
 import packageMetadata from "../../package.json" with { type: "json" };
 import { chatGPTModel } from "./chatgpt-bridge.ts";
 import { chatGPTStream } from "./chatgpt-stream.ts";
@@ -21,6 +22,7 @@ import { createClaudeCodeProvider } from "./claude-code/provider.ts";
 import { streamClaudeCode } from "./claude-code/stream.ts";
 import { nativeSubscriptionId, nativeSubscriptionModel } from "./subscription-bridge.ts";
 import { nativeSubscriptionStream } from "./subscription-stream.ts";
+import { traceModelStream } from "./trace-model-stream.ts";
 
 /** App identity is immutable and shared by Models and every native Agent.
  * Agent's default Pi attribution otherwise overrides the Models identity. */
@@ -110,6 +112,7 @@ export interface ResolvedModelSpec {
 	provider: string;
 	id: string;
 	thinkingLevel?: ThinkingLevel;
+	fastMode?: boolean;
 }
 
 /** The first entry of the baked default order the model supports (owner,
@@ -155,7 +158,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 		// The agent loop forwards state.thinkingLevel as `reasoning` (undefined
 		// = off on pi-ai's scale). Built-ins keep the factory clamp; custom
 		// requests re-resolve thinking against their current metadata below.
-		streamFn: (requestModel, context, options) => {
+		streamFn: traceModelStream((requestModel, context, options) => {
 			if (custom) {
 				// Revalidate before EVERY upstream model operation, including later
 				// tool-loop steps. Resolve thinking from the ORIGINAL preference (or
@@ -170,10 +173,19 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 				return current.streamSimple(permitImages(currentModel), context, { ...options, reasoning: currentLevel === "off" ? undefined : currentLevel });
 			}
 			const requestOptions = { ...options, reasoning: level === "off" ? undefined : level };
+			if (supportsFastMode(spec.provider, spec.id)) {
+				// Pi's streamSimple drops provider-specific serviceTier options.
+				// Apply it at the final body seam, after existing observers, so the
+				// user's saved speed also wins over model sampling defaults.
+				requestOptions.onPayload = async (raw, model) => {
+					const replacement = await options?.onPayload?.(raw, model);
+					return { ...(replacement === undefined ? raw : replacement) as Record<string, unknown>, service_tier: spec.fastMode === true ? "priority" : "default" };
+				};
+			}
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
 			return stream(requestModel, context, requestOptions);
-		},
+		}),
 	};
 }
 

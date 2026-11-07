@@ -18,6 +18,7 @@ import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
 import { phaseAt3Lh } from "../core/phases.ts";
+import { lessonProgress } from "../core/lesson-progress.ts";
 
 function chatFile(id: string): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid chat id: ${id}`);
@@ -25,7 +26,7 @@ function chatFile(id: string): string {
 }
 
 /** THE SILENCE LAW (push S6, 2026-10-02): chats-changed announces ONLY
- *  list-SHAPE mutations — createChat, renameChat, deleteChat (below,
+ *  list-SHAPE mutations — createChat, renameChat, setArchived, setLessonCompleted, deleteChat (below,
  *  each emits post-write). The content writers (saveMessages,
  *  appendTurnUsage, appendExtractionUsage, saveSettings, saveTree) are
  *  DELIBERATELY SILENT: saveMessages fires per turn-persist and would
@@ -102,6 +103,7 @@ function listChats(): ChatSummary[] {
 				// zero-back-compat wipe makes these "corrupt") must not blank the
 				// whole sidebar — same isolation getChat's per-file catch gives.
 				try {
+					const progress = lessonProgress(tree);
 					return {
 						// turns and extractions stay out of the list payload (list =
 						// summaries; usage aggregates ride the full record, the picker
@@ -110,6 +112,7 @@ function listChats(): ChatSummary[] {
 						// Normalized kind: absent record field reads as teach.
 						kind: summary.kind ?? "teach",
 						messageCount: messages.length,
+						...(tree ? { lessonCompletion: { total: progress.total, completed: progress.count } } : {}),
 						// Record-derived status for the session picker: phase from the
 						// transcript's explicit events (probe_done concluded / verdict
 						// accepted — docs/probe-teach-split.md §4), pending question
@@ -193,6 +196,31 @@ function renameChat(id: string, title: string): ChatRecord {
 	return record;
 }
 
+/** Organization is not conversation activity: preserve updatedAt and every
+ * content field. Like rename, a real archive change announces list shape. */
+function setArchived(id: string, archived: boolean): ChatRecord {
+	const record = getChat(id);
+	if (!record) throw new Error(`Chat not found: ${id}`);
+	if (Boolean(record.archivedAt) === archived) return record;
+	if (archived) record.archivedAt = new Date().toISOString();
+	else delete record.archivedAt;
+	writeChat(record);
+	emit("chats-changed", {});
+	return record;
+}
+
+/** Finishing a lesson is an organization decision, separate from verified
+ * plan steps. Preserve content and activity order, including when reopening. */
+function setLessonCompleted(id: string, completed: boolean): ChatRecord {
+	const record = getChat(id);
+	if (!record) throw new Error(`Chat not found: ${id}`);
+	if (record.lessonCompleted === completed) return record;
+	record.lessonCompleted = completed;
+	writeChat(record);
+	emit("chats-changed", {});
+	return record;
+}
+
 /** Delete the session record file entirely (session-deletion wave 6,
  *  owner 2026-09-22). False when the id is unknown — the route turns that
  *  into a 404. The record's graph traces and jobs are the route's
@@ -228,6 +256,8 @@ export const chatStore: ChatStore = {
 	saveTree,
 	saveSettings,
 	renameChat,
+	setArchived,
+	setLessonCompleted,
 	deleteChat,
 	appendTurnUsage,
 	appendExtractionUsage,

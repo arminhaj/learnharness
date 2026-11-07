@@ -16,6 +16,8 @@ import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
+import type { JobRecord } from "../src/core/contracts/jobs.ts";
+import type { LhViewMessage } from "../src/core/view.ts";
 
 // ── the seam, BEFORE any config-loading import ──────────────────────────────
 const TMP_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "lh-artifact-ui-"));
@@ -27,6 +29,8 @@ let createChat: (title: string, kind?: "practice") => { id: string; title: strin
 let saveMessages: (id: string, messages: unknown[]) => void;
 let getChat: (id: string) => { messages: unknown[] } | undefined;
 let buildSubagentSteerFn: typeof import("../src/core/contracts.ts").buildSubagentSteer;
+let jobStore: typeof import("../src/store/jobs.ts").jobStore;
+let renderArtifact: (message: LhViewMessage, jobs: JobRecord[]) => string;
 
 before(async () => {
 	const route = await import("../app/api/chats/[id]/artifact-ui/route.ts");
@@ -38,6 +42,14 @@ before(async () => {
 	saveMessages = (id, messages) => chatStore.saveMessages(id, messages as never);
 	const contracts = await import("../src/core/contracts.ts");
 	buildSubagentSteerFn = contracts.buildSubagentSteer;
+	jobStore = (await import("../src/store/jobs.ts")).jobStore;
+	const React = (await import("react")).default;
+	(globalThis as Record<string, unknown>).React = React;
+	const { renderToStaticMarkup } = await import("react-dom/server");
+	const { JobsContext } = await import("../components/jobs-context.ts");
+	const { SubagentSteerCard } = await import("../components/artifacts/steer-card.tsx");
+	renderArtifact = (message, jobs) => renderToStaticMarkup(React.createElement(JobsContext.Provider, { value: jobs },
+		React.createElement(SubagentSteerCard, { message })));
 });
 
 const post = (id: string, body: unknown) =>
@@ -82,6 +94,116 @@ describe("POST /api/chats/:id/artifact-ui", () => {
 		assert.equal((await post(chat.id, { input: { messageId: steer.id, inverted: false } })).status, 200);
 		saved = getChat(chat.id)!.messages as [{ details: { ui?: { inverted?: boolean } } }];
 		assert.equal(saved[0]!.details.ui?.inverted, false, "and toggles back off");
+	});
+
+	it("persists a completed figure's preference before delivery without adding a transcript marker or waking the tutor", async () => {
+		const chat = createChat("Figure before tutor delivery");
+		const job = jobStore.createJob({ chatId: chat.id, kind: "visual", toolCallId: "figure_call" });
+		const result = { svg: "<svg/>" };
+		jobStore.updateJob(job.id, { status: "done", result, delivery: { kind: "result", status: "pending" } });
+		const messages = structuredClone(getChat(chat.id)!.messages);
+		assert.equal((await post(chat.id, { input: { messageId: `steer_${job.id}`, inverted: true } })).status, 200);
+		const saved = jobStore.getJob(job.id)!;
+		assert.deepEqual(saved.ui, { inverted: true });
+		assert.deepEqual(saved.delivery, { kind: "result", status: "pending" });
+		assert.deepEqual(getChat(chat.id)!.messages, messages, "display preferences do not deliver the model-facing marker");
+		// Once delivered, the saved marker takes precedence over the job preference.
+		const steer = buildSubagentSteerFn(saved, result);
+		saveMessages(chat.id, [steer]);
+		assert.equal((await post(chat.id, { input: { messageId: steer.id, inverted: false } })).status, 200);
+		assert.equal((getChat(chat.id)!.messages[0] as { details: { ui: { inverted: boolean } } }).details.ui.inverted, false);
+	});
+
+	it("rejects preview preferences for another chat, an unfinished job, an abort or a non-figure", async () => {
+		const chat = createChat("Preview guards");
+		const other = createChat("Other chat");
+		const job = jobStore.createJob({ chatId: chat.id, kind: "visual", toolCallId: "figure_call" });
+		const input = { messageId: `steer_${job.id}`, inverted: true };
+		assert.equal((await post(chat.id, { input })).status, 400);
+		jobStore.updateJob(job.id, { status: "done", result: { svg: "<svg/>" }, delivery: { kind: "result", status: "pending" } });
+		assert.equal((await post(other.id, { input })).status, 400);
+		jobStore.updateJob(job.id, { delivery: { kind: "abort", status: "pending" } });
+		assert.equal((await post(chat.id, { input })).status, 400);
+		const demo = jobStore.createJob({ chatId: chat.id, kind: "demo", toolCallId: "demo_call" });
+		jobStore.updateJob(demo.id, { status: "done", result: { svg: "<svg/>" }, delivery: { kind: "result", status: "pending" } });
+		assert.equal((await post(chat.id, { input: { ...input, messageId: `steer_${demo.id}` } })).status, 400);
+	});
+
+	it("persists pending verified demo preferences without altering its question, result or delivery", async () => {
+		const chat = createChat("Verified demo before tutor delivery");
+		saveMessages(chat.id, [{ id: "pending", role: "assistant", content: [{ type: "toolCall", id: "question", name: "explain", arguments: { question: "Which signal leads?" } }] }]);
+		const job = jobStore.createJob({ chatId: chat.id, kind: "demo", toolCallId: "demo_call" });
+		const result = { title: "Waveform timing", html: "<!doctype html><button>+90°</button>", tested: true as const };
+		jobStore.updateJob(job.id, { status: "done", result, delivery: { kind: "result", status: "pending" } });
+		const messages = structuredClone(getChat(chat.id)!.messages);
+		for (const inverted of [true, false]) {
+			assert.equal((await post(chat.id, { input: { messageId: `steer_${job.id}`, inverted } })).status, 200);
+			const saved = jobStore.getJob(job.id)!;
+			assert.deepEqual(saved.ui, { inverted });
+			assert.deepEqual(saved.result, result);
+			assert.equal(saved.status, "done");
+			assert.deepEqual(saved.delivery, { kind: "result", status: "pending" });
+			assert.deepEqual(getChat(chat.id)!.messages, messages, "the pending question and transcript stay unchanged");
+		}
+
+		// Once canonical delivery exists, its preference wins over stale job UI.
+		const canonical = buildSubagentSteerFn(jobStore.getJob(job.id)!, result);
+		saveMessages(chat.id, [...messages, canonical]);
+		for (const inverted of [true, false]) {
+			assert.equal((await post(chat.id, { input: { messageId: canonical.id, inverted } })).status, 200);
+			const saved = getChat(chat.id)!.messages;
+			assert.deepEqual(saved.slice(0, messages.length), messages);
+			assert.equal((saved.at(-1) as { details: { ui: { inverted: boolean } } }).details.ui.inverted, inverted);
+			assert.deepEqual(jobStore.getJob(job.id)!.ui, { inverted: false }, "canonical writes do not overwrite job preferences");
+		}
+	});
+
+	it("rejects incomplete, unverified, empty, legacy, aborted and wrong-chat demo preview preferences", async () => {
+		const chat = createChat("Verified demo preview guards");
+		const other = createChat("Other demo chat");
+		const job = jobStore.createJob({ chatId: chat.id, kind: "demo", toolCallId: "demo_call" });
+		const input = { messageId: `steer_${job.id}`, inverted: true };
+		const result = { title: "Demo", html: "<html/>", tested: true as const };
+		const messages = structuredClone(getChat(chat.id)!.messages);
+		assert.equal((await post(chat.id, { input })).status, 400, "unfinished job");
+		for (const invalid of [
+			null, {}, { svg: "<svg/>" }, { ...result, tested: false }, { title: "Demo", html: "<html/>" },
+			{ ...result, tested: "true" }, { ...result, html: "" }, { ...result, html: " \n " },
+			{ ...result, title: "" }, { ...result, title: "   " }, { html: "<html/>", tested: true },
+		]) {
+			jobStore.updateJob(job.id, { status: "done", result: invalid as never, delivery: { kind: "result", status: "pending" } });
+			assert.equal((await post(chat.id, { input })).status, 400, JSON.stringify(invalid));
+			assert.equal(jobStore.getJob(job.id)!.ui, undefined);
+		}
+		jobStore.updateJob(job.id, { status: "done", result, delivery: { kind: "result", status: "pending" } });
+		assert.equal((await post(other.id, { input })).status, 400, "other chat");
+		jobStore.updateJob(job.id, { delivery: undefined });
+		assert.equal((await post(chat.id, { input })).status, 400, "legacy job has no delivery metadata");
+		jobStore.updateJob(job.id, { delivery: { kind: "abort", status: "pending" } });
+		assert.equal((await post(chat.id, { input })).status, 400, "abort delivery");
+		jobStore.updateJob(job.id, { status: "error", delivery: { kind: "result", status: "pending" } });
+		assert.equal((await post(chat.id, { input })).status, 400, "failed job");
+		assert.deepEqual(getChat(chat.id)!.messages, messages);
+	});
+
+	it("uses a saved pending-demo preference on mount and gives canonical UI preferences precedence", async () => {
+		const chat = createChat("Demo preference rendering");
+		const job = jobStore.createJob({ chatId: chat.id, kind: "demo", toolCallId: "demo_call" });
+		const result = { title: "Waveform timing", html: "<p>Timing</p>", tested: true as const };
+		jobStore.updateJob(job.id, { status: "done", result, delivery: { kind: "result", status: "pending" } });
+		const message: LhViewMessage = { id: `steer_${job.id}`, role: "user", parts: [
+			{ type: "data-subagent-artifact", data: { kind: "demo", result } },
+		] };
+		assert.equal((await post(chat.id, { input: { messageId: message.id, inverted: true } })).status, 200);
+		const savedJob = jobStore.getJob(job.id)!;
+		assert.match(renderArtifact(message, [savedJob]), /filter:invert\(1\) hue-rotate\(180deg\)/);
+		const canonical: LhViewMessage = { ...message, parts: [
+			{ type: "data-subagent-artifact", data: { kind: "demo", result, ui: { inverted: false } } },
+		] };
+		assert.doesNotMatch(renderArtifact(canonical, [savedJob]), /filter:invert/,
+			"explicit canonical false overrides saved job true");
+		assert.equal((await post(chat.id, { input: { messageId: message.id, inverted: false } })).status, 200);
+		assert.doesNotMatch(renderArtifact(message, [jobStore.getJob(job.id)!]), /filter:invert/);
 	});
 });
 

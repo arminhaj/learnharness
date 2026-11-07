@@ -46,6 +46,32 @@ test("external edits cause conflicts and are never silently overwritten", async 
 	assert.equal((await service.execute({ ...ids, action: "load" })).source, "// changed externally\n");
 });
 
+test("compound provider call IDs retain their full identity through load, save, check, and submission", async () => {
+	const { service, ids } = fixture();
+	const compound = { ...ids, problemCallId: "call_acVWc2dboCWOrdV0745dNgOa|fc_092c072dea927c0b016aed27ea124087d2811d2a1534e71821" };
+	const initial = await service.execute({ ...compound, action: "load" });
+	assert.match(path.basename(path.dirname(initial.path)), /^[a-f0-9]{64}$/);
+	const saved = await service.execute({ ...compound, action: "save", source: "// learner draft\n", expectedRevision: initial.revision });
+	assert.equal((await service.execute({ ...compound, action: "load" })).source, saved.source);
+	const checked = await service.execute({ ...compound, action: "check" });
+	assert.deepEqual(service.getRunForSubmission(compound.chatId, compound.problemCallId, checked.lastRun!.id), checked.lastRun);
+	for (const otherId of [compound.problemCallId.split("|")[0]!, `${compound.problemCallId.split("|")[0]}|fc_other`]) {
+		const other = await service.execute({ ...ids, problemCallId: otherId, action: "load" });
+		assert.notEqual(other.id, initial.id, "neither half of a compound ID can alias the whole ID");
+		assert.throws(() => service.getRunForSubmission(ids.chatId, otherId, checked.lastRun!.id));
+	}
+	const encoded = await service.execute({ ...ids, problemCallId: `call_encoded|${"aB+/".repeat(110)}==`, action: "load" });
+	assert.match(path.basename(path.dirname(encoded.path)), /^[a-f0-9]{64}$/);
+});
+
+test("workspace identifiers still reject paths, control characters, and malformed compound IDs", async () => {
+	const { service, ids } = fixture();
+	for (const problemCallId of ["", "../escape", "call|../escape", "call\\escape", "call\0item", "call\nitem", "|item", "call|", "call||item", "call|item|extra", "a".repeat(4097)]) {
+		await assert.rejects(service.execute({ ...ids, problemCallId, action: "load" }), /Invalid chat or problem identifier/);
+	}
+	await assert.rejects(service.execute({ ...ids, chatId: "chat|item", action: "load" }), /Invalid chat or problem identifier/);
+});
+
 test("checks snapshot the saved source and submissions reject stale or foreign results", async () => {
 	const { service, ids, conclude } = fixture();
 	const initial = await service.execute({ ...ids, action: "load" });

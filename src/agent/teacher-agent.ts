@@ -4,6 +4,7 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentEvent, AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { invalidInputResult, questionResult } from "./tool-execute.ts";
 import { providerEventObserver } from "./provider-events.ts";
+import { activityToolOutcome, createActivityTrace, currentActivityTrace, withActivityTrace } from "./activity-trace.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 import { PATHS } from "../../config.ts";
 import { APP_IDENTITY, piEngineFor, type PiEngine } from "./models.ts";
@@ -27,7 +28,8 @@ import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/
 import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { EXPLORATION_INSTRUCTIONS } from "./exploration-instructions.ts";
-import type { TeachingProfile } from "../core/settings.ts";
+import { isFocusedTeachingProfile, type TeachingProfile } from "../core/settings.ts";
+import { createTeachingContinuation } from "./teaching-continuation.ts";
 
 /**
  * The two teaching-side agents (docs/probe-teach-split.md): the PROBER and
@@ -79,10 +81,18 @@ export type AgentKind = "prober" | "teacher" | "practice";
  *  through config paths, not request state — the store import carries no
  *  chat/job machinery. */
 export function composeInstructions(kind: AgentKind, switches?: Record<string, boolean>, profile?: TeachingProfile): string {
+	return composeProfileInstructions(kind, switches, profile);
+}
+
+function composeProfileInstructions(kind: AgentKind, switches?: Record<string, boolean>, profile?: TeachingProfile, appendix?: string): string {
 	const segments = effectivePromptSegments(kind, switches ?? {})
 		.map((s) => (s.enabled ? s.overrideText! : s.sourceText));
-	if (profile === "focused" && kind !== "practice") {
+	if (isFocusedTeachingProfile(profile) && kind !== "practice") {
 		segments.push(readFileSync(path.join(PATHS.root, "src", "agent", "prompts", "focused.md"), "utf-8"));
+	}
+	if (appendix) segments.push(appendix);
+	if (profile === "mad-max" && kind !== "practice") {
+		segments.push(readFileSync(path.join(PATHS.root, "src", "agent", "prompts", "mad-max.md"), "utf-8"));
 	}
 	return segments
 		.map((t) => t.trim())
@@ -90,9 +100,9 @@ export function composeInstructions(kind: AgentKind, switches?: Record<string, b
 		.join("\n\n---\n\n");
 }
 
-/** The same teacher method and user overrides, with the branch boundary last. */
+/** Keep branch boundaries and apply the selected profile's cadence within them. */
 export function composeExplorationInstructions(switches?: Record<string, boolean>, profile?: TeachingProfile): string {
-	return `${composeInstructions("teacher", switches, profile)}\n\n---\n\n${EXPLORATION_INSTRUCTIONS}`;
+	return composeProfileInstructions("teacher", switches, profile, EXPLORATION_INSTRUCTIONS);
 }
 
 // The switch-free source composition, cached per kind (module-load once).
@@ -118,6 +128,8 @@ export interface AgentBuildOptions {
 	requestCycle?: ChatGPTRequestCycle;
 	/** The initial transcript, as pi messages (the record IS agent state). */
 	messages?: AgentMessage[];
+	/** Saved learner answer at the tail of a retry after an empty reply. */
+	retryAnswerCallId?: string;
 	/** Money channel: one call per model request. */
 	onUsage?: StepUsageCollector;
 	/** Tests may pass a bare tool registry to drive deterministic flows.
@@ -189,20 +201,26 @@ function makeQuestionStopper(kind: AgentKind) {
 	};
 }
 
-function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], instructions?: string) {
+function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], instructions?: string, continuation?: ReturnType<typeof createTeachingContinuation>) {
 	// Practice never reaches the role fallback (the handler ALWAYS injects
 	// the session's conversation engine — practice rides the same
 	// conversation-spec resolution as teaching); the cast keeps AgentKind
 	// ("practice" is not a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
 	const stopper = makeQuestionStopper(kind);
-	const systemPrompt = instructions ?? (opts.promptSwitches || opts.teachingProfile === "focused"
+	const systemPrompt = instructions ?? (opts.promptSwitches || isFocusedTeachingProfile(opts.teachingProfile)
 		? composeInstructions(kind, opts.promptSwitches, opts.teachingProfile)
 		: composedInstructions[kind]!);
 	// Debug recorder (owner, 2026-10-04): raw provider events when
 	// LH_PROVIDER_EVENTS=1 and the caller handed a chatId; undefined is
 	// the normal no-observer path (tests, env-off).
 	const providerEvents = opts.chatId ? providerEventObserver(opts.chatId, kind) : undefined;
+	const currentTrace = currentActivityTrace();
+	const inheritedTrace = currentTrace && (!opts.chatId || currentTrace.chatId === opts.chatId) ? currentTrace : undefined;
+	const activityTrace = inheritedTrace ?? (opts.chatId ? createActivityTrace({ chatId: opts.chatId, context: kind }) : undefined);
+	const ownsTrace = !!activityTrace && !inheritedTrace;
+	let traceStarted = performance.now();
+	const toolStarts = new Map<string, number>();
 	const seenInputs = new Set((opts.messages ?? []).map((m) => (m as { id?: string }).id).filter(Boolean));
 	const agent = new Agent({
 		identity: APP_IDENTITY,
@@ -225,14 +243,14 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			],
 			messages: opts.messages ?? [],
 		},
-		streamFn: engine.streamFn,
+		streamFn: (model, context, options) => withActivityTrace(activityTrace, () => engine.streamFn(model, context, options)),
 		...(providerEvents ? { onProviderStreamEvent: providerEvents } : {}),
 		// 0.87.1: shouldStopAfterTurn → finishTurn. Same call point (after
 		// tool results attach, before turn_end) and `{ action: "end" }` still
 		// exits BEFORE the steering poll — the parked-marker stranding our
 		// Wave C registerLiveAgent-before-runPiTurn design depends on.
 		// undefined preserves normal scheduling (the old boolean false).
-		finishTurn: (turn) => (stopper(turn) ? { action: "end" } : undefined),
+		finishTurn: (turn, signal) => (stopper(turn) ? { action: "end" } : continuation?.finish(turn, signal)),
 		// Wave C (2026-09-26, owner correction same day): markers handed to a
 		// live run drain from pi's STEERING queue — the lesson loop is one
 		// continuous teach→quiz→teach run, so delivery must inject at turn
@@ -247,7 +265,31 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		// UI-only markers (plan-block) drop, the app's id fields strip, and
 		// an abort's dangling question call gets its INTERRUPTED result. It
 		// must never throw (pi's convertToLlm contract).
-		convertToLlm: toLlmMessages,
+		convertToLlm: (messages) => {
+			const started = performance.now();
+			activityTrace?.mark("local.stage.start", { stage: "context-conversion" });
+			try {
+				const modelMessages = toLlmMessages(messages);
+				if (continuation?.reminder) {
+					// Model-only guidance: never impersonate a learner input or
+					// change the saved feedback/answer while recovering a stop.
+					modelMessages.push({ role: "system", content: continuation.reminder, timestamp: messages.at(-1)?.timestamp ?? Date.now() });
+				}
+				const answer = modelMessages.at(-1);
+				if (opts.retryAnswerCallId && answer?.role === "toolResult" && answer.toolCallId === opts.retryAnswerCallId) {
+					// Only in the model projection: keep the original tool exchange
+					// intact without creating another learner input or a new record.
+					modelMessages.push({
+						role: "user",
+						content: "[LearnHarness retry] The learner's answer above is already submitted. Continue from it now: respond to the answer and take the next appropriate step.",
+						timestamp: answer.timestamp,
+					});
+				}
+				return modelMessages;
+			} finally {
+				activityTrace?.mark("local.stage.end", { stage: "context-conversion", durationMs: performance.now() - started });
+			}
+		},
 		prepareRequest: (request) => {
 			if (opts.callPurpose) {
 				let learner = false, automatic = false;
@@ -266,6 +308,27 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			}
 			opts.requestCycle?.prepare(request);
 		},
+	});
+	if (activityTrace) agent.subscribe((event: AgentEvent) => {
+		if (event.type === "agent_start" && ownsTrace) {
+			traceStarted = performance.now();
+			activityTrace.mark("run.start", {});
+		}
+		if (event.type === "agent_end" && ownsTrace) {
+			const last = event.messages.findLast(message => message.role === "assistant") as { stopReason?: string } | undefined;
+			activityTrace.mark("run.end", { status: last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" ? "error" : "completed", durationMs: performance.now() - traceStarted });
+		}
+		if (event.type === "tool_execution_start") {
+			toolStarts.set(event.toolCallId, performance.now());
+			activityTrace.mark("tool.start", { toolName: event.toolName, toolCallId: event.toolCallId });
+		}
+		if (event.type === "tool_execution_end") {
+			const started = toolStarts.get(event.toolCallId);
+			toolStarts.delete(event.toolCallId);
+			activityTrace.mark("tool.end", { toolName: event.toolName, toolCallId: event.toolCallId,
+				...activityToolOutcome(event.toolName, event.result, event.isError),
+				durationMs: event.durationMs ?? (started === undefined ? undefined : performance.now() - started), status: event.isError ? "error" : "completed" });
+		}
 	});
 	if (opts.onUsage) {
 		agent.subscribe((event: AgentEvent) => {
@@ -306,7 +369,7 @@ export function createTeacherAgent(
 	opts: AgentBuildOptions = {},
 ) {
 	const tools = opts.tools ?? (ctx ? createTeacherTools(ctx, opts.toolToggles, opts.teachingProfile) : bareQuestionTools());
-	return baseAgentOptions("teacher", opts, Object.values(tools));
+	return baseAgentOptions("teacher", opts, Object.values(tools), undefined, ctx ? createTeachingContinuation(ctx) : undefined);
 }
 
 /** The bare teach question set (tests, bare agents): quiz with the shared
@@ -365,7 +428,7 @@ export function createExplorationAgent(ctx: TeacherToolContext, opts: AgentBuild
 			"Use a mermaid graph block with permanent lowercase node slugs and prerequisite --> edges. A single node is enough for a narrow question. " +
 			"Present the plan before teaching; every quiz or explain check names one of its node ids. Rewrite when the learner's understanding requires it.",
 	};
-	return baseAgentOptions("teacher", { ...opts, tools: undefined }, Object.values(tools), composeExplorationInstructions(opts.promptSwitches, opts.teachingProfile));
+	return baseAgentOptions("teacher", { ...opts, tools: undefined }, Object.values(tools), composeExplorationInstructions(opts.promptSwitches, opts.teachingProfile), createTeachingContinuation(ctx));
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;

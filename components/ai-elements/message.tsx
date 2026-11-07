@@ -30,11 +30,12 @@ import {
 } from "react";
 import remarkBreaks from "remark-breaks";
 import {
+  defaultRehypePlugins,
   Streamdown,
   type PluginConfig,
 } from "streamdown";
 import { mdComponents } from "@/components/md-blocks";
-import { repairMathForDisplay, transformMathDelimiters } from "@/src/core";
+import { rehypeLocalImages, repairMathForDisplay, transformMathDelimiters } from "@/src/core";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: LhViewMessage["role"];
@@ -355,6 +356,15 @@ export const streamdownPlugins = {
   math: createMathPlugin({ singleDollarTextMath: true }),
 } as unknown as PluginConfig;
 
+// Preserve Streamdown's raw HTML, sanitization and hardening. Local file URLs
+// must become same-origin image URLs before the sanitizer inspects them.
+export const streamdownRehypePlugins = [
+  defaultRehypePlugins.raw!,
+  rehypeLocalImages,
+  defaultRehypePlugins.sanitize!,
+  defaultRehypePlugins.harden!,
+];
+
 // Remend's incomplete-HTML heuristic mistakes `<b` in `$a<b$` for a
 // partial tag and deletes the remaining source before math can tokenize.
 // Preserve that text (unfinished prose HTML may show literally); Streamdown's
@@ -381,6 +391,7 @@ export const MessageResponse = memo(
         )}
         components={mdComponents}
         plugins={streamdownPlugins}
+        rehypePlugins={streamdownRehypePlugins}
         remend={streamdownRemend}
         {...props}
       >

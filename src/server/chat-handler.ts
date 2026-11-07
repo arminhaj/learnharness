@@ -1,5 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai";
-import { resolveCheckedCodeInput } from "./code-submission.ts";
+import { resolveCheckedCodeInput, revalidateCheckedCodeInput } from "./code-submission.ts";
 import {
 	createExplorationAgent,
 	createPracticeAgent,
@@ -21,6 +21,8 @@ import { learningGraphView, readLearningGraphState, saveLearningContribution } f
 import type { ModelRole } from "../../config.ts";
 import {
 	deliverJobResult,
+	canSupersedeJobDelivery,
+	supersedeJobDelivery,
 	noteSteersDurable,
 	reconcileUserSteers,
 	registerLiveAgent,
@@ -34,6 +36,7 @@ import {
 import { runPiTurn } from "./pi/ui-stream.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
+import { createActivityTrace, withActivityTrace, type ActivityTrace } from "../agent/activity-trace.ts";
 import { effectiveSettings, stores } from "./stores.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
 import { providerKeyPresent } from "./keys.ts";
@@ -45,7 +48,8 @@ import {
 	resolveRoleSpec,
 } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, type ProviderKeyMissing } from "../core/settings.ts";
-import { beginTurn, endTurn } from "./turn-liveness.ts";
+import { beginTurn, endTurn, isTurnRunning } from "./turn-liveness.ts";
+import { demoRetryResponse } from "./demo-retry.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
@@ -59,6 +63,7 @@ import { settledTurnResponse } from "./turn-runs.ts";
 import { asAgentMessages } from "../core/native-messages.ts";
 import {
 	ChatInputError,
+	emptyRetryAnswerCallId,
 	inputAppends,
 	parseChatInput,
 	retryDrops,
@@ -170,7 +175,22 @@ function resolveEngine(role: ModelRole): PiEngine | undefined {
 	return spec ? piEngineForSpec(spec) : undefined;
 }
 
-setJobRespawn((jobId) => void jobRunner.runJob(jobId));
+function runTracedJob(jobId: string, input?: Parameters<typeof jobRunner.runJob>[1]): Promise<void> {
+	const job = stores.jobStore.getJob(jobId);
+	const trace = job ? createActivityTrace({ chatId: job.chatId, context: "job", jobId }) : undefined;
+	return withActivityTrace(trace, () => jobRunner.runJob(jobId, input));
+}
+
+setJobRespawn((jobId) => void runTracedJob(jobId));
+
+/** Explicit learner action; uses the same runner and current model settings
+ * as dispatch and crash recovery, independently of teacher input. */
+export function retryDemoResponse(req: Request, jobId: string): Promise<Response> {
+	return demoRetryResponse(req, jobId, {
+		...stores, isTurnRunning, canSupersedeJobDelivery, supersedeJobDelivery,
+		spawn: (id) => void runTracedJob(id),
+	});
+}
 
 /** The route-facing entry: parse {chatId, input} and run one turn. */
 export async function handleChatRequest(
@@ -205,6 +225,55 @@ export async function handleChatRequest(
 export async function handleChatInput(
 	chatId: string,
 	input: TurnInput,
+	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
+): Promise<Response> {
+	const trace = createActivityTrace({ chatId, context: "turn" });
+	const started = performance.now();
+	let ended = false;
+	const activity: TurnActivity = {
+		trace, detached: false,
+		finish(status) {
+			if (ended) return;
+			ended = true;
+			trace?.mark("run.end", { status, durationMs: performance.now() - started });
+		},
+	};
+	return withActivityTrace(trace, async () => {
+		trace?.mark("run.start", {});
+		try {
+			const response = await handleChatInputRun(chatId, input, activity, buildAgent);
+			if (!activity.detached) activity.finish(response.ok ? "completed" : "refused");
+			return response;
+		} catch (error) {
+			activity.finish("error");
+			throw error;
+		}
+	});
+}
+
+interface TurnActivity {
+	trace: ActivityTrace | undefined;
+	detached: boolean;
+	finish(status: string): void;
+}
+
+async function localStage<T>(trace: ActivityTrace | undefined, stage: string, action: () => Promise<T>): Promise<T> {
+	const started = performance.now();
+	trace?.mark("local.stage.start", { stage });
+	try {
+		const result = await action();
+		trace?.mark("local.stage.end", { stage, status: "completed", durationMs: performance.now() - started });
+		return result;
+	} catch (error) {
+		trace?.mark("local.stage.end", { stage, status: "error", durationMs: performance.now() - started });
+		throw error;
+	}
+}
+
+async function handleChatInputRun(
+	chatId: string,
+	input: TurnInput,
+	activity: TurnActivity,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 ): Promise<Response> {
 	let record = stores.chatStore.getChat(chatId);
@@ -251,7 +320,7 @@ export async function handleChatInput(
 	// path. The affected tier is strong — the conversation chain's own tier
 	// (a chat.model override still resolves through it).
 	if (isSubscriptionProvider(conversation.provider)) {
-		await refreshConnectionCatalog(conversation.provider);
+		await localStage(activity.trace, "catalog-refresh", () => refreshConnectionCatalog(conversation.provider));
 		if (input.type === "steers" && !connectionBackgroundAllowed(conversation.provider)) {
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
 		}
@@ -269,8 +338,10 @@ export async function handleChatInput(
 	if (submittedMolecule) {
 		try {
 			if (input.type !== "steers") inputAppends(record, input);
-			const { normalizeMoleculeDocument } = await import("./chemistry.ts");
-			const molecule = await normalizeMoleculeDocument(submittedMolecule);
+			const molecule = await localStage(activity.trace, "chemistry-normalization", async () => {
+				const { normalizeMoleculeDocument } = await import("./chemistry.ts");
+				return normalizeMoleculeDocument(submittedMolecule);
+			});
 			if (input.type === "thinking") input = { ...input, molecule };
 			else if (input.type === "answer") input = { ...input, answer: { ...input.answer, molecule } };
 		} catch (error) {
@@ -298,21 +369,22 @@ export async function handleChatInput(
 	try { conversationEngine = piEngineForSpec(conversation, () => callPurpose.background, lifecycle); }
 	catch { return Response.json({ error: conversation.provider === "chatgpt" ? chatGPTStreamError("model catalog") : isSubscriptionProvider(conversation.provider) ? nativeSubscriptionError(conversation.provider, "model catalog") : "The selected model is unavailable." }, { status: 503 }); }
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
-	await ensureCompacted(
+	const compactionRecord = record;
+	await localStage(activity.trace, "compaction-gate", () => ensureCompacted(
 		{
 			chatStore: stores.chatStore,
 			engine: piEngineForSpec(conversation, true),
 			canStart: () => connectionBackgroundAllowed(conversation.provider) && !explorationPauseReason(chatId),
 			modelId: modelIdForCompaction,
-			kind: record.kind === "practice" ? "practice" : record.exploration || hasProbeDone(record.messages) ? "teach" : "probe",
+			kind: compactionRecord.kind === "practice" ? "practice" : compactionRecord.exploration || hasProbeDone(compactionRecord.messages) ? "teach" : "probe",
 			thresholdTokens: effectiveThresholdTokens(
 				effective.compaction?.thresholdTokens,
 				catalogContextLimits().get(modelIdForCompaction),
 			),
-			systemPromptTokens: Math.ceil((record.exploration ? composeExplorationInstructions(effective.agent.prompts, effective.agent.teachingProfile) : composeInstructions(record.kind === "practice" ? "practice" : "teacher", effective.agent.prompts, effective.agent.teachingProfile)).length / 4),
+			systemPromptTokens: Math.ceil((compactionRecord.exploration ? composeExplorationInstructions(effective.agent.prompts, effective.agent.teachingProfile) : composeInstructions(compactionRecord.kind === "practice" ? "practice" : "teacher", effective.agent.prompts, effective.agent.teachingProfile)).length / 4),
 		},
 		chatId,
-	);
+	));
 	const compactedRecord = stores.chatStore.getChat(chatId);
 	if (!compactedRecord) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	record = compactedRecord;
@@ -342,18 +414,20 @@ export async function handleChatInput(
 	// follow-up queue and never builds an input event at all.
 	let appends;
 	try {
-		if (input.type === "thinking" && input.codeRunId) {
+		if ((input.type === "thinking" || input.type === "answer") && input.codeRunId) {
 			input = await resolveCheckedCodeInput(chatId, input);
 			const current = stores.chatStore.getChat(chatId);
 			if (!current) return Response.json({ error: "Unknown chat" }, { status: 404 });
 			record = current;
 			const pauseReason = explorationPauseReason(chatId);
 			if (pauseReason) return Response.json({ error: pauseReason }, { status: 409 });
-			const runId = input.type === "thinking" ? input.codeRunId : undefined;
-			if (record.messages.some((message) => message.role === "custom" && message.customType === "practice-thinking" && (message.details as { codeResult?: { id?: string } })?.codeResult?.id === runId)) {
+			const runId = input.type === "thinking" || input.type === "answer" ? input.codeRunId : undefined;
+			if (record.messages.some((message) => ((message.role === "custom" && message.customType === "practice-thinking") || message.role === "toolResult") && (message.details as { codeResult?: { id?: string } })?.codeResult?.id === runId)) {
 					return Response.json({ error: "This check was already submitted. Run another check to submit a new attempt." }, { status: 422 });
 			}
 		}
+		// No awaits between this final source/occurrence validation and appending.
+		input = revalidateCheckedCodeInput(chatId, input);
 		const currentMessages = record.messages;
 		appends =
 			input.type === "steers"
@@ -363,7 +437,7 @@ export async function handleChatInput(
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
 		}
-		if (input.type === "thinking" && input.codeRunId) {
+		if ((input.type === "thinking" || input.type === "answer") && input.codeRunId) {
 			return Response.json({ error: err instanceof Error ? err.message : "The saved code check is unavailable. Check again before submitting." }, { status: 422 });
 		}
 		throw err;
@@ -486,6 +560,7 @@ export async function handleChatInput(
 		callPurpose,
 		requestCycle,
 		messages: asAgentMessages(agentMessages),
+		retryAnswerCallId: input.type === "retry" ? emptyRetryAnswerCallId(merged) : undefined,
 		onUsage: collectUsage,
 		toolToggles: effective.agent.tools,
 		teachingProfile: effective.agent.teachingProfile,
@@ -521,7 +596,7 @@ export async function handleChatInput(
 						jobs: {
 							chatId,
 							jobStore: stores.jobStore,
-							spawn: (job, input) => void jobRunner.runJob(job.id, input),
+							spawn: (job, input) => void runTracedJob(job.id, input),
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
@@ -534,7 +609,7 @@ export async function handleChatInput(
 						chatId,
 						chatStore: stores.chatStore,
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => void runTracedJob(job.id, input),
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
@@ -550,7 +625,7 @@ export async function handleChatInput(
 						// dispatch (owner ruling — phase-omnipresent), so its ctx
 						// needs the same job wiring as the teacher's.
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => void runTracedJob(job.id, input),
 						searchAvailable,
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —
@@ -608,6 +683,7 @@ export async function handleChatInput(
 			},
 			onSettleError: settlementErrorText,
 			onSettleFailure: (error, reportedErrorText) => {
+				activity.finish("error");
 				// POST only acknowledges acceptance; the submitter may attach
 				// after this turn has already failed and left the registry.
 				rememberTurnFailure(chatId, reportedErrorText ?? settlementErrorText(error));
@@ -622,6 +698,8 @@ export async function handleChatInput(
 				settleSteers(chatId, persisted, true, constructed);
 			},
 			onFinish: (turnMessages, isAborted) => {
+				const settleStarted = performance.now();
+				activity.trace?.mark("local.stage.start", { stage: "turn-settlement" });
 				// Wave B: append only messages past the temporary agent prefix.
 				// Retry's saved record still includes its earlier failed attempts.
 				const stamped = persistTurn(stores.chatStore, chatId, persistBaseCount, turnMessages, isAborted);
@@ -676,6 +754,9 @@ export async function handleChatInput(
 				// ones stay parked for the chat's next run (the registry is the
 				// stranding safety net — the agent's undrained copy died above).
 				reconcileUserSteers(chatId, stamped);
+				activity.trace?.mark("local.stage.end", { stage: "turn-settlement", durationMs: performance.now() - settleStarted, status: "completed" });
+				const finalAssistant = turnMessages.findLast(message => message.role === "assistant") as { stopReason?: string } | undefined;
+				activity.finish(isAborted || finalAssistant?.stopReason === "aborted" ? "aborted" : finalAssistant?.stopReason === "error" ? "error" : "completed");
 				// THE SETTLE KICK (owner round 14): the turn settled — if the
 				// projection is now over threshold, the summary starts in the
 				// background, INSIDE the learner's reading/answering pause
@@ -716,6 +797,7 @@ export async function handleChatInput(
 		// runPiTurn call is race-free: the agent loop only ticks in later
 		// microtasks, so settle (and thus unregister) cannot beat us here.
 		registerTurn(chatId, handle);
+		activity.detached = true;
 		// CONNECTION DIET B (owner, 2026-10-10 — the parallel-session freeze
 		// postmortem): the POST no longer holds the turn's SSE stream open for
 		// its whole duration. It acknowledges acceptance and CLOSES; the
@@ -728,6 +810,7 @@ export async function handleChatInput(
 		if (stagedAutomatic && requestCycle && !(await requestCycle.admission)) return Response.json({ error: "Automatic follow-up remains deferred in its queue." }, { status: 403 });
 		return Response.json({ ok: true });
 	} catch (err) {
+		activity.finish("error");
 		// The stream never started, so no onFinish will fire — clear the registry
 		// or a malformed request would lock the chat until the TTL eviction.
 		endTurn(chatId);

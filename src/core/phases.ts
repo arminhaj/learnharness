@@ -39,6 +39,8 @@
  */
 
 /** The three phases of a session, as the picker / header / dividers see them. */
+import { isPlanQuestion } from "./contracts/plan.ts";
+
 export type Phase3 = "probe" | "plan" | "teach";
 
 /**
@@ -92,7 +94,7 @@ function advance(
 		// explain, whichever mechanic the settings armed (both carry nodeId).
 		if (
 			phase === "plan" &&
-			(part.type === "tool-quiz" || part.type === "tool-explain") &&
+			isPlanQuestion(part.type.replace(/^tool-/, ""), part.input) &&
 			taggedNodeId(part.input)
 		) {
 			phase = "teach";
@@ -127,7 +129,7 @@ export function teachStepIndex(
 			continue;
 		}
 		if (
-			(part.type === "tool-quiz" || part.type === "tool-explain") &&
+			isPlanQuestion(part.type.replace(/^tool-/, ""), part.input) &&
 			taggedNodeId(part.input)
 		) {
 			// The call's governing step: 0–1 step-starts seen = the message's
@@ -180,7 +182,7 @@ export function phaseAt3Lh(messages: readonly LhMessage[], upToIndex?: number, i
 				for (const block of content) {
 					if (
 						block.type === "toolCall" &&
-						(block.name === "quiz" || block.name === "explain") &&
+						isPlanQuestion(block.name, block.arguments) &&
 						taggedNodeId(block.arguments)
 					) {
 						phase = "teach";

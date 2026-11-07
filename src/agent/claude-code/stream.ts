@@ -21,7 +21,6 @@ import {
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { AnthropicEffort } from "@earendil-works/pi-ai/api/anthropic-messages";
-import { parseStreamingJson, parseToolCallArguments } from "@earendil-works/pi-ai/utils/json-parse";
 
 import { externalCliEnv } from "../../core/auth-env.ts";
 import type { LhMessage } from "../../core/native-messages.ts";
@@ -141,7 +140,6 @@ function getAssistantErrorMessage(error: string, text: string): string {
 class ClaudeTurn {
 	private readonly output: AssistantMessage & Pick<LhMessage, "cliContextWindow" | "providerRefusal">;
 	private readonly contentIndexes = new Map<number, number>();
-	private readonly partialJson = new Map<number, string>();
 	private readonly toolBlocks = new Map<number, ToolCall>();
 	private readonly intents: ToolCall[] = [];
 	private refused = false;
@@ -194,18 +192,10 @@ class ClaudeTurn {
 				return;
 			}
 
-			case "toolInputDelta": {
-				const found = this.getBlock(event.index);
-				if (!found) return;
-
-				const { block } = found;
-				if (block.type !== "toolCall") return;
-
-				const partialJson = (this.partialJson.get(event.index) ?? "") + event.partialJson;
-				this.partialJson.set(event.index, partialJson);
-				block.arguments = parseStreamingJson(partialJson);
+			// CLI deltas precede its input normalization (e.g. Unicode escapes).
+			// Finalized assistant tool inputs supply the arguments at admission.
+			case "toolInputDelta":
 				return;
-			}
 
 			case "blockStop":
 				this.stopBlock(event.index);
@@ -256,12 +246,15 @@ class ClaudeTurn {
 
 	private discardMessage(): void {
 		this.output.content = [];
-		this.contentIndexes.clear(); this.partialJson.clear(); this.toolBlocks.clear(); this.intents.length = 0;
+		this.contentIndexes.clear(); this.toolBlocks.clear(); this.intents.length = 0;
 		// Pi shares this partial object. The next update/final event replaces
 		// its content; emitting another start would append a duplicate message.
 	}
 
 	getIntents(): ToolCall[] { return this.intents; }
+	getToolIntent(id: string): ToolCall | undefined {
+		return [...this.toolBlocks.values(), ...this.intents].find((call) => call.id === id);
+	}
 
 	getMessage(): AssistantMessage { return this.output; }
 
@@ -315,7 +308,7 @@ class ClaudeTurn {
 
 			case "toolUse":
 				if (!block.name.startsWith(`mcp__${BRIDGE_SERVER_NAME}__`)) {
-					this.fail("claude CLI emitted an unsupported native tool call", "error");
+					this.fail(`claude CLI emitted an unsupported native tool call: ${JSON.stringify(block.name)}`, "error");
 					return;
 				}
 				this.toolBlocks.set(index, { type: "toolCall", id: block.id, name: toolNameFromMcp(block.name), arguments: {} });
@@ -350,8 +343,6 @@ class ClaudeTurn {
 				return;
 
 			case "toolCall":
-				Object.assign(block, parseToolCallArguments(this.partialJson.get(index) ?? ""));
-				this.partialJson.delete(index);
 				this.toolBlocks.delete(index);
 				this.intents.push(block);
 				return;
@@ -433,6 +424,9 @@ class ClaudeProcess implements LiveProcess {
 	private killTimer: NodeJS.Timeout | undefined;
 	private signal: AbortSignal | undefined;
 	private sourceCalls: ToolCall[] = [];
+	// The CLI normalizes inputs before emitting assistant blocks and calling
+	// MCP. Keep those exact arguments across held slices of the same response.
+	private readonly finalizedCalls = new Map<string, PendingToolCall>();
 	private sourceComplete = false;
 	private replacedMessages = 0;
 	private admitted: PendingToolCall[] = [];
@@ -538,6 +532,9 @@ class ClaudeProcess implements LiveProcess {
 		// Already admitted work belongs to Pi and cannot be undone. A queued
 		// request, however, must never become executable after cancellation.
 		this.sourceCalls = this.sourceCalls.filter((intent) => intent.id !== call.id);
+		// The queue removes the cancelled request before invoking this callback.
+		// It may have been blocking a finalized, authenticated sibling.
+		this.flushAdmissions();
 	}
 
 	/** Only authenticated MCP requests, never stdout intent alone, admit side effects. */
@@ -548,11 +545,17 @@ class ClaudeProcess implements LiveProcess {
 		const calls: ToolCall[] = [];
 		for (const call of pending) {
 			const intent = this.sourceCalls.find((candidate) => candidate.id === call.id);
-			if (!intent || intent.name !== call.name || !isDeepStrictEqual(intent.arguments, call.arguments)) {
-				this.fail("claude CLI compatibility error: MCP call does not match its streamed tool intent");
+			if (!intent || intent.name !== call.name) {
+				this.fail(`claude CLI compatibility error: MCP call does not match its streamed tool intent (${intent ? "tool name" : "call ID"} differs)`);
 				return;
 			}
-			calls.push(intent);
+			const finalized = this.finalizedCalls.get(call.id);
+			if (!finalized) return; // Either pipe may arrive first; never execute provisional input.
+			if (!isDeepStrictEqual(finalized.arguments, call.arguments)) {
+				this.fail("claude CLI compatibility error: MCP call does not match its finalized tool input (arguments differ)");
+				return;
+			}
+			calls.push({ ...intent, arguments: finalized.arguments });
 		}
 		this.sourceCalls = this.sourceCalls.filter((call) => !pending.some((admitted) => admitted.id === call.id));
 		this.admitted = pending;
@@ -586,14 +589,32 @@ class ClaudeProcess implements LiveProcess {
 			}
 			return;
 		}
+		if (event.type === "toolInputs") {
+			for (const call of event.calls) {
+				const intent = this.turn.getToolIntent(call.id) ?? this.sourceCalls.find((candidate) => candidate.id === call.id);
+				if (!intent || call.name !== `mcp__${BRIDGE_SERVER_NAME}__${intent.name}`) {
+					this.fail("claude CLI compatibility error: finalized tool input does not match its streamed tool intent (call ID or tool name differs)");
+					return;
+				}
+				const previous = this.finalizedCalls.get(call.id);
+				if (previous && !isDeepStrictEqual(previous.arguments, call.arguments)) {
+					this.fail("claude CLI compatibility error: conflicting finalized tool inputs for one call ID");
+					return;
+				}
+				this.finalizedCalls.set(call.id, { ...call, name: intent.name });
+			}
+			this.flushAdmissions();
+			return;
+		}
 		// Moving on before held calls were answered means the CLI did not
 		// honor this tool wait. Never execute further stdout-only intentions.
 		if (this.turn.finished) {
 			this.fail("claude CLI moved on while harness tool calls were waiting for results");
 			return;
 		}
-		if (event.type === "messageStart" && (this.turn.waitingAfterRefusal || this.sourceComplete && this.sourceCalls.length > 0)) {
+		if (event.type === "messageStart" && (this.turn.started || this.sourceComplete)) {
 			// The CLI can abandon a streamed attempt and start another itself.
+			// This includes an interrupted stream and an entirely cancelled batch.
 			// No side effect has been admitted: discard that entire attempt,
 			// rather than mistake its provisional tool intents for executed work.
 			// Never release held requests, replay withheld content, or retry here.
@@ -604,7 +625,10 @@ class ClaudeProcess implements LiveProcess {
 			this.sourceCalls = []; this.sourceComplete = false;
 			this.turn.restartMessage();
 		}
-		if (event.type === "messageStart") this.contextProbe?.refresh();
+		if (event.type === "messageStart") {
+			this.finalizedCalls.clear();
+			this.contextProbe?.refresh();
+		}
 		this.turn.handle(event);
 		if (this.turn.finished) { this.kill(); return; }
 		if (event.type === "messageStop" && this.turn.waitingForAdmission) {

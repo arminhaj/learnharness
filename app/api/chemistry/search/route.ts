@@ -1,0 +1,4 @@
+import { chemistryNameSearchResponse } from "@/src/server";
+
+export const runtime = "nodejs";
+export const POST = chemistryNameSearchResponse;

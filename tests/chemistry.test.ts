@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
+import { KetSerializer, MolSerializer, MultitailArrow, Vec2 } from "ketcher-core";
+import { moleculeFromEditorDocument } from "../src/chemistry/editor-document.ts";
+import { curvedArrowsDocument, curvedArrowsKet, ethanolKet } from "./fixtures/curved-arrows.ts";
 import {
 	ChemistryInputError, moleculeInput, moleculeMarkdown,
 	parseMoleculeBlock, parseMoleculeDocument, parseMoleculeSource,
@@ -35,6 +38,8 @@ test("normalization preserves charge, aromaticity and specified stereochemistry"
 		const first = await normalizeMolecule({ smiles });
 		const second = await normalizeMolecule({ molfile: first.molfile });
 		assert.equal(second.smiles, first.smiles, smiles);
+		const ket = new KetSerializer().serialize(new MolSerializer().deserialize(first.molfile));
+		assert.equal((await normalizeMolecule({ ...first, ket })).smiles, first.smiles, `editor drawing: ${smiles}`);
 	}
 	const left = await normalizeMolecule({ smiles: "C[C@H](O)CC" });
 	const right = await normalizeMolecule({ smiles: "C[C@@H](O)CC" });
@@ -43,7 +48,7 @@ test("normalization preserves charge, aromaticity and specified stereochemistry"
 
 test("answer normalization derives SMILES from authoritative Molfile and retains inert editor data", async () => {
 	const ethanol = await normalizeMolecule({ smiles: "CCO", label: "My answer" });
-	const source = { ...ethanol, smiles: "CC(=O)O", ket: '{"root":{"nodes":[]}}' };
+	const source = { ...ethanol, smiles: "CC(=O)O", ket: ethanolKet };
 	assert.equal(moleculeInput(source), ethanol.molfile);
 	const saved = await normalizeMoleculeDocument(source);
 	assert.equal(saved.smiles, "CCO");
@@ -52,6 +57,45 @@ test("answer normalization derives SMILES from authoritative Molfile and retains
 	assert.throws(() => parseMoleculeDocument({ ...source, ket: "[]" }), /editor/);
 	assert.throws(() => parseMoleculeDocument({ ...source, version: 2 }), /version/);
 	assert.throws(() => parseMoleculeDocument({ smiles: "CCO" }), /version 1/);
+});
+
+test("curved full-head and fishhook arrows survive parsing, normalization and portable source", async () => {
+	const drawing = new KetSerializer().deserialize(curvedArrowsKet);
+	assert.deepEqual([...drawing.rxnArrows.values()].map(arrow => arrow.mode), ["elliptical-arc-arrow-open-angle", "elliptical-arc-arrow-open-half-angle"]);
+	const molecule = moleculeFromEditorDocument(curvedArrowsKet);
+	assert.doesNotMatch(molecule, /\$RXN/);
+	assert.equal((await normalizeMolecule({ molfile: molecule })).smiles, "CCO");
+	assert.equal(parseMoleculeDocument(curvedArrowsDocument).ket, curvedArrowsKet);
+	const portable = moleculeMarkdown(curvedArrowsDocument);
+	assert.equal(parseMoleculeBlock(portable.split("\n")[1]!).ket, curvedArrowsKet);
+	assert.equal((await normalizeMoleculeDocument(curvedArrowsDocument)).ket, curvedArrowsKet);
+	const response = await chemistryNormalizeResponse(new Request("http://localhost/api/chemistry/normalize", { method: "POST", body: JSON.stringify(curvedArrowsDocument) }));
+	assert.equal(response.status, 200);
+	assert.equal((await response.json()).ket, curvedArrowsKet, "saving returns the complete editable drawing");
+});
+
+test("saved editor chemistry must match the authoritative structure with or without arrows", async () => {
+	const amine = await normalizeMolecule({ smiles: "CCN" });
+	for (const ket of [curvedArrowsKet, ethanolKet]) {
+		await assert.rejects(normalizeMoleculeDocument({ ...amine, ket }), /drawing does not match/);
+		const response = await chemistryNormalizeResponse(new Request("http://localhost/api/chemistry/normalize", { method: "POST", body: JSON.stringify({ ...amine, ket }) }));
+		assert.equal(response.status, 400);
+		assert.match((await response.json()).error, /drawing does not match/);
+	}
+	await assert.rejects(normalizeMoleculeDocument({ ...curvedArrowsDocument, ket: '{"root":{"nodes":[]}}' }), /Draw a structure/);
+	assert.throws(() => parseMoleculeSource({ smiles: "CCO", ket: "not json" }), /JSON/);
+	assert.throws(() => parseMoleculeSource({ smiles: "CCO", ket: " ".repeat(500_001) }), /oversized/);
+});
+
+test("molecule extraction rejects reaction schemes instead of silently stripping their meaning", () => {
+	const straight = curvedArrowsKet.replace("elliptical-arc-arrow-open-angle", "open-angle");
+	assert.throws(() => moleculeFromEditorDocument(straight), /Reaction schemes/);
+	const plus = JSON.parse(ethanolKet);
+	plus.root.nodes.push({ type: "plus", location: [3, 0, 0] });
+	assert.throws(() => moleculeFromEditorDocument(JSON.stringify(plus)), /Reaction schemes/);
+	const multi = new KetSerializer().deserialize(ethanolKet);
+	multi.addMultitailArrow(MultitailArrow.fromTwoPoints(new Vec2(3, 2), new Vec2(6, 0)));
+	assert.throws(() => moleculeFromEditorDocument(new KetSerializer().serialize(multi)), /Reaction schemes/);
 });
 
 test("normalization endpoint returns a local error for malformed and oversized requests", async () => {

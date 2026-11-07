@@ -26,7 +26,19 @@ Open `/code-demo/api` for a multi-file C++ example. Implement `borrow_book` agai
 
 **Open in editor** opens the complete local project. The generated `README.md`, `CMakeLists.txt`, and `compile_flags.txt` support building and editing independently. Save external changes to `solution.cpp`, then reload, run, or check in the demo. Supporting files are fixed for this exercise; changing them is reported instead of silently replacing them. This demo is separate from model-authored practice exercises, whose schema still supports one complete source file.
 
-## Coding practice
+## Coding in Teaching
+
+When a Teaching task asks the learner to write, complete, modify, or debug C++ code, the tutor is instructed to use a free-response `ask_user_question` with `codeExercise`. It automatically opens a wider coding workspace in the same session, with the problem and learner reasoning beside the editor on larger screens. **Read lesson** collapses it without discarding the editor draft; **Return to code** reopens it. The lesson plan remains accessible. Conceptual questions about code continue to use the ordinary question format.
+
+Supply the problem as `question`, the exercise as `codeExercise`, and the current plan step as `nodeId` when applicable; omit `options` and `multiSelect`. Teaching validates the node against the live plan, and coding calls advance lesson position without automatically completing a step. **Check** compiles and runs the supplied tests without sending an answer. **Check & submit** sends the saved source and server-owned compiler/test results back to the same tutor. A failing check can also be submitted for help. Passing the supplied tests does not automatically mark a Teaching answer correct or prove concurrency properties. When another attempt is needed, the tutor seeds its next coding question from the submitted source.
+
+Existing text questions are not retroactively converted. The tutor uses the coding route on subsequent turns. Only C++20 currently has an executable adapter.
+
+The workspace offers the same saved-file reload, external-editor opening, draft conflict protection, and stale-result checks as Practice. A question that has been answered or dismissed can no longer accept a check. Resuming an unanswered question restores its saved code; a later question gets its own workspace, including when a provider reuses a call ID.
+
+Course packets may contain a `teaching-question.json` with `{ "question": "...", "codeExercise": { ... } }`. This is authoring data for the tutor to read and pass to `ask_user_question`, not a file-import format. The tutor reads the chosen topic's packet and exercise through its existing file tools. Packet creation itself does not start a session.
+
+## Coding in Practice
 
 The practice agent can attach optional `codeExercise` data to a problem:
 

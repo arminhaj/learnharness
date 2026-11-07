@@ -50,6 +50,10 @@ export interface ChatRecord {
 	title: string;
 	createdAt: string;
 	updatedAt: string;
+	/** Manual sidebar archive; absent = available in the normal session lists. */
+	archivedAt?: string;
+	/** Explicit lesson organization; absent falls back to verified plan progress. */
+	lessonCompleted?: boolean;
 	messages: LhMessage[];
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
@@ -97,6 +101,8 @@ export interface ChatSettings {
 	/** pi thinking level — must be in the chosen model's supported list
 	 *  (getSupportedThinkingLevels; enforced by the settings route). */
 	thinkingLevel?: ThinkingLevel;
+	/** Request Fast processing for a supported OpenAI connection. Absent = off. */
+	fastMode?: boolean;
 }
 
 
@@ -286,6 +292,12 @@ export interface ChatSummary {
 	title: string;
 	createdAt: string;
 	updatedAt: string;
+	/** Manual sidebar archive, independent of lesson completion. */
+	archivedAt?: string;
+	/** Explicit completion or reopening, independent of plan-step verification. */
+	lessonCompleted?: boolean;
+	/** Derived from the current plan's explicit completion; never persisted. */
+	lessonCompletion?: { total: number; completed: number };
 	/** Normalized kind (absent record field reads as teach). */
 	kind: ChatKind;
 	exploration?: ExplorationContext;

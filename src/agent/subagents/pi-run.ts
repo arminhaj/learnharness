@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { APP_IDENTITY, piEngineFor, type PiEngine } from "../models.ts";
 import { usageWasAdmitted } from "../subscription-request-cycle.ts";
 import { providerEventObserver } from "../provider-events.ts";
+import { activityToolOutcome, createActivityTrace, currentActivityTrace, withActivityTrace, type ActivityTrace } from "../activity-trace.ts";
 import type { ModelRole } from "../../../config.ts";
 import { advanceModelProgress, initialModelProgress, safeProgressToolName, type ModelProgressEvent, type ModelStreamProgress } from "../../core/extraction-progress.ts";
 
@@ -85,6 +86,25 @@ export function modelProgressEvent(event: AgentEvent): ModelProgressEvent | null
 }
 
 export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRunOptions): Promise<SubagentRunResult> {
+	const parent = currentActivityTrace();
+	const inherited = parent && (!opts.chatId || parent.chatId === opts.chatId) ? parent : undefined;
+	const trace = inherited?.child(`job:${opts.role}`)
+		?? (opts.chatId ? createActivityTrace({ chatId: opts.chatId, context: `job:${opts.role}` }) : undefined);
+	return withActivityTrace(trace, async () => {
+		const started = performance.now();
+		trace?.mark("run.start", {});
+		try {
+			const result = await runSubagentWithTrace(tools, opts, trace);
+			trace?.mark("run.end", { status: "completed", durationMs: performance.now() - started });
+			return result;
+		} catch (error) {
+			trace?.mark("run.end", { status: error instanceof Error && error.name === "AbortError" ? "aborted" : "error", durationMs: performance.now() - started });
+			throw error;
+		}
+	});
+}
+
+async function runSubagentWithTrace(tools: AgentTool<any, any>[], opts: SubagentRunOptions, trace: ActivityTrace | undefined): Promise<SubagentRunResult> {
 	const engine = subagentEngine(opts.role, opts.engine);
 	// A subagent invocation owns its provider resources even if it stops at
 	// a tool boundary. Pi clears its active run on settlement without aborting
@@ -132,6 +152,7 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 	let errorMessage: string | undefined;
 	let aborted = false;
 	let progress = initialModelProgress(opts.maxTurns);
+	const toolStarts = new Map<string, number>();
 
 	try {
 		agent.subscribe((event: AgentEvent) => {
@@ -160,8 +181,18 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 					}
 					break;
 				case "tool_execution_start":
+					toolStarts.set(event.toolCallId, performance.now());
+					trace?.mark("tool.start", { toolName: event.toolName, toolCallId: event.toolCallId });
 					opts.onToolStart?.(event.toolName, event.args);
 					break;
+				case "tool_execution_end": {
+					const started = toolStarts.get(event.toolCallId);
+					toolStarts.delete(event.toolCallId);
+					trace?.mark("tool.end", { toolName: event.toolName, toolCallId: event.toolCallId,
+						...activityToolOutcome(event.toolName, event.result, event.isError),
+						durationMs: event.durationMs ?? (started === undefined ? undefined : performance.now() - started), status: event.isError ? "error" : "completed" });
+					break;
+				}
 			}
 		});
 		if (opts.prompt !== undefined) await agent.prompt({

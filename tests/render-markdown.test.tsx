@@ -23,6 +23,24 @@ function render(md: string): string {
 }
 
 describe("math delimiter transform (pure unit)", () => {
+	it("repairs either misplaced display fence without consuming the following Markdown", () => {
+		for (const source of ["$$a=b,\nc=d\n$$\n**Then**", "$$\na=b,\nc=d$$\n**Then**"]) {
+			assert.equal(transformMathDelimiters(source), "$$\na=b,\nc=d\n$$\n**Then**");
+		}
+	});
+
+	it("preserves double-dollar inline math, literal code, comments and unmatched fences", () => {
+		const examples = [
+			"Text $$x^2$$ in a paragraph.",
+			"~~~md\n$$a=b,\nc=d$$\n~~~",
+			"$$\na=b % $$\nc=d\n$$",
+			"$$a=b,\nc=d",
+			"$$a=b,\n\nc=d$$",
+			"$$\n~~~md\na=b$$\n~~~",
+		];
+		for (const example of examples) assert.equal(transformMathDelimiters(example), example);
+	});
+
 	it("converts inline \\(...\\) to the two-dollar inline form", () => {
 		assert.equal(
 			transformMathDelimiters("a \\(x^2\\) b"),

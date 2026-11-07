@@ -13,6 +13,7 @@ import { QuestionDock } from "../components/question-dock.tsx";
 import { PracticeDock } from "../components/practice-dock.tsx";
 import { useEnterSubmits } from "../components/enter-submits.ts";
 import type { MoleculeDocument, MoleculeSource, QuestionAnswerData, QuizToolInput } from "../src/core";
+import { curvedArrowsDocument } from "./fixtures/curved-arrows.ts";
 
 // Use the real depiction engine, initialized in Node before installing the DOM.
 // These tests inspect interaction and state; pixel geometry belongs to browser QA.
@@ -59,7 +60,7 @@ async function mount(children: React.ReactNode) {
 function WorkbenchHarness({ draftKey, initial }: { draftKey: string; initial?: MoleculeSource }) {
 	const [value, setValue] = useState<MoleculeDocument>();
 	return <>
-		<output data-testid="attached" data-smiles={value?.smiles}>{value?.smiles ?? "No attachment"}</output>
+		<output data-testid="attached" data-smiles={value?.smiles} data-document={value ? JSON.stringify(value) : undefined}>{value?.smiles ?? "No attachment"}</output>
 		<ChemistryWorkbench draftKey={draftKey} initial={initial} value={value} onChange={setValue} />
 	</>;
 }
@@ -101,7 +102,7 @@ test("changing the question draft key clears the previous attachment and editing
 	assert.equal(JSON.parse(localStorage.getItem("lh:chemistry:question:old")!).attached.smiles, alcohol.smiles, "switching questions never erases another question's work");
 });
 
-test("a late editor snapshot from the previous question cannot overwrite the next draft", async () => {
+async function captureWorkbenchEditor() {
 	const captured: StructureEditorProps[] = [];
 	const captureKey = Symbol.for("learnharness.test.capture-editor");
 	const globals = globalThis as typeof globalThis & { [captureKey]?: (props: StructureEditorProps) => void };
@@ -117,9 +118,24 @@ test("a late editor snapshot from the previous question cannot overwrite the nex
 			return nextResolve(specifier, context);
 		},
 	});
+	await import(editorUrl);
 	const prototype = dom.window.HTMLElement.prototype as HTMLElement & { showModal?: () => void; close?: () => void };
 	prototype.showModal = function () { this.setAttribute("open", ""); };
 	prototype.close = function () { this.removeAttribute("open"); };
+	return {
+		captured,
+		async cleanup() {
+			await act(async () => root?.unmount()); root = undefined;
+			hook.deregister();
+			delete globals[captureKey];
+			delete prototype.showModal;
+			delete prototype.close;
+		},
+	};
+}
+
+test("a late editor snapshot from the previous question cannot overwrite the next draft", async () => {
+	const { captured, cleanup } = await captureWorkbenchEditor();
 	try {
 		const container = await mount(<WorkbenchHarness draftKey="question:old-editor" />);
 		await act(async () => {
@@ -138,13 +154,45 @@ test("a late editor snapshot from the previous question cannot overwrite the nex
 		assert.equal(container.querySelector('[data-testid="attached"]')!.getAttribute("data-smiles"), null);
 		assert.match(container.textContent!, /Draw structure/);
 		assert.doesNotMatch(container.textContent!, /Resume drawing|Structure attached/);
-	} finally {
-		await act(async () => root?.unmount()); root = undefined;
-		hook.deregister();
-		delete globals[captureKey];
-		delete prototype.showModal;
-		delete prototype.close;
-	}
+	} finally { await cleanup(); }
+});
+
+test("curved-arrow drawings survive draft close, save, reopen and page reload", async () => {
+	const { captured, cleanup } = await captureWorkbenchEditor();
+	const storageKey = "lh:chemistry:question:curved-arrow-lifecycle";
+	const answer = { ...curvedArrowsDocument, label: "Your structure" };
+	const openEditor = async (container: HTMLElement) => {
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>("button")!.click();
+			await new Promise(resolve => setImmediate(resolve));
+		});
+		return captured.at(-1)!;
+	};
+	const attached = (container: HTMLElement) => JSON.parse(container.querySelector('[data-testid="attached"]')!.getAttribute("data-document")!);
+	try {
+		let container = await mount(<WorkbenchHarness draftKey="question:curved-arrow-lifecycle" />);
+		let editor = await openEditor(container);
+		assert.equal(editor.initial, undefined);
+		await act(async () => editor.onChange!(curvedArrowsDocument));
+		assert.deepEqual(JSON.parse(localStorage.getItem(storageKey)!), { editing: curvedArrowsDocument });
+		assert.equal(container.querySelector('[data-testid="attached"]')!.getAttribute("data-document"), null, "autosaving an arrow draft does not submit it");
+		await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close molecule view"]')!.click());
+		assert.equal(document.querySelector("dialog"), null);
+		editor = await openEditor(container);
+		assert.deepEqual(editor.initial, curvedArrowsDocument, "resuming receives the complete drawing, including both arrowheads and control points");
+		await act(async () => editor.onSave(curvedArrowsDocument));
+		assert.equal(document.querySelector("dialog"), null);
+		assert.deepEqual(attached(container), answer);
+		assert.deepEqual(JSON.parse(localStorage.getItem(storageKey)!), { attached: answer }, "Use structure replaces the draft with the exact attached mechanism");
+		editor = await openEditor(container);
+		assert.deepEqual(editor.initial, answer, "editing the attachment retains its KET document");
+		await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close molecule view"]')!.click());
+		await act(async () => root!.unmount()); root = undefined;
+		container.remove(); host = undefined;
+		container = await mount(<WorkbenchHarness draftKey="question:curved-arrow-lifecycle" />);
+		assert.deepEqual(attached(container), answer, "the attached mechanism restores after a page reload");
+		assert.deepEqual((await openEditor(container)).initial, answer, "reopening after reload receives every saved arrow");
+	} finally { await cleanup(); }
 });
 
 test("an empty unfinished canvas remains distinct from removing the saved attachment", async () => {
@@ -170,8 +218,8 @@ const molecularQuiz = {
 	correctAnswer: "alcohol", explanation: "An alcohol contains a hydroxyl group.",
 } as QuizToolInput;
 
-test("a restored structure-only answer passes the preview's dictation submission guard", async () => {
-	localStorage.setItem("lh:chemistry:question:structure-only", JSON.stringify({ attached: alcohol }));
+test("a restored curved-arrow answer submits its complete document through the question dock", async () => {
+	localStorage.setItem("lh:chemistry:question:structure-only", JSON.stringify({ attached: curvedArrowsDocument }));
 	const submitted: QuestionAnswerData[] = [];
 	const container = await mount(<QuestionDock toolName="explain" toolCallId="structure-only" input={{ question: "Draw ethanol.", correctAnswer: "CCO", explanation: "Ethanol is an alcohol." }} expanded onExpand={() => {}} onSubmit={answer => submitted.push(answer)} dictationClaim={false} />);
 	assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, false);
@@ -179,12 +227,12 @@ test("a restored structure-only answer passes the preview's dictation submission
 		container.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
 	});
 	assert.equal(submitted.length, 1);
-	assert.equal(submitted[0]!.molecule?.molfile, alcohol.molfile);
+	assert.deepEqual(submitted[0]!.molecule, curvedArrowsDocument);
 	assert.ok(!submitted[0]!.text?.trim());
 });
 
-test("chemistry practice submits its structure independently of the checked-code slot", async () => {
-	localStorage.setItem("lh:chemistry:practice:chemistry-practice", JSON.stringify({ attached: alcohol }));
+test("chemistry practice submits the complete curved-arrow document independently of the checked-code slot", async () => {
+	localStorage.setItem("lh:chemistry:practice:chemistry-practice", JSON.stringify({ attached: curvedArrowsDocument }));
 	const submitted: { text: string; codeRunId?: string; molecule?: MoleculeDocument }[] = [];
 	const container = await mount(<PracticeDock draftKey="chemistry-practice" problemCallId="draw-alcohol" input={{ statement: "Draw ethanol.", chemistry: {} }} expanded onExpand={() => {}} onSubmit={(text, codeRunId, molecule) => { submitted.push({ text, codeRunId, molecule }); }} />);
 	const submit = container.querySelector<HTMLButtonElement>('[data-testid="practice-send"]')!;
@@ -193,7 +241,7 @@ test("chemistry practice submits its structure independently of the checked-code
 	assert.equal(submitted.length, 1);
 	assert.equal(submitted[0]!.text, "");
 	assert.equal(submitted[0]!.codeRunId, undefined);
-	assert.equal(submitted[0]!.molecule?.molfile, alcohol.molfile);
+	assert.deepEqual(submitted[0]!.molecule, curvedArrowsDocument);
 });
 
 test("molecular quiz options have selection controls beside their figures and viewer actions", () => {

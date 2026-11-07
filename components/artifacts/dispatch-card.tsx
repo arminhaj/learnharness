@@ -4,8 +4,9 @@ import { useContext } from "react";
 import { CheckIcon, SettingsIcon, XIcon } from "lucide-react";
 import { JobsContext } from "@/components/jobs-context";
 import { ChatActionsContext } from "@/components/chat";
-import { isModelsRefusal, isProviderKeyRefusal, type JobKind, type JobRecord } from "@/src/core";
+import { isModelsRefusal, isProviderKeyRefusal, latestJobAttempt, type JobKind, type JobRecord } from "@/src/core";
 import { BrailleSpinner } from "@/components/braille-spinner";
+import { RetryDemoButton, useDemoRetryAttempt } from "@/components/artifacts/retry-demo-button";
 
 /**
  * The dispatch card (contracts.ts "THE ASYNC PROTOCOL" §4): the tool-call
@@ -16,8 +17,8 @@ import { BrailleSpinner } from "@/components/braille-spinner";
  *   job unknown → "dispatched" pulse (the jobs feed hasn't seen it yet)
  *   running     → live activity card (activity line + elapsed)
  *   done/error  → quiet one-liner ("finished" / "failed") — the artifact
- *                 itself arrives in the steer message right below, so the
- *                 box must not duplicate it.
+ *                 renders separately in the transcript (completed figures
+ *                 appear even while teacher delivery waits).
  */
 const KIND_LABEL: Record<JobKind, string> = {
 	research: "Research agent",
@@ -26,9 +27,11 @@ const KIND_LABEL: Record<JobKind, string> = {
 	pdf: "PDF reader",
 };
 
-export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: JobKind }) {
+export function DispatchCard({ toolCallId, kind, acceptedJob }: { toolCallId: string; kind: JobKind; acceptedJob?: JobRecord }) {
 	const jobs = useContext(JobsContext);
-	const job = jobs.find((j) => j.toolCallId === toolCallId) ?? null;
+	const candidates = acceptedJob && !jobs.some(job => job.id === acceptedJob.id) ? [...jobs, acceptedJob] : jobs;
+	const retry = useDemoRetryAttempt(latestJobAttempt(candidates, toolCallId) ?? null);
+	const job = retry.job;
 	const label = KIND_LABEL[kind];
 
 	if (!job || job.status === "running") {
@@ -41,10 +44,10 @@ export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: J
 	// whose key is gone reads as the key being needed — the deep-link
 	// lands on the SetupDialog's first-key stage on its own.
 	if (isModelsRefusal(job.error)) {
-		return <DispatchRefusedCard label={label} line="needs model setup" button="Set up models" />;
+		return <DispatchRefusedCard label={label} line="needs model setup" button="Set up models" retry={retry} />;
 	}
 	if (isProviderKeyRefusal(job.error)) {
-		return <DispatchRefusedCard label={label} line="needs a provider key" button="Add a key" />;
+		return <DispatchRefusedCard label={label} line="needs a provider key" button="Add a key" retry={retry} />;
 	}
 	const failed = job.status === "error";
 	return (
@@ -55,12 +58,13 @@ export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: J
 			{failed ? <XIcon className="size-3.5 text-red-500" /> : <CheckIcon className="size-3.5" />}
 			<span className="font-medium uppercase tracking-wide">{label}</span>
 			<span>{failed ? "failed" : "finished"}</span>
+			{failed && <RetryDemoButton retry={retry} />}
 		</div>
 	);
 }
 
 /** The refused card: quiet info tone — nothing red, nothing "failed". */
-function DispatchRefusedCard({ label, line, button }: { label: string; line: string; button: string }) {
+function DispatchRefusedCard({ label, line, button, retry }: { label: string; line: string; button: string; retry: ReturnType<typeof useDemoRetryAttempt> }) {
 	const ctx = useContext(ChatActionsContext);
 	return (
 		<div
@@ -80,6 +84,7 @@ function DispatchRefusedCard({ label, line, button }: { label: string; line: str
 					{button}
 				</button>
 			)}
+			<RetryDemoButton retry={retry} />
 		</div>
 	);
 }

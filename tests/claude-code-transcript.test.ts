@@ -67,6 +67,35 @@ test("tools reflect toolsAdded minus toolsRemoved", () => {
 		toClaudeInput(messages).tools.map((t) => t.name),
 		["write"],
 	);
+	assert.match(toClaudeInput(messages).systemPrompt, /write → mcp__learnharness__write/);
+	assert.ok(!toClaudeInput(messages).systemPrompt.includes("mcp__learnharness__read"));
+});
+
+test("figure replay names the callable MCP tools after a render without rewriting SVG or image content", () => {
+	const tools = ["write_svg", "edit_svg", "render_svg"].map((name): Tool => ({
+		name, description: name, parameters: { type: "object", properties: {} },
+	}));
+	const svg = '<svg><text>edit_svg is a label, not a tool call</text></svg>';
+	const messages: Message[] = [
+		system({ content: "Use write_svg, edit_svg, and render_svg to build the figure.", toolsAdded: tools }),
+		user("Draw the singular linear map."),
+		assistant([
+			{ type: "toolCall", id: "write_svg-1", name: "write_svg", arguments: { svg } },
+			{ type: "toolCall", id: "render_svg-1", name: "render_svg", arguments: {} },
+		]),
+		toolResult("write_svg", [{ type: "text", text: "Saved. Call render_svg to inspect." }]),
+		toolResult("render_svg", [{ type: "text", text: "Rendered." }]),
+		user([{ type: "text", text: "Inspect the image and fix its labels." }, { type: "image", data: "AAAA", mimeType: "image/png" }]),
+	];
+	const before = structuredClone(messages);
+	const input = toClaudeInput(messages);
+	for (const tool of tools) assert.ok(input.systemPrompt.includes(`${tool.name} → mcp__learnharness__${tool.name}`));
+	const replay = input.userContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+	assert.ok(replay.includes(`[tool call mcp__learnharness__write_svg] ${JSON.stringify({ svg })}`));
+	assert.ok(replay.includes("[tool call mcp__learnharness__render_svg] {}"));
+	assert.ok(replay.includes("[tool result mcp__learnharness__render_svg]\nRendered."));
+	assert.deepEqual(input.userContent.at(-1), { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } });
+	assert.deepEqual(messages, before, "provider naming must not mutate the persisted conversation");
 });
 
 test("single user message passes through as text", () => {
@@ -88,8 +117,8 @@ test("history renders user, assistant text, tool call name+JSON args and tool re
 	const expected = [
 		"[user]\nopen notes.md",
 		"[assistant]\nReading it.",
-		'[tool call read] {"path":"notes.md"}',
-		"[tool result read]\n# Notes",
+		'[tool call mcp__learnharness__read] {"path":"notes.md"}',
+		"[tool result mcp__learnharness__read]\n# Notes",
 		"[assistant]\nIt has a heading.",
 		"[user]\nsummarise it",
 	].join("\n\n");
@@ -105,8 +134,8 @@ test("error tool results are marked as errors in the replay", () => {
 	];
 	const expected = [
 		"[user]\nopen missing.md",
-		'[tool call read] {"path":"missing.md"}',
-		"[tool result read error]\nENOENT",
+		'[tool call mcp__learnharness__read] {"path":"missing.md"}',
+		"[tool result mcp__learnharness__read error]\nENOENT",
 		"[user]\nwhy?",
 	].join("\n\n");
 	assert.deepEqual(toClaudeInput(messages).userContent, [{ type: "text", text: expected }]);
@@ -125,7 +154,7 @@ test("images in user and tool-result content become base64 image blocks", () => 
 	assert.deepEqual(toClaudeInput(messages).userContent, [
 		{ type: "text", text: "[user]\nlook" },
 		{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
-		{ type: "text", text: "[tool call screenshot] {}\n\n[tool result screenshot]" },
+		{ type: "text", text: "[tool call mcp__learnharness__screenshot] {}\n\n[tool result mcp__learnharness__screenshot]" },
 		{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } },
 		{ type: "text", text: "[user]\ncompare" },
 	]);
@@ -137,7 +166,7 @@ test("transcript ending on a tool result renders as history with no trailing use
 		assistant([{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "notes.md" } }]),
 		toolResult("read", [{ type: "text", text: "# Notes" }]),
 	];
-	const expected = ["[user]\nopen notes.md", '[tool call read] {"path":"notes.md"}', "[tool result read]\n# Notes"].join("\n\n");
+	const expected = ["[user]\nopen notes.md", '[tool call mcp__learnharness__read] {"path":"notes.md"}', "[tool result mcp__learnharness__read]\n# Notes"].join("\n\n");
 	assert.deepEqual(toClaudeInput(messages).userContent, [{ type: "text", text: expected }]);
 });
 

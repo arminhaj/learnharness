@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { PATHS } from "../../config.ts";
 import { CODE_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExercise, type CodeRunResult, type CodeWorkspaceView } from "../core/code-workspace.ts";
-import { activeProblemOf } from "../core/native-messages.ts";
+import { activeProblemOf, danglingQuestionOf, type LhMessage } from "../core/native-messages.ts";
+import { askInputProblems } from "../core/question-core.ts";
 import { chatStore } from "../store/chats.ts";
 import { codeFilename, runCodeExercise } from "./code-runner.ts";
 import { getCodingSession } from "./coding-sessions.ts";
@@ -27,6 +28,10 @@ export interface CodeWorkspaceCommand {
 interface Metadata { id: string; chatId: string; problemCallId: string; exerciseHash: string; lastRunId?: string; }
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const validId = (id: string) => /^[A-Za-z0-9_-]{1,200}$/.test(id);
+// Responses providers preserve both the call ID and item ID as call|item.
+// Item IDs can also be long base64 strings. Keep the complete identity for
+// ownership checks and hashing; it is never used as a filesystem path.
+const validCallId = (id: string) => id.length <= 4096 && /^[A-Za-z0-9_-]+(?:\|[A-Za-z0-9_+/=-]+)?$/.test(id);
 
 function mkdir(directory: string) {
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -57,20 +62,51 @@ function writeAtomic(file: string, text: string) {
 	} finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
+/** Resolve only an active call occurrence, never a client-supplied exercise.
+ * The occurrence key isolates repeated provider call ids even when the exercise
+ * payload is unchanged. Persisted answers/errors/dismissals close the question. */
+export function activeCodeExerciseFromRecord(record: { messages: LhMessage[]; kind?: string }, callId: string): { exercise: CodeExercise; occurrence: string; question?: string } {
+	const active = record.kind === "practice" ? activeProblemOf(record.messages) : danglingQuestionOf(record.messages);
+	if (!active || active.toolCallId !== callId) throw new CodeWorkspaceError("This code exercise is no longer the active problem or question.", 409);
+	const tool = record.kind === "practice" ? "problem" : "tool" in active ? active.tool : "";
+	if (tool !== "problem" && tool !== "ask_user_question") throw new CodeWorkspaceError("This question does not support code checking.", 409);
+	const input = active.input as { question?: unknown; options?: { label: string; value?: string }[]; multiSelect?: boolean; codeExercise?: unknown };
+	if (tool === "ask_user_question" && (typeof input.question !== "string" || !input.question.trim() || askInputProblems(input).length > 0)) {
+		throw new CodeWorkspaceError("Code checking requires a free-response coding question.", 409);
+	}
+	for (let i = record.messages.length - 1; i >= 0; i--) {
+		const message = record.messages[i]!;
+		if (message.role !== "assistant") continue;
+		for (let j = message.content.length - 1; j >= 0; j--) {
+			const block = message.content[j]!;
+			if (block.type !== "toolCall" || block.id !== callId || block.name !== tool) continue;
+			if (message.stopReason === "error" || message.stopReason === "aborted") throw new CodeWorkspaceError("This code question was not successfully posed.", 409);
+			return { exercise: parseCodeExercise(input.codeExercise), occurrence: tool === "problem" && "key" in active ? (active.key === callId ? "" : active.key) : JSON.stringify([message.id, j, callId]), ...(tool === "ask_user_question" ? { question: input.question as string } : {}) };
+		}
+		// A Teaching question is only active in the newest assistant message.
+		if (tool === "ask_user_question") break;
+	}
+	throw new CodeWorkspaceError("This code exercise no longer has an active call.", 409);
+}
+
 type WorkspaceExercise = CodeExercise & { supportFiles?: CodingProjectFile[] };
 
-function activeExercise(chatId: string, problemCallId: string): WorkspaceExercise {
+function activeExercise(chatId: string, problemCallId: string): { exercise: WorkspaceExercise; occurrence: string; question?: string } {
 	if (chatId === "coding") {
 		const session = getCodingSession(problemCallId);
 		if (!session) throw new CodeWorkspaceError("This coding workspace does not exist.", 404);
-		return { ...session.exercise, supportFiles: session.supportFiles };
+		return { exercise: { ...session.exercise, supportFiles: session.supportFiles }, occurrence: "" };
 	}
-	if (chatId === "demo" && problemCallId === "cpp-sum") return CODE_DEMO_EXERCISE;
+	if (chatId === "demo" && problemCallId === "cpp-sum") return { exercise: CODE_DEMO_EXERCISE, occurrence: "" };
 	const chat = chatStore.getChat(chatId);
 	if (!chat) throw new CodeWorkspaceError("This chat no longer exists.", 404);
-	const problem = activeProblemOf(chat.messages);
-	if (!problem || problem.toolCallId !== problemCallId) throw new CodeWorkspaceError("This code exercise is no longer the active problem.", 409);
-	return parseCodeExercise((problem.input as { codeExercise?: unknown })?.codeExercise);
+	return activeCodeExerciseFromRecord(chat, problemCallId);
+}
+
+export function getCodeQuestionForSubmission(chatId: string, callId: string): string {
+	const question = activeExercise(chatId, callId).question;
+	if (typeof question !== "string") throw new CodeWorkspaceError("This check does not belong to a pending Teaching question.", 409);
+	return question;
 }
 
 function executableInPath(name: string): string | undefined {
@@ -114,18 +150,22 @@ export async function openCodeEditor(file: string, editor: CodeEditor): Promise<
 export function createCodeWorkspaceService(options: {
 	directory: string;
 	getExercise: (chatId: string, problemCallId: string) => WorkspaceExercise;
+	/** Stable identity of the active persisted call occurrence, when available. */
+	getOccurrence?: (chatId: string, problemCallId: string) => string;
 	runner?: typeof runCodeExercise;
 	openEditor?: typeof openCodeEditor;
 }) {
 	const running = new Set<string>();
 	function files(chatId: string, problemCallId: string) {
-		if (!validId(chatId) || !validId(problemCallId)) throw new CodeWorkspaceError("Invalid chat or problem identifier.");
+		if (!validId(chatId) || !validCallId(problemCallId)) throw new CodeWorkspaceError("Invalid chat or problem identifier.");
 		const setup = options.getExercise(chatId, problemCallId);
 		const exercise = parseCodeExercise(setup);
 		const supportFiles = setup.supportFiles ?? [];
 		const exerciseHash = digest(JSON.stringify(supportFiles.length ? { exercise, supportFiles } : exercise));
 		// Providers can reuse tool-call IDs. A changed exercise gets a fresh directory.
-		const id = digest(`${chatId}\0${problemCallId}\0${exerciseHash}`);
+		const occurrence = options.getOccurrence?.(chatId, problemCallId) ?? "";
+		const legacyKey = `${chatId}\0${problemCallId}\0${exerciseHash}`;
+		const id = digest(occurrence ? `${legacyKey}\0${occurrence}` : legacyKey);
 		const directory = path.join(options.directory, id);
 		mkdir(options.directory);
 		mkdir(directory);
@@ -212,7 +252,7 @@ export function createCodeWorkspaceService(options: {
 
 const serviceKey = Symbol.for("learnharness.code-workspaces");
 const globals = globalThis as typeof globalThis & { [serviceKey]?: ReturnType<typeof createCodeWorkspaceService> };
-const service = globals[serviceKey] ??= createCodeWorkspaceService({ directory: path.join(PATHS.data, "code-workspaces"), getExercise: activeExercise });
+const service = globals[serviceKey] ??= createCodeWorkspaceService({ directory: path.join(PATHS.data, "code-workspaces"), getExercise: (chatId, callId) => activeExercise(chatId, callId).exercise, getOccurrence: (chatId, callId) => activeExercise(chatId, callId).occurrence });
 export const getCodeRunForSubmission = service.getRunForSubmission;
 export const resolveCodeSubmission = getCodeRunForSubmission;
 

@@ -28,8 +28,9 @@ process.env.OPENROUTER_API_KEY = "test-key-presence-gate";
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 
 const { SessionModel } = await import("../components/session-core.ts");
-const { createPracticeAgent, createProberAgent, createTeacherAgent } = await import("../src/agent/teacher-agent.ts");
+const { createExplorationAgent, createPracticeAgent, createProberAgent, createTeacherAgent } = await import("../src/agent/teacher-agent.ts");
 const { handleChatRequest } = await import("../src/server/chat-handler.ts");
+const { createExploration } = await import("../src/server/explorations.ts");
 const { clearTurnFailure, rememberTurnFailure, runningTurn, turnFailure } = await import("../src/server/turn-runs.ts");
 const { isTurnRunning } = await import("../src/server/turn-liveness.ts");
 const { chatStore } = await import("../src/store/chats.ts");
@@ -131,32 +132,47 @@ function assertPreserved(before: LhMessage[], saved: LhMessage[]): void {
 }
 
 describe("failed-response Retry (issue #110)", () => {
-	it("an empty successful completion after a saved ask answer exposes explicit Retry without resubmitting the answer", async () => {
+	it("retries an empty exploration reply with a continuation cue and preserves the saved plan selection", async () => {
 		const ask = { question: "Follow the mechanism?", options: [{ label: "Yes, follow mechanism" }, { label: "Review the terminology" }] };
 		const answer = buildAnswer({ id: "ask-1", kind: "ask", question: ask.question, mode: "single-select", options: normalizeOptions(ask.options), createdAt: "fixture" }, { values: ["Yes, follow mechanism"] });
 		const { engine, contexts, histories } = scripted([
+			() => fauxAssistantMessage([fauxToolCall("plan_init", { mermaid: "graph TD\nmechanism[Reaction mechanism]" })], { stopReason: "toolUse" }),
 			() => fauxAssistantMessage([fauxToolCall("ask_user_question", ask, { id: "ask-1" })], { stopReason: "toolUse" }),
 			() => fauxAssistantMessage([{ type: "thinking", thinking: "" }, fauxText("")], { stopReason: "stop" }),
-			() => fauxAssistantMessage("Here is the requested mechanism."),
+			(context) => {
+				const cue = context.messages.at(-1);
+				return fauxAssistantMessage(cue?.role === "user" && JSON.stringify(cue.content).includes("[LearnHarness retry]")
+					? [fauxText("Here is the requested mechanism."), fauxToolCall("ask_user_question", { question: "Explain the first mechanistic step." }, { id: "mechanism-check" })]
+					: "");
+			},
 		]);
-		const chat = createConfiguredChat("Test: blank completion after saved ask answer");
-		await turn(engine, chat.id, { type: "text", text: "Explain this mechanism" });
-		await turn(engine, chat.id, { type: "answer", toolCallId: "ask-1", answer });
+		const parent = createConfiguredChat("Chemistry lesson");
+		const parentMessages: LhMessage[] = [newUserMessage("Teach me this reaction."), { ...fauxAssistantMessage("The reaction has several steps."), id: "parent-source" }];
+		chatStore.saveMessages(parent.id, parentMessages);
+		const result = createExploration(parent.id, { sourceMessageId: "parent-source", topic: "Explain this mechanism" });
+		assert.ok(result.ok);
+		const chat = result.chat;
+		const buildAgent: AgentFactory = (opts) => createExplorationAgent({ chatId: chat.id, chatStore, jobStore, spawn: () => assert.fail("Unexpected background job") }, { ...opts, engine });
+		await turn(engine, chat.id, { type: "text", text: "Explain this mechanism" }, buildAgent);
+		await turn(engine, chat.id, { type: "answer", toolCallId: "ask-1", answer }, buildAgent);
 		const before = chatStore.getChat(chat.id)!.messages;
-		assert.equal(contexts.length, 2, "the empty completion does not trigger an automatic model retry");
+		assert.ok(before.some(message => message.role === "custom" && message.customType === "plan-block"));
+		assert.equal(contexts.length, 3, "the empty completion does not trigger an automatic model retry");
 		assert.equal(isTurnRunning(chat.id), false);
 		assert.equal(before.at(-1)?.role, "assistant");
 		assert.equal(endsInFailedTurn(before), true);
 		assert.strictEqual(failedResponseAtEnd(before), before.at(-1), "classification returns the original saved response");
 		assert.equal(failedResponseMessage(failedResponseAtEnd(before)!), "The model finished without an answer. Your input is saved.");
-		assert.equal((await turn(engine, chat.id, { type: "retry" })).status, 200);
+		assert.equal((await turn(engine, chat.id, { type: "retry" }, buildAgent)).status, 200);
 		const saved = chatStore.getChat(chat.id)!.messages;
 		assertPreserved(before, saved);
+		assert.equal(saved.length, before.length + 1, "only the new model response is saved");
 		assert.equal(saved.filter(message => message.role === "toolResult" && message.toolCallId === "ask-1").length, 1);
-		assert.deepEqual(contexts.at(-1), ["user", "assistant", "toolResult"]);
+		assert.deepEqual(contexts.at(-1), [...contexts.at(-2)!, "user"]);
 		assert.match(histories.at(-1)!, /Yes, follow mechanism/);
 		assert.match(JSON.stringify(saved.at(-1)), /requested mechanism/);
 		assert.equal(endsInFailedTurn(saved), false);
+		assert.deepEqual(chatStore.getChat(parent.id)?.messages, parentMessages);
 	});
 
 	it("repeated empty, reasoning-only and failed attempts retry the saved text without duplicating input", async () => {

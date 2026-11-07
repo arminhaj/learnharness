@@ -29,7 +29,7 @@
 
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
+import { quizDisplayInputSchema, askInputSchema, askInputProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
 import { healEncodedArguments } from "./argument-heal.ts";
 import { probeDoneInputSchema, type ProbeDoneInput } from "./contracts/probe.ts";
 
@@ -96,7 +96,7 @@ export function parseQuizInput(input: unknown): QuizToolInput | undefined {
 export function parseAskInput(input: unknown): AskToolInput | undefined {
 	const cleaned = boundaryParse<AskToolInput>(askInputSchema, input);
 	if (!cleaned) return undefined;
-	if (askOptionProblems(cleaned.options ?? []).length > 0) return undefined;
+	if (askInputProblems(cleaned).length > 0) return undefined;
 	return cleaned;
 }
 

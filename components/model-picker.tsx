@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ZapIcon } from "lucide-react";
 import type { ChatSettings, ModelCatalogEntry, ModelCatalogResponse, ModelsSettings, UserSettings } from "@/src/core";
+import { supportsFastMode } from "@/src/core";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { prettyModel } from "@/components/usage-format";
 import { ModelMenuList, ThinkingMenuList } from "@/components/settings/model-menu";
@@ -45,6 +47,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 	const [session, setSession] = useState<{ settings?: ChatSettings }>();
 	const [open, setOpen] = useState<"model" | "thinking" | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [saving, setSaving] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
 
 	// The record read — BOTH mount and the cross-surface signal land
@@ -92,6 +95,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 		? session ? {
 				model: session.settings?.model ?? strong?.model,
 				thinkingLevel: session.settings?.thinkingLevel ?? strong?.thinkingLevel,
+				...(session.settings?.fastMode !== undefined ? { fastMode: session.settings.fastMode } : {}),
 			} : undefined
 		: strong;
 	const effectiveId = override?.model?.id;
@@ -104,6 +108,11 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 		(m) => m.id === effectiveId && m.provider === effectiveProvider,
 	);
 	const levels = entry?.supportedLevels ?? [];
+	const fastAvailable = !!entry && supportsFastMode(effectiveProvider, effectiveId);
+	const fastMode = fastAvailable && override?.fastMode === true;
+	const fastHint = fastAvailable
+		? "Requests faster processing with the same model and thinking level. Fast processing uses more credits; OpenAI API rates are higher. The provider may serve Standard processing. Applies to the next turn."
+		: "Fast mode requires a supported ChatGPT or OpenAI model.";
 	// Legacy display (chunk 2 item 4, owner): a record with a model but no
 	// stored level shows the RESOLVED level — the ordering's first supported
 	// — because that is exactly what the engine build would run. Display-
@@ -149,6 +158,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 	const save = useCallback(
 		async (next: ModelsSettings) => {
 			setError(null);
+			setSaving(true);
 			try {
 				const res = await fetch("/api/settings/models", {
 					method: "PUT",
@@ -171,6 +181,8 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 				notifySettingsSaved("models");
 			} catch {
 				setError("Could not reach the server — try again.");
+			} finally {
+				setSaving(false);
 			}
 		},
 		[],
@@ -184,6 +196,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 	const saveChat = useCallback(
 		async (next: ChatSettings) => {
 			setError(null);
+			setSaving(true);
 			try {
 				const res = await fetch(`/api/chats/${chatId}/settings`, {
 					method: "PUT",
@@ -200,6 +213,8 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 				setOpen(null);
 			} catch {
 				setError("Could not reach the server — try again.");
+			} finally {
+				setSaving(false);
 			}
 		},
 		[chatId],
@@ -211,14 +226,17 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 	// replace-whole-section discipline).
 	const apply = useCallback(
 		(provider: string, id: string, level: ThinkingLevel | undefined) => {
+			if (saving) return;
 			if (chatId) {
-				void saveChat({ model: { provider, id }, thinkingLevel: level });
+				void saveChat({ model: { provider, id }, thinkingLevel: level,
+					...(override?.fastMode !== undefined ? { fastMode: supportsFastMode(provider, id) && override.fastMode } : {}),
+				});
 			} else {
 				// composeSlotModel's empty-string convention: no level = unset.
 				void save(composeSlotModel(models, "strong", provider, id, level ?? ""));
 			}
 		},
-		[chatId, models, save, saveChat],
+		[chatId, models, override?.fastMode, saving, save, saveChat],
 	);
 
 	// Shortcut seams (keyboard wave A): ⌘K opens the model menu (the
@@ -282,6 +300,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 				<button
 				type="button"
 				data-testid="stats-model"
+				disabled={saving}
 				onClick={() => openMenu("model")}
 				aria-expanded={open === "model"}
 				// Chrome look (owner, fix wave round 3): matches the graph
@@ -305,6 +324,7 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 				<button
 				type="button"
 				data-testid="stats-thinking"
+				disabled={saving}
 				onClick={() => {
 					// No model picked → nothing to set a level FOR: the click
 					// is a no-op, never an empty menu.
@@ -326,6 +346,27 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 				<span aria-hidden className="text-xs text-muted-foreground">▾</span>
 			</button>
 			</Hint>
+			<Hint label={fastHint} side="bottom">
+				<button
+					type="button"
+					data-testid="stats-fast"
+					aria-label="Fast mode"
+					aria-pressed={fastMode}
+					title={fastHint}
+					disabled={!fastAvailable || saving}
+					onClick={() => {
+						if (!fastAvailable || saving || !override) return;
+						const next = { ...override, fastMode: !fastMode };
+						if (chatId) void saveChat(next);
+						else void save({ ...models, strong: next });
+					}}
+					className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 shadow-lg backdrop-blur transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${fastMode ? "border-primary/50 bg-primary/10 text-primary hover:bg-primary/20" : "bg-card/85 text-card-foreground hover:border-border hover:bg-muted"}`}
+				>
+					<ZapIcon className="size-3" aria-hidden="true" />
+					<span>Fast</span>
+				</button>
+			</Hint>
+			{error && open === null && <span role="alert" className="max-w-64 text-xs text-destructive">{error}</span>}
 
 			{/* The shared dropdown body (extracted 2026-09-20): the agent
 			    settings' slot selects and the setup dialog use the exact same
