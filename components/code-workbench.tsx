@@ -4,19 +4,10 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { CheckIcon, ChevronDownIcon, Code2Icon, ExternalLinkIcon, LoaderCircleIcon, PlayIcon, RefreshCwIcon, SaveIcon, XIcon } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Button } from "@/components/ui/button";
-import { parseCompilerDiagnostics, type CodeRunResult, type CodeWorkspaceView } from "@/src/core";
+import { codeResultLabels, codeStatusLabel, learnerDiagnostics, type CodeRunResult, type CodeWorkspaceView } from "@/src/core";
 
 type Operation = "load" | "save" | "check" | "open";
 type Editor = "vscode" | "cursor" | "default";
-
-const resultLabels: Record<CodeRunResult["status"], string> = {
-	passed: "All tests passed",
-	tests_failed: "Compiled · some tests failed",
-	compilation_error: "Compilation failed",
-	runtime_error: "Program stopped with an error",
-	timeout: "Time limit reached",
-	unavailable: "Compiler unavailable",
-};
 
 /** Render stored evidence, including failed attempts, without equating a
  * successful build with a correct answer. Also used by the session transcript. */
@@ -27,7 +18,7 @@ export function CodeCheckResults({ result, stale = false, standalone = false }: 
 		<section aria-label="Code check results" className="min-w-0 rounded-lg border border-border/70 bg-background/40" data-testid="code-check-results">
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5" role="status">
 				{successful ? <CheckIcon aria-hidden className="size-4 text-emerald-600 dark:text-emerald-400" /> : <XIcon aria-hidden className="size-4 text-amber-600 dark:text-amber-400" />}
-				<span className="text-sm font-medium">{resultLabels[result.status]}</span>
+				<span className="text-sm font-medium">{codeStatusLabel(result)}</span>
 				{stale && <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Previous version</span>}
 				{result.tests.length > 0 && <span className="ml-auto text-xs text-muted-foreground">{passed}/{result.tests.length} tests</span>}
 			</div>
@@ -54,7 +45,7 @@ export function CodeCheckResults({ result, stale = false, standalone = false }: 
 			)}
 			{(result.stdout || result.stderr) && (
 				<details open={result.status === "compilation_error" || result.status === "unavailable"} className="border-t border-border/60 px-3 py-2">
-					<summary className="cursor-pointer text-xs text-muted-foreground">Compiler output</summary>
+					<summary className="cursor-pointer text-xs text-muted-foreground">{codeResultLabels(result).buildOutput}</summary>
 					<pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{[result.stdout, result.stderr].filter(Boolean).join("\n")}</pre>
 				</details>
 			)}
@@ -93,7 +84,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 	const diagnostics = useMemo(() => {
 		const result = workspace?.lastRun;
 		if (!workspace || !result || result.source !== source || result.revision !== workspace.revision) return [];
-		return parseCompilerDiagnostics(`${result.stdout}\n${result.stderr}`, workspace.filename);
+		return learnerDiagnostics(result, workspace.filename);
 	}, [workspace, source]);
 
 	const request = useCallback(async (action: Operation, fields: Record<string, unknown> = {}, signal?: AbortSignal): Promise<CodeWorkspaceView> => {
@@ -229,11 +220,11 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 					{onSubmit && <Button type="button" size="sm" disabled={locked || !workspace || !!incoming} onClick={() => void perform("check", true)}>{busy === "submit" && <LoaderCircleIcon className="animate-spin" />}Check &amp; submit</Button>}
 				</div>
 			</div>
-			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using your installed compiler.</p>
-			<p className="text-[11px] leading-relaxed text-muted-foreground">Compiler errors from the latest check are underlined; hover or press F1 with the cursor on a squiggle to see its explanation. Check again after editing for updated feedback.</p>
+			<p className="text-[11px] leading-relaxed text-muted-foreground">Vim: i to insert · Esc for Normal · ⌘/Ctrl+Enter {onSubmit ? "checks and submits" : "checks"}. Checks run on this computer using the tools you have installed.</p>
+			<p className="text-[11px] leading-relaxed text-muted-foreground">Errors from the latest check are underlined; hover or press F1 with the cursor on a squiggle to see its explanation. Check again after editing for updated feedback.</p>
 			{workspace?.path && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Workspace file</summary><code className="mt-1 block select-all break-all rounded bg-muted/50 px-2 py-1.5">{workspace.path}</code></details>}
 			{workspace?.lastRun && <CodeCheckResults standalone={!onSubmit} result={workspace.lastRun} stale={workspace.lastRun.source !== source || workspace.lastRun.revision !== workspace.revision} />}
-			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see compiler and test results.</p>}
+			{workspace && !workspace.lastRun && <p className="text-xs text-muted-foreground">{workspace.tests.length} test cases ready. Check your code to see build and test results.</p>}
 		</div>
 	);
 }

@@ -14,6 +14,7 @@ import {
 	quizInputObject,
 	quizInputProblems,
 } from "../core/question-core.ts";
+import { executableLanguageNames } from "../core/code-language-catalog.ts";
 import { filterEnabledTools, type EnabledTools } from "../core/pending.ts";
 import type { JobRecord } from "../core/contracts.ts";
 import type { JobStore } from "../core/ports.ts";
@@ -87,10 +88,10 @@ export const askUserQuestionTool: AgentTool<typeof askInputSchema> = {
 		"Ask the learner a single question and pause until they answer. No automatic grading; the tutor reviews coding submissions. " +
 		"Use when requirements are ambiguous, preferences are needed, a decision would materially affect the lesson, " +
 		"or you need an open-ended response. ONE question per turn: call a single ask_user_question, then end your " +
-		"turn — his answer determines the next. Whenever the learner needs to write, complete, fix, or debug C++ code, " +
+		"turn — his answer determines the next. Whenever the learner needs to write, complete, fix, or debug " + executableLanguageNames() + " code, " +
 		"use this tool with codeExercise instead of explain or quiz, even when the task has a correct solution. " +
 		"Include the lesson nodeId when on the plan and omit options and multiSelect. Supply the necessary scaffold and meaningful tests; " +
-		"the native C++20 workspace opens automatically and returns saved code and compiler/test evidence without changing session mode.",
+		"the native " + executableLanguageNames() + " workspace opens automatically and returns saved code and build/test evidence without changing session mode.",
 	parameters: askInputSchema,
 	prepareArguments: prepareQuestionArguments,
 	executionMode: "sequential",
@@ -190,7 +191,7 @@ function explainDescription(name: "explain" | "recall", nodeId: boolean, focused
 		(focused
 			? "Ask a graded question that starts as free response. Include choiceHints with every question; they become visible only on request. "
 			: "Ask the learner to EXPLAIN something in his own words — a graded check with NO options: he types a free-text answer. ") +
-		"For C++ implementation or debugging use ask_user_question with codeExercise instead. For conceptual checks, " +
+		"For " + executableLanguageNames() + " implementation or debugging use ask_user_question with codeExercise instead. For conceptual checks, " +
 		name +
 		" always has one. THE COMMITMENT RULE: " +
 		"correctAnswer is the FULL correct answer in your own words, reasoning included, COMMITTED before he ever " +

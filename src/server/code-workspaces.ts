@@ -7,7 +7,12 @@ import { CODE_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExer
 import { activeProblemOf, danglingQuestionOf, type LhMessage } from "../core/native-messages.ts";
 import { askInputProblems } from "../core/question-core.ts";
 import { chatStore } from "../store/chats.ts";
-import { codeFilename, runCodeExercise } from "./code-runner.ts";
+import { executableProfileFor } from "../core/code-language-catalog.ts";
+import { normalizeCodeActivity } from "../core/code-activity.ts";
+import { runCodeExercise } from "./code-runner.ts";
+import { providerForProfile } from "./code-providers.ts";
+import { CODE_RUN_RECORD_LIMIT } from "./code-process.ts";
+import { snapshotIdFor } from "./code-providers.ts";
 import { getCodingSession } from "./coding-sessions.ts";
 import type { CodingProjectFile } from "../core/coding-session.ts";
 import { desktopAPIAuthorized } from "./desktop-access.ts";
@@ -43,13 +48,14 @@ function safeRead(file: string, limit: number): string {
 		const stat = fs.fstatSync(fd);
 		if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new CodeWorkspaceError("The workspace file is not a regular file or exceeds its size limit.", 409);
 		// Bound the actual read too: an external editor can grow a file after fstat.
-		const buffer = Buffer.alloc(limit + 1);
+		const buffer = Buffer.alloc(Math.min(limit, stat.size) + 1);
 		let total = 0;
 		while (total <= limit) {
 			const count = fs.readSync(fd, buffer, total, buffer.length - total, null);
 			if (count === 0) break;
 			total += count;
 		}
+		if (total > stat.size) throw new CodeWorkspaceError("The workspace file changed while it was being read.", 409);
 		if (total > limit) throw new CodeWorkspaceError("The workspace file exceeds its size limit.", 409);
 		return buffer.subarray(0, total).toString("utf8");
 	} finally { fs.closeSync(fd); }
@@ -170,14 +176,20 @@ export function createCodeWorkspaceService(options: {
 		mkdir(options.directory);
 		mkdir(directory);
 		const metadataFile = path.join(directory, "workspace.json");
-		const sourceFile = path.join(directory, codeFilename(exercise.language));
+		// Parsing guarantees an implemented profile; its provider owns scaffolding.
+		const profile = executableProfileFor(exercise.language)!;
+		const provider = providerForProfile(profile.id);
+		if (!provider) throw new CodeWorkspaceError(`No runner is registered for ${profile.label}.`, 409);
+		const sourceFile = path.join(directory, profile.entryFilename);
 		let metadata: Metadata;
 		if (!fs.existsSync(metadataFile)) {
 			metadata = { id, chatId, problemCallId, exerciseHash };
 			// Exclusive creation never overwrites an externally edited answer.
 			if (!fs.existsSync(sourceFile)) fs.writeFileSync(sourceFile, exercise.starterCode, { encoding: "utf8", mode: 0o600, flag: "wx" });
-			const flagsFile = path.join(directory, "compile_flags.txt");
-			if (!fs.existsSync(flagsFile)) fs.writeFileSync(flagsFile, "-std=c++20\n-Wall\n-Wextra\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+			for (const scaffold of provider.scaffoldFiles(normalizeCodeActivity(exercise, supportFiles))) {
+				const scaffoldFile = path.join(directory, scaffold.path);
+				if (!fs.existsSync(scaffoldFile)) fs.writeFileSync(scaffoldFile, scaffold.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			}
 			for (const file of supportFiles) {
 				const target = path.join(directory, file.path);
 				if (!fs.existsSync(target)) fs.writeFileSync(target, file.source, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -196,7 +208,7 @@ export function createCodeWorkspaceService(options: {
 	}
 	function readRun(state: ReturnType<typeof files>, runId: string): CodeRunResult {
 		if (!/^[0-9a-f-]{36}$/.test(runId)) throw new CodeWorkspaceError("Invalid code check identifier.");
-		const run = JSON.parse(safeRead(path.join(state.directory, `${runId}.json`), 2 * 1024 * 1024)) as CodeRunResult;
+		const run = JSON.parse(safeRead(path.join(state.directory, `${runId}.json`), CODE_RUN_RECORD_LIMIT)) as CodeRunResult;
 		if (run.id !== runId || run.workspaceId !== state.id || typeof run.source !== "string" || digest(run.source) !== run.revision || run.language !== state.exercise.language) throw new CodeWorkspaceError("The saved check does not match this exercise.", 409);
 		return run;
 	}
@@ -228,14 +240,14 @@ export function createCodeWorkspaceService(options: {
 			const run = await (options.runner ?? runCodeExercise)({
 				workspaceId: state.id, source: current.source, revision: current.revision, exercise: state.exercise,
 				supportFiles: state.supportFiles,
-				...(state.supportFiles.length > 0
-					? { compileSources: [current.filename, ...state.supportFiles.filter(file => file.path.endsWith(".cpp")).map(file => file.path)] }
-					: {}),
 			}, { signal });
 			// Re-resolve active ownership and directory safety after the asynchronous run.
 			const latest = files(command.chatId, command.problemCallId);
 			if (latest.id !== state.id) throw new CodeWorkspaceError("The active exercise changed while this check was running. Check the new exercise instead.", 409);
-			writeAtomic(path.join(latest.directory, `${run.id}.json`), JSON.stringify(run));
+			// Never publish a record the reader would refuse: lastRunId is only set after this passes.
+			const record = JSON.stringify(run);
+			if (Buffer.byteLength(record, "utf8") > CODE_RUN_RECORD_LIMIT) throw new CodeWorkspaceError("The check output is too large to save. Reduce the program's output and check again.", 413);
+			writeAtomic(path.join(latest.directory, `${run.id}.json`), record);
 			latest.metadata.lastRunId = run.id;
 			writeAtomic(latest.metadataFile, JSON.stringify(latest.metadata));
 			return view(latest);
@@ -244,7 +256,15 @@ export function createCodeWorkspaceService(options: {
 	function getRunForSubmission(chatId: string, problemCallId: string, runId: string): CodeRunResult {
 		const state = files(chatId, problemCallId);
 		const run = readRun(state, runId);
-		if (digest(safeRead(state.sourceFile, CODE_SOURCE_LIMIT)) !== run.revision) throw new CodeWorkspaceError("The source changed since this check. Check the saved file again before submitting.", 409);
+		const source = safeRead(state.sourceFile, CODE_SOURCE_LIMIT);
+		if (digest(source) !== run.revision) throw new CodeWorkspaceError("The source changed since this check. Check the saved file again before submitting.", 409);
+		// Historical runs have no evidence and keep their legacy source/exercise/ownership
+		// validation. New evidence must match the snapshot of what the workspace would run now.
+		if (run.detail !== undefined) {
+			const evidence = run.detail as { version?: unknown; evidence?: { snapshotId?: unknown } };
+			const current = snapshotIdFor(normalizeCodeActivity({ ...state.exercise, starterCode: source }, state.supportFiles));
+			if (evidence?.version !== 1 || evidence.evidence?.snapshotId !== current) throw new CodeWorkspaceError("This check no longer matches the exercise, its supporting files, or the runner configuration. Check the saved file again before submitting.", 409);
+		}
 		return run;
 	}
 	return { execute, getRunForSubmission };

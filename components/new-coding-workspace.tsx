@@ -3,14 +3,17 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, type CodingLanguageId, type CodingMode, type TeachingCodingStep } from "@/src/core/coding-session";
+import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, executableProfileFor, type CodeProfileReadiness, type CodingLanguageId, type CodingMode, type TeachingCodingStep } from "@/src/core";
 
-export function NewCodingWorkspace({ languages, step }: {
+export function NewCodingWorkspace({ languages, readiness = [], step }: {
 	languages: readonly { id: CodingLanguageId; label: string }[];
+	/** Serialized by the server page. Informational: generation and editing stay available. */
+	readiness?: readonly CodeProfileReadiness[];
 	step?: TeachingCodingStep & { title: string; goal: string; mode: CodingMode };
 }) {
 	const [mode, setMode] = useState<CodingMode>(step?.mode ?? "problem");
 	const [language, setLanguage] = useState(languages[0]?.id ?? "cpp");
+	const selectedReadiness = readiness.find(item => item.profileId === executableProfileFor(language)?.id);
 	const [goal, setGoal] = useState(step?.goal ?? "");
 	const [files, setFiles] = useState<File[]>([]);
 	const [busy, setBusy] = useState(false);
@@ -72,6 +75,7 @@ export function NewCodingWorkspace({ languages, step }: {
 					<select id="coding-language" value={language} onChange={event => setLanguage(event.target.value as CodingLanguageId)} className="h-9 rounded-md border border-border bg-background px-3 text-sm">
 						{languages.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
 					</select>
+					{selectedReadiness?.state === "unavailable" && <p role="status" className="text-xs text-muted-foreground">{selectedReadiness.message} You can still generate and edit this workspace; checks need it.</p>}
 				</div>
 				<div className="space-y-2">
 					<label htmlFor="coding-goal" className="block text-sm font-medium">{mode === "problem" ? "Learning goal" : "Project and feature"}</label>

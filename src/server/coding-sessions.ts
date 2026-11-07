@@ -73,9 +73,7 @@ export function parseCodingGoal(value: unknown): CodingGoal {
 export function parseCodingDraft(value: unknown, goal: Pick<CodingGoal, "mode" | "language">): Omit<CodingSession, "id" | "createdAt"> {
 	const input = object(value);
 	const rawExercise = object(input.exercise);
-	if (rawExercise.cargo !== undefined && (goal.mode !== "project" || goal.language !== "rust")) {
-		throw new Error("Cargo dependencies are supported only for Rust projects.");
-	}
+	if (rawExercise.cargo !== undefined) throw new Error("Dependency declarations are not supported by the selected language's runner.");
 	const exercise = parseCodeExercise({ ...rawExercise, language: goal.language });
 	if (goal.mode === "project" && typeof input.simulation !== "boolean") throw new Error("Identify whether the project simulates an API or service.");
 	const supportFiles: CodingProjectFile[] = [];
@@ -83,12 +81,14 @@ export function parseCodingDraft(value: unknown, goal: Pick<CodingGoal, "mode" |
 	if (!Array.isArray(input.supportFiles) || input.supportFiles.length > 8 || (goal.mode === "problem" && input.supportFiles.length > 0)) {
 		throw new Error("A project may include up to eight supporting files. A problem uses one file.");
 	}
-	const names = new Set([executableProfileFor(goal.language)?.entryFilename ?? "solution.txt"]);
-	const extension = goal.language === "rust" ? /\.rs$/ : /\.(?:cpp|h|hpp)$/;
+	const profile = executableProfileFor(goal.language);
+	if (!profile) throw new Error("Choose a language with a local runner.");
+	const names = new Set([profile.entryFilename]);
+	const supported = (name: string) => profile.supportExtensions.some(extension => name.endsWith(extension));
 	for (const value of input.supportFiles) {
 		const file = object(value);
 		const name = text(file.path, 80, "File name");
-		if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(name) || !extension.test(name) || names.has(name.toLowerCase())) {
+		if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(name) || !supported(name) || names.has(name.toLowerCase())) {
 			throw new Error("Use unique, flat source file names with extensions supported by the selected language.");
 		}
 		names.add(name.toLowerCase());

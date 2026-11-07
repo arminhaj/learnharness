@@ -1,7 +1,7 @@
 import { CodingExerciseNav, type CodingLanguage } from "@/components/coding-exercise-nav";
 
-import type { CodingLanguageId } from "@/src/core/coding-session";
-import { codingLanguages } from "@/src/server/coding-sessions";
+import type { CodingLanguageId } from "@/src/core";
+import { codingLanguages } from "@/src/server";
 
 const examples: Record<CodingLanguageId, CodingLanguage> = {
 	cpp: {

@@ -18,6 +18,7 @@ import { Type, type Static } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { resolveTargetId } from "../../core/chains.ts";
 import { parseCodeExercise } from "../../core/code-workspace.ts";
+import { executableLanguageNames } from "../../core/code-language-catalog.ts";
 import { codeExerciseSchema } from "../../core/code-exercise-schema.ts";
 import { readTool } from "./read.ts";
 import { lsTool } from "./ls.ts";
@@ -124,9 +125,9 @@ export function problemTool(
 			"Pose one practice problem. Ends the turn — the learner works in the thinking field; their thinking " +
 			"traces and answer commits arrive back as labeled messages. The modelSolution rides this call's " +
 			"arguments and stays hidden from the learner until you conclude (conclude shows it verbatim — the " +
-			"reveal needs no new field). For a C++ implementation problem, include codeExercise with compile-ready " +
-			"starter source and stdin/stdout tests; the learner can edit it here or in an external editor, then compile " +
-			"and test their submission. The app owns compiler commands; never supply shell or build commands. " +
+			"reveal needs no new field). For a " + executableLanguageNames() + " implementation problem, include codeExercise with runnable " +
+			"starter source and stdin/stdout tests; the learner can edit it here or in an external editor, then build " +
+			"and test their submission. The app owns build and run commands; never supply shell or build commands. " +
 			"Only one problem may be active — conclude it before posing the next.",
 		parameters: problemInputObject,
 		executionMode: "sequential",

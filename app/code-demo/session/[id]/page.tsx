@@ -2,13 +2,15 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CodeWorkbench } from "@/components/code-workbench";
 import { CodingHint } from "@/components/coding-hint";
-import { codingLanguages, getCodingSession } from "@/src/server/coding-sessions";
+import { executableProfileFor } from "@/src/core";
+import { codeProfileReadiness, codingLanguages, getCodingSession } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
 export default async function CodingSessionPage({ params }: { params: Promise<{ id: string }> }) {
 	const session = getCodingSession((await params).id);
 	if (!session) notFound();
+	const readiness = (await codeProfileReadiness()).find(item => item.profileId === executableProfileFor(session.exercise.language)?.id);
 	const language = codingLanguages().find(item => item.id === session.exercise.language);
 	return (
 		<>
@@ -23,6 +25,7 @@ export default async function CodingSessionPage({ params }: { params: Promise<{ 
 			<div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
 				<section aria-label="Generated coding workspace" className="min-w-0 space-y-3 rounded-xl border border-border bg-card p-3 sm:p-4">
 					<p className="text-xs text-muted-foreground">Review the generated source before running checks on your computer.</p>
+					{readiness?.state === "unavailable" && <p role="status" className="text-xs text-muted-foreground">{readiness.message} You can still edit and save; checks need it.</p>}
 					<CodeWorkbench chatId="coding" problemCallId={session.id} />
 				</section>
 				<aside className="min-w-0 space-y-3" aria-label="Exercise guidance">

@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { NewCodingWorkspace } from "@/components/new-coding-workspace";
-import { codingLanguages, recentCodingSessions } from "@/src/server/coding-sessions";
+import { codeProfileReadiness, codingLanguages, recentCodingSessions } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export default function CodingPage() {
+export default async function CodingPage() {
 	const languages = codingLanguages();
 	const sessions = recentCodingSessions();
+	const readiness = await codeProfileReadiness();
 	return (
 		<div className="space-y-8">
-			<NewCodingWorkspace languages={languages} />
+			<NewCodingWorkspace languages={languages} readiness={readiness} />
 			{sessions.length > 0 && (
 				<section className="max-w-2xl space-y-3">
 					<h2 className="font-title text-2xl">Recent workspaces</h2>

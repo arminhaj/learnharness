@@ -1,4 +1,4 @@
-import { codingGenerationResponse } from "@/src/server/coding-generation";
+import { codingGenerationResponse } from "@/src/server";
 
 export const runtime = "nodejs";
 

@@ -1,11 +1,9 @@
+import { CODE_LANGUAGES, type CodeLanguageId } from "./code-language-catalog.ts";
 import type { CodeExercise } from "./code-workspace.ts";
 
-export const CODING_LANGUAGES = [
-	{ id: "cpp", label: "C++20" },
-	{ id: "rust", label: "Rust 2021" },
-] as const;
-
-export type CodingLanguageId = (typeof CODING_LANGUAGES)[number]["id"];
+/** Derived from the catalog; recognition here does not imply execution support. */
+export type CodingLanguageId = CodeLanguageId;
+export const CODING_LANGUAGES: readonly { id: CodingLanguageId; label: string }[] = CODE_LANGUAGES.map(({ id, label }) => ({ id, label }));
 export type CodingMode = "problem" | "project";
 
 export interface TeachingCodingStep {

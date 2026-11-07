@@ -76,6 +76,7 @@ export interface AssessmentResult {
 /** Optional versioned detail attached to a CodeRunResult; absent on historical runs. */
 export interface CodeRunDetail {
 	version: 1;
+	profile: { id: string; version: number };
 	evidence: ExecutionEvidence;
 	assessment: AssessmentResult;
 }

@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { NewCodingWorkspace } from "@/components/new-coding-workspace";
-import type { TeachingCodingStep } from "@/src/core/coding-session";
-import { codingLanguages, getCodingSession, getTeachingCodingStep, teachingCodingSessionId } from "@/src/server/coding-sessions";
+import type { TeachingCodingStep } from "@/src/core";
+import { codeProfileReadiness, codingLanguages, getCodingSession, getTeachingCodingStep, teachingCodingSessionId } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,7 @@ export default async function TeachingCodingPage({ params }: { params: Promise<T
 	if (!step) notFound();
 	const existing = getCodingSession(teachingCodingSessionId(link));
 	if (existing) redirect(`/code-demo/session/${existing.id}`);
+	const readiness = await codeProfileReadiness();
 	const requested = step.node.coding?.language;
 	const languages = codingLanguages().filter(language => !requested || language.id === requested);
 	return (
@@ -21,6 +22,7 @@ export default async function TeachingCodingPage({ params }: { params: Promise<T
 			{languages.length ? (
 				<NewCodingWorkspace
 					languages={languages}
+					readiness={readiness}
 					step={{ ...link, title: step.node.title, goal: step.node.coding?.goal ?? step.node.title, mode: step.node.coding?.mode ?? "problem" }}
 				/>
 			) : (

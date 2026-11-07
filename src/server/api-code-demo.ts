@@ -5,12 +5,15 @@ import { PATHS } from "../../config.ts";
 import { API_DEMO_FILES, API_DEMO_STARTER, API_DEMO_TESTS, API_DEMO_VERSION, type ApiDemoFile, type ApiDemoRun, type ApiDemoWorkspace } from "../core/api-code-demo.ts";
 import { CODE_SOURCE_LIMIT, CODE_TEST_TEXT_LIMIT, type CodeRunResult } from "../core/code-workspace.ts";
 import { runCodeExercise, runCodeProgram, type CodeRunnerInput } from "./code-runner.ts";
+import { CODE_RUN_RECORD_LIMIT } from "./code-process.ts";
 import { codeWorkspaceRequestAuthorized, CodeWorkspaceError, openCodeEditor, type CodeEditor } from "./code-workspaces.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 
 const BUILD = { profile: "cpp20-library-v1", sources: ["solution.cpp", "library_api.cpp", "main.cpp"], flags: ["-std=c++20", "-Wall", "-Wextra", "-pedantic", "-O0", "-I."] };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const MANIFEST = hash({ storageLayout: 2, version: API_DEMO_VERSION, files: API_DEMO_FILES, tests: API_DEMO_TESTS, build: BUILD });
+// A check record: one CodeRunResult bound plus the project snapshot (at most 512 KiB of sources, JSON-escaped).
+const SAVED_RESULT_LIMIT = CODE_RUN_RECORD_LIMIT + 512 * 1024 * 6;
 interface Metadata { manifest: string; lastRunId?: string; lastCheckId?: string; }
 interface Snapshot { version: string; manifest: string; files: ApiDemoFile[]; tests: typeof API_DEMO_TESTS; build: typeof BUILD; }
 type SavedResult = { kind: "run"; result: ApiDemoRun; snapshot: Snapshot } | { kind: "check"; result: CodeRunResult; snapshot: Snapshot };
@@ -31,13 +34,14 @@ function readFile(file: string, limit: number): string {
 	try {
 		const stat = fs.fstatSync(fd);
 		if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new CodeWorkspaceError("A demo file is not a regular file or exceeds its size limit.", 409);
-		const buffer = Buffer.alloc(limit + 1);
+		const buffer = Buffer.alloc(Math.min(limit, stat.size) + 1);
 		let size = 0;
 		while (size <= limit) {
 			const read = fs.readSync(fd, buffer, size, buffer.length - size, null);
 			if (!read) break;
 			size += read;
 		}
+		if (size > stat.size) throw new CodeWorkspaceError("A demo file changed while it was being read.", 409);
 		if (size > limit) throw new CodeWorkspaceError("A demo file exceeds its size limit.", 409);
 		return buffer.subarray(0, size).toString("utf8");
 	} finally { fs.closeSync(fd); }
@@ -87,7 +91,7 @@ export function createApiCodeDemoService(options: {
 	}
 	function readResult(id: string, kind: "run" | "check"): SavedResult {
 		if (!/^[0-9a-f-]{36}$/.test(id)) throw new CodeWorkspaceError("Invalid saved run identifier.", 409);
-		const saved = JSON.parse(readFile(path.join(directory, `${id}.json`), 2 * 1024 * 1024)) as SavedResult;
+		const saved = JSON.parse(readFile(path.join(directory, `${id}.json`), SAVED_RESULT_LIMIT)) as SavedResult;
 		if (saved.kind !== kind || saved.result.id !== id || saved.snapshot.manifest !== MANIFEST || hash(saved.snapshot) !== saved.result.revision || saved.snapshot.files.find((file) => file.path === "solution.cpp")?.source !== saved.result.source) throw new CodeWorkspaceError("The saved result does not match its project snapshot.", 409);
 		return saved;
 	}
@@ -130,7 +134,9 @@ export function createApiCodeDemoService(options: {
 			if (command.action === "run") saved = { kind: "run", result: await (options.run ?? runCodeProgram)(input, command.stdin!, { signal }), snapshot: state.snapshot };
 			else saved = { kind: "check", result: await (options.check ?? runCodeExercise)(input, { signal }), snapshot: state.snapshot };
 			const latest = workspace(); // Reject altered supporting files after asynchronous execution too.
-			saveFile(path.join(directory, `${saved.result.id}.json`), JSON.stringify(saved));
+			const record = JSON.stringify(saved);
+			if (Buffer.byteLength(record, "utf8") > SAVED_RESULT_LIMIT) throw new CodeWorkspaceError("The output is too large to save. Reduce the program's output and run again.", 413);
+			saveFile(path.join(directory, `${saved.result.id}.json`), record);
 			if (saved.kind === "run") latest.metadata.lastRunId = saved.result.id; else latest.metadata.lastCheckId = saved.result.id;
 			saveFile(metadataFile, JSON.stringify(latest.metadata));
 			return view(latest);

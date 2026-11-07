@@ -58,3 +58,6 @@ export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
 export * from "./code-workspaces.ts";
 export { apiCodeDemoResponse } from "./api-code-demo.ts";
+export { codeProfileReadiness } from "./code-providers.ts";
+export { codingLanguages, getCodingSession, getTeachingCodingStep, recentCodingSessions, teachingCodingSessionId } from "./coding-sessions.ts";
+export { codingGenerationResponse } from "./coding-generation.ts";

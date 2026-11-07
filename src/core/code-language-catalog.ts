@@ -15,6 +15,16 @@ export interface CodeEditorCapabilities {
 export interface CodeProfileAuthoring {
 	/** Profile-specific instruction composed into the common starterCode wording. */
 	starterCode: string;
+	/** Profile-specific project guidance composed into workspace generation. */
+	project: string;
+}
+
+/** Display text for the profile's build phase; interpreted profiles name theirs differently. */
+export interface CodeProfileLabels {
+	buildPassed: string;
+	buildFailed: string;
+	buildOutput: string;
+	toolchainUnavailable: string;
 }
 
 /** A supported workflow for a language. Only implemented profiles are listed. */
@@ -29,6 +39,7 @@ export interface CodeProfileDescriptor {
 	/** Extensions allowed for supporting source resources. */
 	supportExtensions: readonly string[];
 	authoring: CodeProfileAuthoring;
+	labels: CodeProfileLabels;
 }
 
 export interface CodeLanguageDescriptor {
@@ -54,22 +65,29 @@ export const CPP20_STDIO_PROFILE: CodeProfileDescriptor = {
 		starterCode:
 			"Complete standalone C++20 source: includes, an unfinished function with a compiling placeholder body, " +
 			"and main with stdin/stdout wiring.",
+		project:
+			"one editable file named solution.cpp; put the working harness, local interfaces, and fixtures in supportFiles " +
+			"as flat .cpp/.hpp/.h files. All .cpp files are compiled together.",
 	},
+	labels: { buildPassed: "Compiled", buildFailed: "Compilation failed", buildOutput: "Compiler output", toolchainUnavailable: "Compiler unavailable" },
 };
 
 export const CODE_PROFILES: readonly CodeProfileDescriptor[] = [CPP20_STDIO_PROFILE];
 
-export const CODE_LANGUAGES: readonly CodeLanguageDescriptor[] = [
+export const CODE_LANGUAGES = [
 	{ id: "cpp", label: "C++20", aliases: ["c++", "cxx"], editor: { syntax: "cpp", assistance: true }, profiles: ["cpp20-stdio"] },
 	// Rust is named for the workspace picker's types only. It has no implemented
 	// profile, so it cannot pass executable validation.
 	{ id: "rust", label: "Rust 2021", aliases: [], editor: { assistance: false }, profiles: [] },
-];
+] as const satisfies readonly CodeLanguageDescriptor[];
+
+/** Every language the catalog recognizes, executable or not. */
+export type CodeLanguageId = (typeof CODE_LANGUAGES)[number]["id"];
 
 export function findCodeLanguage(input: unknown): CodeLanguageDescriptor | undefined {
 	if (typeof input !== "string") return undefined;
 	const name = input.trim().toLowerCase();
-	return CODE_LANGUAGES.find(language => language.id === name || language.aliases.includes(name));
+	return (CODE_LANGUAGES as readonly CodeLanguageDescriptor[]).find(language => language.id === name || language.aliases.includes(name));
 }
 
 export function findCodeProfile(id: unknown): CodeProfileDescriptor | undefined {
@@ -88,5 +106,10 @@ export function executableProfileFor(input: unknown): CodeProfileDescriptor | un
 }
 
 export function executableCodeLanguages(): CodeLanguageDescriptor[] {
-	return CODE_LANGUAGES.filter(language => executableProfileFor(language.id) !== undefined);
+	return (CODE_LANGUAGES as readonly CodeLanguageDescriptor[]).filter(language => executableProfileFor(language.id) !== undefined);
+}
+
+/** "C++20" or "C++20 and Rust 2021": names of what this build can execute, for prompts and copy. */
+export function executableLanguageNames(): string {
+	return executableCodeLanguages().map(language => language.label).join(" and ");
 }
