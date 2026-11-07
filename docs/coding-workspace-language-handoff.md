@@ -1,5 +1,7 @@
 # Coding workspace language generalization handoff
 
+All three milestones were implemented through Claude Code and accepted after review on November 6, 2026. Checkpoints: shared contracts/catalog `0bd1b15`, C++ migration `b193cf9`, Python `eeb271e`. See [the implementation review](coding-workspace-language-review.md) for validation results and remaining full-suite issues. The specification below records the approved implementation handoff.
+
 ## Objective and approved scope
 
 Implement the language generalization plan in LearnHarness Fork, in the existing `all-features-preview` checkout on branch `codex/all-features-preview`. The user has authorized implementation through the installed Claude Code CLI using its existing authentication. Claude performs implementation; Codex reviews each milestone and its tests before authorizing the next milestone. This handoff makes the previously discussed plan concrete and supplies the implementation decisions for those milestones.
