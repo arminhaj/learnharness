@@ -3,12 +3,12 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { PATHS } from "../../config.ts";
-import { CODE_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExercise, type CodeRunResult, type CodeWorkspaceView } from "../core/code-workspace.ts";
+import { CODE_DEMO_EXERCISE, PYTHON_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExercise, type CodeRunResult, type CodeWorkspaceView } from "../core/code-workspace.ts";
 import { activeProblemOf, danglingQuestionOf, type LhMessage } from "../core/native-messages.ts";
 import { askInputProblems } from "../core/question-core.ts";
 import { chatStore } from "../store/chats.ts";
 import { executableProfileFor } from "../core/code-language-catalog.ts";
-import { normalizeCodeActivity } from "../core/code-activity.ts";
+import { normalizeCodeActivity, validCodeResourcePath } from "../core/code-activity.ts";
 import { runCodeExercise } from "./code-runner.ts";
 import { providerForProfile } from "./code-providers.ts";
 import { CODE_RUN_RECORD_LIMIT } from "./code-process.ts";
@@ -41,6 +41,22 @@ const validCallId = (id: string) => id.length <= 4096 && /^[A-Za-z0-9_-]+(?:\|[A
 function mkdir(directory: string) {
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 	if (!fs.lstatSync(directory).isDirectory()) throw new CodeWorkspaceError("The workspace directory is not a regular directory.", 409);
+}
+/** Resolve a clean relative resource path inside `root`, checking EVERY existing component with
+ *  lstat: an intermediate symlink (or any non-directory) is refused, not just a final one.
+ *  With `create`, missing parent directories are made one level at a time, privately. */
+function resolveInside(root: string, relative: string, create: boolean): string {
+	if (!validCodeResourcePath(relative)) throw new CodeWorkspaceError("Invalid workspace file path.", 409);
+	const parts = relative.split("/");
+	let current = root;
+	for (const part of parts.slice(0, -1)) {
+		current = path.join(current, part);
+		let stat: fs.Stats | undefined;
+		try { stat = fs.lstatSync(current); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw error; }
+		if (!stat) { fs.mkdirSync(current, { mode: 0o700 }); continue; }
+		if (!stat.isDirectory()) throw new CodeWorkspaceError("A workspace folder was replaced by a link or file. Restore it before continuing.", 409);
+	}
+	return path.join(current, parts[parts.length - 1]!);
 }
 function safeRead(file: string, limit: number): string {
 	const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
@@ -104,6 +120,7 @@ function activeExercise(chatId: string, problemCallId: string): { exercise: Work
 		return { exercise: { ...session.exercise, supportFiles: session.supportFiles }, occurrence: "" };
 	}
 	if (chatId === "demo" && problemCallId === "cpp-sum") return { exercise: CODE_DEMO_EXERCISE, occurrence: "" };
+	if (chatId === "demo" && problemCallId === "python-sum") return { exercise: PYTHON_DEMO_EXERCISE, occurrence: "" };
 	const chat = chatStore.getChat(chatId);
 	if (!chat) throw new CodeWorkspaceError("This chat no longer exists.", 404);
 	return activeCodeExerciseFromRecord(chat, problemCallId);
@@ -191,7 +208,7 @@ export function createCodeWorkspaceService(options: {
 				if (!fs.existsSync(scaffoldFile)) fs.writeFileSync(scaffoldFile, scaffold.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
 			}
 			for (const file of supportFiles) {
-				const target = path.join(directory, file.path);
+				const target = resolveInside(directory, file.path, true);
 				if (!fs.existsSync(target)) fs.writeFileSync(target, file.source, { encoding: "utf8", mode: 0o600, flag: "wx" });
 			}
 			writeAtomic(metadataFile, JSON.stringify(metadata));
@@ -200,7 +217,7 @@ export function createCodeWorkspaceService(options: {
 			if (metadata.id !== id || metadata.chatId !== chatId || metadata.problemCallId !== problemCallId || metadata.exerciseHash !== exerciseHash) throw new CodeWorkspaceError("The exercise changed. Start a new code problem before creating another workspace.", 409);
 		}
 		for (const file of supportFiles) {
-			if (safeRead(path.join(directory, file.path), CODE_SOURCE_LIMIT) !== file.source) {
+			if (safeRead(resolveInside(directory, file.path, false), CODE_SOURCE_LIMIT) !== file.source) {
 				throw new CodeWorkspaceError(`Restore the supplied contents of ${file.path} before checking the workspace.`, 409);
 			}
 		}

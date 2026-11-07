@@ -14,6 +14,7 @@ type ResultTab = "run" | "check";
 const runLabels: Record<ApiDemoRun["status"], string> = {
 	completed: "Run finished",
 	compilation_error: "Compilation failed",
+	preparation_error: "Syntax check failed",
 	runtime_error: "Program stopped with an error",
 	timeout: "Time limit reached",
 	unavailable: "Compiler unavailable",
@@ -22,6 +23,7 @@ const checkLabels: Record<CodeRunResult["status"], string> = {
 	passed: "All exercise checks passed",
 	tests_failed: "Compiled · some checks failed",
 	compilation_error: "Compilation failed",
+	preparation_error: "Syntax check failed",
 	runtime_error: "Program stopped during checks",
 	timeout: "Time limit reached",
 	unavailable: "Compiler unavailable",

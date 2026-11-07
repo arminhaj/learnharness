@@ -15,7 +15,9 @@ export interface CodeExerciseSchemaOptions {
 	description?: string;
 }
 
-const profileInstructions = () => CODE_PROFILES.map(profile => profile.authoring.starterCode).join(" ");
+/** Requirements are conditioned on the selected language, never a blend that tells one
+ *  language to use another's boilerplate. */
+const profileInstructions = () => CODE_PROFILES.map(profile => `If language is ${profile.language}: ${profile.authoring.starterCode}`).join(" ");
 
 export function codeExerciseSchema(options: CodeExerciseSchemaOptions) {
 	const languages = executableCodeLanguages();
@@ -31,7 +33,7 @@ export function codeExerciseSchema(options: CodeExerciseSchemaOptions) {
 			minLength: 1,
 			maxLength: CODE_SOURCE_LIMIT,
 			description:
-				`${profileInstructions()} At most 64 KiB UTF-8. Compiles/runs before the learner edits it, ` +
+				`${profileInstructions()} At most 64 KiB UTF-8. Builds and runs before the learner edits it, ` +
 				"but must fail at least one test until solved. Never include the worked solution or external dependencies.",
 		}),
 		tests: Type.Array(Type.Object({

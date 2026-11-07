@@ -9,6 +9,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import { PATHS } from "../../config.ts";
 import { APP_IDENTITY, piEngineFor, type PiEngine } from "./models.ts";
 import { effectivePromptSegments } from "./prompt-segments.ts";
+import { codeLanguagePromptSection } from "../core/code-language-catalog.ts";
 import {
 	askUserQuestionTool,
 	createProberTools,
@@ -90,6 +91,8 @@ function composeProfileInstructions(kind: AgentKind, switches?: Record<string, b
 	if (isFocusedTeachingProfile(profile) && kind !== "practice") {
 		segments.push(readFileSync(path.join(PATHS.root, "src", "agent", "prompts", "focused.md"), "utf-8"));
 	}
+	// Catalog-generated capability section: after the editable prose, never replaced by an override.
+	if (kind !== "prober") segments.push(codeLanguagePromptSection());
 	if (appendix) segments.push(appendix);
 	if (profile === "mad-max" && kind !== "practice") {
 		segments.push(readFileSync(path.join(PATHS.root, "src", "agent", "prompts", "mad-max.md"), "utf-8"));

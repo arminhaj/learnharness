@@ -2,7 +2,7 @@
 
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
-import { codeResultLabels, codeStatusLabel, fenceCode, type ArtifactPartProps, type CodeRunResult } from "@/src/core";
+import { findCodeLanguage, codeResultLabels, codeStatusLabel, fenceCode, type ArtifactPartProps, type CodeRunResult } from "@/src/core";
 import type { MoleculeDocument } from "@/src/core";
 import { MoleculeFigure } from "@/components/chemistry/molecule-figure";
 
@@ -298,7 +298,7 @@ export function ThinkingCard({ data }: { data: PracticeThinkingData }) {
 		const run = data.codeResult;
 		return <div data-testid="checked-code-answer" className="my-3 rounded-xl border bg-card p-3">
 			<div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-				<span className="font-medium uppercase tracking-wide text-muted-foreground">Your code answer · {run.language === "cpp" ? "C++" : run.language}</span>
+				<span className="font-medium uppercase tracking-wide text-muted-foreground">Your code answer · {findCodeLanguage(run.language)?.label.replace(/\d+$/, "") ?? run.language}</span>
 				<span className={run.status === "passed" ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}>{codeStatusLabel(run)}</span>
 			</div>
 			<ThinkingBlock label="Submitted source" text={fenceCode(run.source, run.language)} inCard />

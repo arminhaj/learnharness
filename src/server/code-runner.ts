@@ -2,9 +2,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { normalizeCodeActivity, type ExecutionEvidence, type ExecutionPhase } from "../core/code-activity.ts";
+import { normalizeCodeActivity, type CodeDiagnostic, type ExecutionEvidence, type ExecutionPhase } from "../core/code-activity.ts";
 import { assessStdio } from "../core/code-assessment.ts";
-import { executableProfileFor } from "../core/code-language-catalog.ts";
+import { executableLanguageNames, executableProfileFor } from "../core/code-language-catalog.ts";
 import type { CodeExercise, CodeRunResult, CodeTestResult } from "../core/code-workspace.ts";
 import { codeProcessEnvironment, runProcess, type ProcessResult } from "./code-process.ts";
 import { providerForProfile, snapshotIdFor } from "./code-providers.ts";
@@ -50,12 +50,15 @@ function executionStatus(run: ProcessResult): PhaseStatus {
 	return run.cancelled ? "cancelled" : run.timedOut ? "timeout" : run.outputLimited ? "output_limit" : run.exitCode !== 0 ? "failed" : "passed";
 }
 
+const DIAGNOSTIC_LIMIT = 50;
 interface Execution { caseId?: string; stdin: string; phase: ExecutionPhase; }
 interface Pipeline {
 	snapshotId: string;
 	profile: { id: string; version: number };
 	build: CodeBuildResult;
 	executions: Execution[];
+	/** Structured diagnostics extracted from failed executions (tracebacks). */
+	runtimeDiagnostics: CodeDiagnostic[];
 	spec: ReturnType<typeof normalizeCodeActivity>;
 }
 
@@ -82,13 +85,20 @@ async function runPipeline(input: CodeRunnerInput, options: CodeRunnerOptions, i
 			...(input.compileSources ? { explicitSources: input.compileSources } : {}),
 		});
 		const executions: Execution[] = [];
-		const base = { snapshotId, profile: { id: profile.id, version: profile.version }, build, executions, spec };
+		const runtimeDiagnostics: CodeDiagnostic[] = [];
+		const base = { snapshotId, profile: { id: profile.id, version: profile.version }, build, executions, runtimeDiagnostics, spec };
 		if (!build.program) return base;
 		const planned = inputs === "checks" ? spec.check.cases.map(item => ({ caseId: item.id, stdin: item.stdin })) : inputs.map(item => ({ caseId: undefined, stdin: item.stdin }));
 		for (const item of planned) {
 			const run = await runProcess(build.program.command, build.program.args, directory, item.stdin, options.testTimeoutMs ?? 5_000, options.signal);
 			const phase: ExecutionPhase = { kind: "execution", status: executionStatus(run), ...(item.caseId ? { caseId: item.caseId } : {}), exitCode: run.exitCode, stdout: run.stdout, stderr: run.stderr };
 			executions.push({ ...(item.caseId ? { caseId: item.caseId } : {}), stdin: item.stdin, phase });
+			if (phase.status !== "passed" && run.stderr && provider.executionDiagnostics) {
+				const known = new Set(runtimeDiagnostics.map(diagnostic => JSON.stringify(diagnostic)));
+				for (const diagnostic of provider.executionDiagnostics({ directory, spec, stderr: run.stderr })) {
+					if (runtimeDiagnostics.length < DIAGNOSTIC_LIMIT && !known.has(JSON.stringify(diagnostic))) runtimeDiagnostics.push(diagnostic);
+				}
+			}
 			if (run.timedOut || options.signal?.aborted) break;
 		}
 		return base;
@@ -102,7 +112,7 @@ function evidenceOf(pipeline: Pipeline): ExecutionEvidence {
 		snapshotId: pipeline.snapshotId,
 		...(pipeline.build.toolchain ? { toolchain: pipeline.build.toolchain } : {}),
 		phases: [pipeline.build.phase, ...pipeline.executions.map(execution => execution.phase)],
-		diagnostics: pipeline.build.diagnostics,
+		diagnostics: [...pipeline.build.diagnostics, ...pipeline.runtimeDiagnostics].slice(0, DIAGNOSTIC_LIMIT),
 	};
 }
 
@@ -111,7 +121,7 @@ function evidenceOf(pipeline: Pipeline): ExecutionEvidence {
 export async function runCodeExercise(input: CodeRunnerInput, options: CodeRunnerOptions = {}): Promise<CodeRunResult> {
 	const result: CodeRunResult = { id: randomUUID(), workspaceId: input.workspaceId, source: input.source, revision: input.revision, language: input.exercise.language, status: "unavailable", compiler: "", stdout: "", stderr: "", tests: [], createdAt: new Date().toISOString() };
 	const pipeline = await runPipeline(input, options, "checks");
-	if ("unsupported" in pipeline) return { ...result, stderr: `No local runner for ${input.exercise.language}. This version supports C++.` };
+	if ("unsupported" in pipeline) return { ...result, stderr: `No local runner for ${input.exercise.language}. This version supports ${executableLanguageNames()}.` };
 	const { build } = pipeline;
 	result.compiler = build.toolchainLabel;
 	const evidence = evidenceOf(pipeline);
@@ -121,7 +131,7 @@ export async function runCodeExercise(input: CodeRunnerInput, options: CodeRunne
 	result.stdout = build.phase.stdout;
 	result.stderr = build.phase.stderr;
 	if (build.phase.status === "timeout" || build.phase.status === "cancelled") return { ...result, status: "timeout", detail };
-	if (build.phase.status !== "passed") return { ...result, status: "compilation_error", detail };
+	if (build.phase.status !== "passed") return { ...result, status: build.phase.kind === "preparation" ? "preparation_error" : "compilation_error", detail };
 	const byCase = new Map(assessment.cases.map(item => [item.caseId, item]));
 	for (const execution of pipeline.executions) {
 		const test = pipeline.spec.check.cases.find(item => item.id === execution.caseId)!;
@@ -137,7 +147,7 @@ export interface CodeProgramResult {
 	id: string;
 	source: string;
 	revision: string;
-	status: "completed" | "compilation_error" | "runtime_error" | "timeout" | "unavailable";
+	status: "completed" | "compilation_error" | "preparation_error" | "runtime_error" | "timeout" | "unavailable";
 	compiler: string;
 	stdout: string;
 	stderr: string;
@@ -151,14 +161,14 @@ export interface CodeProgramResult {
 export async function runCodeProgram(input: CodeRunnerInput, stdin: string, options: CodeRunnerOptions = {}): Promise<CodeProgramResult> {
 	const result: CodeProgramResult = { id: randomUUID(), source: input.source, revision: input.revision, status: "unavailable", compiler: "", stdout: "", stderr: "", compilerStdout: "", compilerStderr: "", stdin, createdAt: new Date().toISOString() };
 	const pipeline = await runPipeline(input, options, [{ stdin }]);
-	if ("unsupported" in pipeline) return { ...result, compilerStderr: `No local runner for ${input.exercise.language}. This version supports C++.` };
+	if ("unsupported" in pipeline) return { ...result, compilerStderr: `No local runner for ${input.exercise.language}. This version supports ${executableLanguageNames()}.` };
 	const { build } = pipeline;
 	result.compiler = build.toolchainLabel;
 	if (build.phase.status === "unavailable") return { ...result, compilerStderr: build.unavailableMessage ?? build.phase.stderr };
 	result.compilerStdout = build.phase.stdout;
 	result.compilerStderr = build.phase.stderr;
 	if (build.phase.status === "timeout" || build.phase.status === "cancelled") return { ...result, status: "timeout" };
-	if (build.phase.status !== "passed") return { ...result, status: "compilation_error" };
+	if (build.phase.status !== "passed") return { ...result, status: build.phase.kind === "preparation" ? "preparation_error" : "compilation_error" };
 	const run = pipeline.executions[0]?.phase;
 	if (!run) return result;
 	return {

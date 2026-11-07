@@ -1,17 +1,18 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Compartment, EditorState, Prec, type Text } from "@codemirror/state";
+import { Compartment, EditorState, Prec, type Extension, type Text } from "@codemirror/state";
 import { EditorView, activateHover, closeHoverTooltips, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { cpp } from "@codemirror/lang-cpp";
+import { python } from "@codemirror/lang-python";
 import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completeAnyWord, completionStatus, moveCompletionSelection, startCompletion } from "@codemirror/autocomplete";
 import { forEachDiagnostic, linter, lintKeymap, setDiagnostics, setDiagnosticsEffect, type Diagnostic } from "@codemirror/lint";
 import { tags } from "@lezer/highlight";
 import { getCM, vim } from "@replit/codemirror-vim";
 import { cn } from "@/lib/utils";
-import { findExerciseCodeDiagnostics, type ExerciseCodeContext, type ExerciseCodeDiagnostic } from "@/src/core";
+import { findCodeLanguage, findExerciseCodeDiagnostics, type ExerciseCodeContext, type ExerciseCodeDiagnostic } from "@/src/core";
 import { createExerciseCompletionSource } from "@/components/code-completion";
 
 export interface CodeEditorProps {
@@ -30,7 +31,13 @@ export interface CodeEditorProps {
 // The editor is a separate input surface: prose editing and path chips retain
 // their own selection model. Language extensions can be added independently of
 // compiler adapters; unsupported languages still get plain code editing.
-const languageExtension = (language: string) => language === "cpp" ? cpp() : [];
+const SYNTAX_PROVIDERS: Record<string, () => Extension> = { cpp: () => cpp(), python: () => python() };
+const languageExtension = (language: string): Extension => {
+	const syntax = findCodeLanguage(language)?.editor.syntax;
+	return syntax && SYNTAX_PROVIDERS[syntax] ? SYNTAX_PROVIDERS[syntax]!() : [];
+};
+/** The C++ completion/hint engine runs only for languages whose catalog entry advertises it. */
+const assisted = (language: string, context?: ExerciseCodeContext) => findCodeLanguage(language)?.editor.assistance ? context : undefined;
 
 function completionExtension(context?: ExerciseCodeContext) {
 	const source = context ? createExerciseCompletionSource(context) : completeAnyWord;
@@ -62,9 +69,11 @@ function editorDiagnostics(doc: Text, context: ExerciseCodeContext | undefined, 
 	return diagnostics.flatMap(diagnostic => {
 		if (diagnostic.line < 1 || diagnostic.line > doc.lines || diagnostic.column < 1) return [];
 		const line = doc.line(diagnostic.line);
-		const from = Math.min(line.to, line.from + diagnostic.column - 1);
+		// A line-only diagnostic (no reliable column) spans the line's code, never one guessed token.
+		const indent = diagnostic.lineOnly ? line.text.length - line.text.trimStart().length : 0;
+		const from = diagnostic.lineOnly ? line.from + indent : Math.min(line.to, line.from + diagnostic.column - 1);
 		const length = line.text.slice(from - line.from).match(/^\w+/)?.[0].length ?? 1;
-		const to = Math.min(line.to, Math.max(from, diagnostic.endColumn ? line.from + diagnostic.endColumn - 1 : from + length));
+		const to = diagnostic.lineOnly ? line.to : Math.min(line.to, Math.max(from, diagnostic.endColumn ? line.from + diagnostic.endColumn - 1 : from + length));
 		const key = `${from}:${to}:${diagnostic.severity}`;
 		if (seen.has(key)) return [];
 		seen.add(key);
@@ -121,7 +130,7 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 		const c = compartments.current;
 		const diagnose = (doc: Text) => {
 			const current = assistance.current;
-			return editorDiagnostics(doc, current.language === "cpp" ? current.completionContext : undefined,
+			return editorDiagnostics(doc, assisted(current.language, current.completionContext),
 				doc.toString() === current.value ? current.diagnostics ?? [] : []);
 		};
 		const editor = new EditorView({
@@ -155,7 +164,7 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 					vim({ status: true }),
 					lineNumbers(), highlightActiveLine(), highlightActiveLineGutter(), drawSelection(),
 					history(), indentOnInput(), indentUnit.of("    "), bracketMatching(), closeBrackets(),
-					c.completion.of(completionExtension(config.completionContext)), syntaxHighlighting(colors), editorTheme,
+					c.completion.of(completionExtension(assisted(config.language, config.completionContext))), syntaxHighlighting(colors), editorTheme,
 					linter(null),
 					// Clear stale compiler positions in the same transaction as an
 					// edit, and recompute conservative exercise hints on the new text.
@@ -188,10 +197,10 @@ export function CodeEditor({ value, onChange, language = "cpp", disabled = false
 		editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
 	}, [value]);
 	useEffect(() => { view.current?.dispatch({ effects: compartments.current.language.reconfigure(languageExtension(language)) }); }, [language]);
-	useEffect(() => { view.current?.dispatch({ effects: compartments.current.completion.reconfigure(completionExtension(completionContext)) }); }, [completionContext]);
+	useEffect(() => { view.current?.dispatch({ effects: compartments.current.completion.reconfigure(completionExtension(assisted(language, completionContext))) }); }, [completionContext, language]);
 	useEffect(() => {
 		const editor = view.current;
-		if (editor) editor.dispatch(setDiagnostics(editor.state, editorDiagnostics(editor.state.doc, language === "cpp" ? completionContext : undefined,
+		if (editor) editor.dispatch(setDiagnostics(editor.state, editorDiagnostics(editor.state.doc, assisted(language, completionContext),
 			editor.state.doc.toString() === value ? diagnostics ?? [] : [])));
 	}, [completionContext, diagnostics, language, value]);
 	useEffect(() => {

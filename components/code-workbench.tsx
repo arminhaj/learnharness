@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { CheckIcon, ChevronDownIcon, Code2Icon, ExternalLinkIcon, LoaderCircleIcon, PlayIcon, RefreshCwIcon, SaveIcon, XIcon } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Button } from "@/components/ui/button";
-import { codeResultLabels, codeStatusLabel, learnerDiagnostics, type CodeRunResult, type CodeWorkspaceView } from "@/src/core";
+import { findCodeLanguage, codeResultLabels, codeStatusLabel, learnerDiagnostics, type CodeRunResult, type CodeWorkspaceView } from "@/src/core";
 
 type Operation = "load" | "save" | "check" | "open";
 type Editor = "vscode" | "cursor" | "default";
@@ -44,7 +44,7 @@ export function CodeCheckResults({ result, stale = false, standalone = false }: 
 				</div>
 			)}
 			{(result.stdout || result.stderr) && (
-				<details open={result.status === "compilation_error" || result.status === "unavailable"} className="border-t border-border/60 px-3 py-2">
+				<details open={result.status === "compilation_error" || result.status === "preparation_error" || result.status === "unavailable"} className="border-t border-border/60 px-3 py-2">
 					<summary className="cursor-pointer text-xs text-muted-foreground">{codeResultLabels(result).buildOutput}</summary>
 					<pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{[result.stdout, result.stderr].filter(Boolean).join("\n")}</pre>
 				</details>
@@ -177,7 +177,7 @@ export function CodeWorkbench({ chatId, problemCallId, onSubmit, disabled = fals
 				<div className="flex min-w-0 items-center gap-2 text-xs">
 					<Code2Icon aria-hidden className="size-4 text-muted-foreground" />
 					<span className="font-mono">{workspace?.filename ?? "Code workspace"}</span>
-					<span className="text-muted-foreground">{workspace?.language === "cpp" ? "C++20" : workspace?.language}</span>
+					<span className="text-muted-foreground">{workspace && (findCodeLanguage(workspace.language)?.label ?? workspace.language)}</span>
 					{dirty && <span className="text-amber-700 dark:text-amber-300">Unsaved</span>}
 				</div>
 				<div className="flex items-center gap-1.5">

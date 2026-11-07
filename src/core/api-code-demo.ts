@@ -11,7 +11,7 @@ export interface ApiDemoRun {
 	id: string;
 	source: string;
 	revision: string;
-	status: "completed" | "compilation_error" | "runtime_error" | "timeout" | "unavailable";
+	status: "completed" | "compilation_error" | "preparation_error" | "runtime_error" | "timeout" | "unavailable";
 	compiler: string;
 	stdout: string;
 	stderr: string;

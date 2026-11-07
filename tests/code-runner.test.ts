@@ -10,7 +10,7 @@ const check = (source: string, exercise: CodeExercise = CODE_DEMO_EXERCISE, opti
 
 test("exercise contracts canonicalize C++ and reject unsupported or unbounded exercises", () => {
 	assert.equal(parseCodeExercise({ ...CODE_DEMO_EXERCISE, language: "C++" }).language, "cpp");
-	assert.throws(() => parseCodeExercise({ ...CODE_DEMO_EXERCISE, language: "python" }), /C\+\+ only/);
+	assert.throws(() => parseCodeExercise({ ...CODE_DEMO_EXERCISE, language: "javascript" }), /supports C\+\+20 and Python 3\.11\+/);
 	assert.throws(() => parseCodeExercise({ ...CODE_DEMO_EXERCISE, starterCode: "x".repeat(65_537) }), /64 KiB/);
 	assert.throws(() => parseCodeExercise({ ...CODE_DEMO_EXERCISE, tests: [] }), /between 1 and 12/);
 	assert.throws(() => parseCodeExercise({ ...CODE_DEMO_EXERCISE, tests: [{ name: "huge", stdin: "x".repeat(8193), expectedStdout: "" }] }), /8 KiB/);

@@ -4,9 +4,10 @@ import type { CodeActivitySpec } from "../core/code-activity.ts";
 import { executionSnapshotId } from "./code-snapshot.ts";
 import type { CodeExecutionProvider } from "./code-provider.ts";
 import { cppProvider } from "./cpp-provider.ts";
+import { pythonProvider } from "./python-provider.ts";
 
 /** Explicit registration: a profile executes only if the catalog implements it AND a provider is registered. */
-const PROVIDERS: readonly CodeExecutionProvider[] = [cppProvider];
+const PROVIDERS: readonly CodeExecutionProvider[] = [cppProvider, pythonProvider];
 
 export function providerForProfile(profileId: string): CodeExecutionProvider | undefined {
 	return PROVIDERS.find(provider => provider.profileId === profileId);

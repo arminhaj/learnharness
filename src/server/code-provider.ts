@@ -43,4 +43,7 @@ export interface CodeExecutionProvider {
 	buildSources(spec: CodeActivitySpec, explicit?: string[]): string[];
 	/** Build with fixed argv, and extract diagnostics. Throws on an invalid source override. */
 	build(context: CodeBuildContext): Promise<CodeBuildResult>;
+	/** Structured diagnostics from a failed execution's raw output (e.g. a traceback), mapped
+	 *  only to real workspace resources. Optional: absent for profiles without such output. */
+	executionDiagnostics?(context: { directory: string; spec: CodeActivitySpec; stderr: string }): CodeDiagnostic[];
 }

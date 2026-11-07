@@ -7,7 +7,7 @@ import { after, test } from "node:test";
 import { Value } from "typebox/value";
 import { CODING_LANGUAGES } from "../src/core/coding-session.ts";
 import { CODE_DEMO_EXERCISE, parseCodeExercise, type CodeRunResult } from "../src/core/code-workspace.ts";
-import { CODE_LANGUAGES, CODE_PROFILES, executableCodeLanguages, executableProfileFor, findCodeLanguage } from "../src/core/code-language-catalog.ts";
+import { CODE_LANGUAGES, CODE_PROFILES, codeLanguagePromptSection, executableCodeLanguages, executableProfileFor, findCodeLanguage, findCodeProfile } from "../src/core/code-language-catalog.ts";
 import { normalizeCodeActivity, validCodeResourcePath } from "../src/core/code-activity.ts";
 import { codeExerciseSchema } from "../src/core/code-exercise-schema.ts";
 import { askInputSchema } from "../src/core/question-core.ts";
@@ -20,14 +20,15 @@ after(() => roots.forEach(directory => fs.rmSync(directory, { recursive: true, f
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 test("catalog registers only executable C++ and fails closed for everything else", () => {
-	assert.deepEqual(executableCodeLanguages().map(language => language.id), ["cpp"]);
-	assert.deepEqual(CODE_PROFILES.map(profile => profile.id), ["cpp20-stdio"]);
+	assert.deepEqual(executableCodeLanguages().map(language => language.id), ["cpp", "python"]);
+	assert.deepEqual(CODE_PROFILES.map(profile => profile.id), ["cpp20-stdio", "python3-stdio"]);
 	for (const alias of ["cpp", "C++", " cxx "]) assert.equal(executableProfileFor(alias)?.id, "cpp20-stdio");
-	for (const name of ["rust", "python", "py", "python3", "", "c", undefined, 3]) assert.equal(executableProfileFor(name), undefined);
+	for (const alias of ["python", "PY", " python3 "]) assert.equal(executableProfileFor(alias)?.id, "python3-stdio");
+	for (const name of ["rust", "javascript", "", "c", undefined, 3]) assert.equal(executableProfileFor(name), undefined);
 	assert.equal(findCodeLanguage("rust")?.profiles.length, 0, "Rust is named but not executable");
 	for (const language of CODE_LANGUAGES) for (const id of language.profiles) assert.ok(CODE_PROFILES.some(profile => profile.id === id && profile.language === language.id));
 	assert.deepEqual(CODING_LANGUAGES.map(language => language.id), CODE_LANGUAGES.map(language => language.id));
-	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp"]);
+	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp", "python"]);
 	assert.throws(() => parseCodingGoal({ mode: "problem", language: "rust", goal: "x" }), /local runner/);
 });
 
@@ -37,10 +38,13 @@ test("parser, Teaching schema, and Practice schema agree on executable languages
 	const practice = (value: unknown) => Value.Check(problemInputObject, { statement: "s", mode: "recall", modelSolution: "m", codeExercise: value });
 	for (const check of [teaching, practice]) assert.equal(check(exercise), true);
 	// Practice leaves alias/unknown handling to the parser, which fails closed.
-	for (const language of ["rust", "python"]) assert.equal(practice({ ...exercise, language }), true);
+	for (const language of ["rust", "javascript"]) assert.equal(practice({ ...exercise, language }), true);
+	assert.equal(teaching({ ...exercise, language: "python" }), true);
+	assert.equal(teaching({ ...exercise, language: "py" }), false, "Teaching admits canonical ids only; the parser accepts aliases");
+	assert.equal(parseCodeExercise({ ...exercise, language: "py" }).language, "python");
 	assert.equal(teaching({ ...exercise, language: "rust" }), false);
-	assert.equal(teaching({ ...exercise, language: "python" }), false);
-	for (const language of ["rust", "python"]) assert.throws(() => parseCodeExercise({ ...exercise, language }), /C\+\+ only/);
+	assert.equal(teaching({ ...exercise, language: "javascript" }), false);
+	for (const language of ["rust", "javascript"]) assert.throws(() => parseCodeExercise({ ...exercise, language }), /supports C\+\+20 and Python 3\.11\+/);
 	assert.equal(parseCodeExercise({ ...exercise, language: "C++" }).language, "cpp");
 	assert.equal(typeof codeExerciseSchema({ languageInput: "tolerant", closed: true }), "object");
 });
@@ -117,4 +121,24 @@ test("saved-content parsing does not depend on runtime readiness or PATH", () =>
 	process.env.PATH = "/nonexistent";
 	try { assert.equal(parseCodeExercise(CODE_DEMO_EXERCISE).language, "cpp"); assert.ok(normalizeCodeActivity(CODE_DEMO_EXERCISE)); }
 	finally { process.env.PATH = original; }
+});
+
+test("the generated capability section reaches Teaching and Practice, survives overrides, and omits the prober", async () => {
+	const section = codeLanguagePromptSection();
+	for (const language of executableCodeLanguages()) {
+		for (const profile of language.profiles.map(findCodeProfile)) {
+			assert.ok(section.includes(`\`${language.id}\` (${profile!.label}): ${profile!.authoring.starterCode} ${profile!.authoring.runtime}`));
+		}
+	}
+	assert.doesNotMatch(section, /rust|Cargo/i);
+	assert.equal(codeLanguagePromptSection(), section, "deterministic");
+	const { composeInstructions } = await import("../src/agent/teacher-agent.ts");
+	for (const kind of ["teacher", "practice"] as const) assert.ok(composeInstructions(kind).endsWith(section), `${kind} ends with the generated section`);
+	assert.ok(!composeInstructions("prober").includes("Executable coding languages"));
+	// The editable prose carries no independent language inventory.
+	for (const file of ["src/agent/prompts/teacher/25-coding.md", "src/agent/prompts/practice/20-code-exercises.md"]) {
+		const text = fs.readFileSync(file, "utf8");
+		for (const language of executableCodeLanguages()) assert.ok(!text.includes(`\`${language.id}\` (`), `${file} must not restate ${language.id}`);
+		assert.doesNotMatch(text, /`rust`|Cargo|currently the only executable language/i);
+	}
 });

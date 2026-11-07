@@ -1,10 +1,12 @@
 import { CodeWorkbench } from "@/components/code-workbench";
 import { CodingHint } from "@/components/coding-hint";
 
-export function SumCodingExercise({ language, problemCallId, integerType }: {
+export function SumCodingExercise({ language, problemCallId, integerType, referenceNote }: {
 	language: string;
 	problemCallId: string;
-	integerType: string;
+	/** Fixed-width languages name their integer type; others supply a reference note instead. */
+	integerType?: string;
+	referenceNote?: string;
 }) {
 	return (
 		<>
@@ -25,11 +27,11 @@ export function SumCodingExercise({ language, problemCallId, integerType }: {
 					</CodingHint>
 					<section className="space-y-2 rounded-lg border border-border bg-card p-3 text-sm" aria-label={`${language} reference`}>
 						<h3 className="font-medium">Reference</h3>
-						<p className="leading-relaxed text-muted-foreground"><code>{integerType}</code> can hold signed 64-bit values. Keep the parameters and result in that type so sums beyond the signed 32-bit range still fit.</p>
+						<p className="leading-relaxed text-muted-foreground">{referenceNote ?? <><code>{integerType}</code> can hold signed 64-bit values. Keep the parameters and result in that type so sums beyond the signed 32-bit range still fit.</>}</p>
 						<p className="leading-relaxed text-muted-foreground">Use <code>+</code> to add two numbers. <code>return</code> sends the resulting value back to the code that called your function.</p>
 						<p className="rounded-md bg-background/60 p-2"><code>add(2, 3) → 5</code></p>
 					</section>
-					<p className="text-xs leading-relaxed text-muted-foreground">Run <strong>Check</strong> on the starter to see the tests before you edit. A clean compile tells you the program builds. The tests tell you whether it produces the expected answers.</p>
+					<p className="text-xs leading-relaxed text-muted-foreground">Run <strong>Check</strong> on the starter to see the tests before you edit. A clean build or syntax check tells you the program was accepted. The tests tell you whether it produces the expected answers.</p>
 				</aside>
 			</div>
 		</>

@@ -410,7 +410,7 @@ export const askInputSchema = Type.Object({
 	codeExercise: Type.Optional(codeExerciseSchema({
 		languageInput: "canonical",
 		closed: false,
-		description: "Optional native coding workspace for this free-response question. Omit options and multiSelect. The learner can edit, compile, test, and submit saved code with compiler evidence while staying in Teaching.",
+		description: "Optional native coding workspace for this free-response question. Omit options and multiSelect. The learner can edit, check, and submit saved code with build and test evidence while staying in Teaching.",
 	})),
 });
 

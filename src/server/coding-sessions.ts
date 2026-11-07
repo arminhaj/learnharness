@@ -5,6 +5,7 @@ import { PATHS } from "../../config.ts";
 import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, CODING_LANGUAGES, type CodingGoal, type CodingProjectFile, type CodingSession, type CodingSessionSummary, type TeachingCodingStep } from "../core/coding-session.ts";
 import { CODE_SOURCE_LIMIT, parseCodeExercise } from "../core/code-workspace.ts";
 import { executableProfileFor } from "../core/code-language-catalog.ts";
+import { findPathConflict } from "../core/code-activity.ts";
 import { chatStore } from "../store/chats.ts";
 
 const sessionDirectory = path.join(PATHS.data, "coding-sessions");
@@ -39,6 +40,14 @@ export function codingLanguages() {
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
 	return value as Record<string, unknown>;
+}
+
+/** File content: exact bytes (possibly empty), bounded by bytes, never containing NUL. */
+function exactSource(value: unknown): string {
+	if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > CODE_SOURCE_LIMIT) {
+		throw new Error("A supporting source must be text of at most 64 KiB.");
+	}
+	return value;
 }
 
 function text(value: unknown, max: number, label: string): string {
@@ -85,20 +94,25 @@ export function parseCodingDraft(value: unknown, goal: Pick<CodingGoal, "mode" |
 	if (!profile) throw new Error("Choose a language with a local runner.");
 	const names = new Set([profile.entryFilename]);
 	const supported = (name: string) => profile.supportExtensions.some(extension => name.endsWith(extension));
+	// Flat profiles keep one component; nested ones allow clean relative subdirectories.
+	const component = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
+	const cleanName = (name: string) => (profile.supportPaths === "nested" ? name.split("/") : [name]).every(part => component.test(part));
 	for (const value of input.supportFiles) {
 		const file = object(value);
 		const name = text(file.path, 80, "File name");
-		if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(name) || !supported(name) || names.has(name.toLowerCase())) {
+		if (!cleanName(name) || !supported(name) || names.has(name.toLowerCase())) {
 			throw new Error("Use unique, flat source file names with extensions supported by the selected language.");
 		}
 		names.add(name.toLowerCase());
-		const source = text(file.source, CODE_SOURCE_LIMIT, "Supporting source");
+		const source = profile.exactSupportSource ? exactSource(file.source) : text(file.source, CODE_SOURCE_LIMIT, "Supporting source");
 		const size = Buffer.byteLength(source, "utf8");
 		if (size > CODE_SOURCE_LIMIT) throw new Error("A supporting file exceeds 64 KiB.");
 		projectSize += size;
 		if (projectSize > 256 * 1024) throw new Error("The coding project is too large.");
 		supportFiles.push({ path: name, source });
 	}
+	const conflict = findPathConflict([profile.entryFilename, ...supportFiles.map(file => file.path)]);
+	if (conflict) throw new Error("A supporting file path cannot also be a directory of another file.");
 	return {
 		mode: goal.mode,
 		...(goal.mode === "project" ? { simulation: input.simulation as boolean } : {}),

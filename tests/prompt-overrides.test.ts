@@ -30,6 +30,7 @@ import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { createFauxCore } from "@earendil-works/pi-ai";
 import type { PiEngine } from "../src/agent/models.ts";
+import { codeLanguagePromptSection } from "../src/core/code-language-catalog.ts";
 
 // ── the seam, BEFORE any config-loading import ──────────────────────────────
 const TMP_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "lh-prompt-overrides-"));
@@ -271,8 +272,29 @@ describe("composeInstructions: override honoring + the byte-identical source pat
 				...fragmentsOf("src/agent/prompts/shared"),
 			].join("\n\n---\n\n");
 		};
-		assert.equal(composeInstructions("teacher"), oldLoader("teacher"));
-		assert.equal(composeInstructions("prober"), oldLoader("prober"));
+		// Teaching (and Practice) deliberately end with the catalog-generated coding-capability
+		// section; every editable source segment is otherwise byte-identical.
+		assert.equal(composeInstructions("teacher"), `${oldLoader("teacher")}\n\n---\n\n${codeLanguagePromptSection()}`);
+		assert.equal(composeInstructions("prober"), oldLoader("prober"), "the prober has no coding section");
+	});
+
+	it("the catalog-generated coding section follows an override and reaches both coding modes", () => {
+		const section = codeLanguagePromptSection();
+		for (const segment of ["teacher/25-coding.md"]) {
+			promptOverrides.writeOverride(segment, "MY CUSTOM CODING PROSE");
+			try {
+				const composed = composeInstructions("teacher", { [segment]: true });
+				assert.ok(composed.includes("MY CUSTOM CODING PROSE"), "override prose is kept");
+				assert.ok(!composed.includes("Hands-on coding within the lesson"), "override replaces the source prose");
+				assert.ok(composed.endsWith(section), "the generated section still follows an override");
+				assert.ok(composed.includes("`python` (Python 3.11+)") && composed.includes("`cpp` (C++20)"));
+			} finally { promptOverrides.deleteOverride(segment); }
+		}
+		promptOverrides.writeOverride("practice/20-code-exercises.md", "MY PRACTICE CODING PROSE");
+		try {
+			const practice = composeInstructions("practice", { "practice/20-code-exercises.md": true });
+			assert.ok(practice.includes("MY PRACTICE CODING PROSE") && practice.endsWith(section));
+		} finally { promptOverrides.deleteOverride("practice/20-code-exercises.md"); }
 	});
 
 	it("an enabled override swaps in; switch off or file absent composes source", () => {

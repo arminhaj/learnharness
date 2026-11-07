@@ -90,6 +90,16 @@ export function validCodeResourcePath(path: unknown): path is string {
 	return path.split("/").every(part => part !== "" && part !== "." && part !== ".." && !/[\0-\x1f]/.test(part));
 }
 
+/** A path that is also a directory prefix of another (case-insensitive), e.g. `a.py` and `a.py/b.py`:
+ *  the two cannot coexist on disk. Returns the clashing pair, if any. */
+export function findPathConflict(paths: readonly string[]): [string, string] | undefined {
+	const lower = paths.map(path => path.toLowerCase());
+	for (let i = 0; i < paths.length; i++) {
+		for (let j = 0; j < paths.length; j++) if (i !== j && lower[j]!.startsWith(`${lower[i]}/`)) return [paths[i]!, paths[j]!];
+	}
+	return undefined;
+}
+
 /** Pure normalization of the legacy authoring shape to the internal spec.
  *  Never mutates its input. Identity hashing happens on the legacy shape BEFORE
  *  this runs, so nothing here affects workspace IDs. */
@@ -107,6 +117,8 @@ export function normalizeCodeActivity(exercise: CodeExercise, supportFiles: read
 		seen.add(key);
 		resources.push({ id: supportResourceId(file.path), path: file.path, language: profile.language, content: file.source, role: "support", editable: false });
 	}
+	const conflict = findPathConflict(resources.map(resource => resource.path));
+	if (conflict) throw new Error(`Resource path '${conflict[0]}' conflicts with '${conflict[1]}'.`);
 	if (resources.filter(resource => resource.role === "learner" && resource.editable).length !== 1) {
 		throw new Error("An activity needs exactly one editable learner source.");
 	}

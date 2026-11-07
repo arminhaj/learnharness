@@ -5,7 +5,7 @@ import { resolveConversationSpec } from "../core/settings-resolution.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { refreshConnectionCatalog } from "./model-catalog.ts";
 import { effectiveSettings } from "./stores.ts";
-import { executableProfileFor } from "../core/code-language-catalog.ts";
+import { executableProfileFor, findCodeLanguage } from "../core/code-language-catalog.ts";
 import { codeWorkspaceRequestAuthorized } from "./code-workspaces.ts";
 import { getCodingSession, getTeachingCodingStep, parseCodingDraft, parseCodingGoal, parseTeachingCodingStep, saveCodingSession, teachingCodingSessionId } from "./coding-sessions.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
@@ -81,7 +81,8 @@ export async function codingGenerationResponse(request: Request, author = author
 	const stepId = teachingStep ? teachingCodingSessionId(teachingStep) : undefined;
 	if (stepId && getCodingSession(stepId)) return Response.json({ id: stepId }, { headers });
 	const language = step?.node.coding?.language;
-	if (language && language !== goal.language) return error(`This step calls for ${language}. Choose a matching runner.`, 400);
+	// Plan nodes may name a language by alias (py, python3, c++): compare canonical ids.
+	if (language && (findCodeLanguage(language)?.id ?? language) !== goal.language) return error(`This step calls for ${language}. Choose a matching runner.`, 400);
 	if (stepId && generatingSteps.has(stepId)) return error("This exercise is already being generated. Try reopening the step shortly.", 409);
 
 	if (stepId) generatingSteps.add(stepId);

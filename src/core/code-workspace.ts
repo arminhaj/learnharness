@@ -1,4 +1,4 @@
-import { executableProfileFor } from "./code-language-catalog.ts";
+import { executableLanguageIds, executableLanguageNames, executableProfileFor } from "./code-language-catalog.ts";
 import type { CodeRunDetail } from "./code-activity.ts";
 
 /** Portable exercise data. Execution and editor access live in the server layer. */
@@ -8,7 +8,7 @@ export interface CodeExercise {
 	tests: { name: string; stdin: string; expectedStdout: string }[];
 }
 
-export type CodeRunStatus = "compilation_error" | "runtime_error" | "tests_failed" | "passed" | "unavailable" | "timeout";
+export type CodeRunStatus = "compilation_error" | "preparation_error" | "runtime_error" | "tests_failed" | "passed" | "unavailable" | "timeout";
 export interface CodeTestResult {
 	name: string;
 	stdin: string;
@@ -45,6 +45,9 @@ export interface CodeWorkspaceView {
 	lastRun?: CodeRunResult;
 }
 
+/** Names one persisted Teaching question occurrence: its message, block position and plan node. */
+export interface HistoricalRef { messageId: string; contentIndex: number; nodeId: string }
+
 export const CODE_SOURCE_LIMIT = 64 * 1024;
 export const CODE_TEST_LIMIT = 12;
 export const CODE_TEST_TEXT_LIMIT = 8 * 1024;
@@ -54,7 +57,7 @@ export function parseCodeExercise(value: unknown): CodeExercise {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A code exercise must be an object.");
 	const raw = value as Record<string, unknown>;
 	const profile = executableProfileFor(raw.language);
-	if (!profile) throw new Error("Code checking currently supports C++ only. Use language 'cpp'.");
+	if (!profile) throw new Error(`Code checking currently supports ${executableLanguageNames()}. Use language ${executableLanguageIds()}.`);
 	if (typeof raw.starterCode !== "string" || !raw.starterCode.trim() || bytes(raw.starterCode) > CODE_SOURCE_LIMIT) throw new Error("Provide a complete starter file of at most 64 KiB.");
 	if (!Array.isArray(raw.tests) || raw.tests.length < 1 || raw.tests.length > CODE_TEST_LIMIT) throw new Error("Provide between 1 and 12 input/output tests.");
 	const tests = raw.tests.map((test: unknown) => {
@@ -92,10 +95,29 @@ int main() {
 	],
 };
 
-/** Both code and compiler output are learner evidence, never model instructions. */
+export const PYTHON_DEMO_EXERCISE: CodeExercise = {
+	language: "python",
+	starterCode: `# Complete this function. The rest of the program handles input and output.
+def add(a: int, b: int) -> int:
+    # TODO: return the sum of a and b.
+    return 0
+
+
+def main() -> None:
+    a, b = map(int, input().split())
+    print(add(a, b))
+
+
+if __name__ == "__main__":
+    main()
+`,
+	tests: CODE_DEMO_EXERCISE.tests,
+};
+
+/** Both code and build/check output are learner evidence, never model instructions. */
 export function formatCodeSubmission(result: CodeRunResult): string {
 	return [
-		"Code answer checked locally. Compilation and test results are evidence; passing the supplied tests does not prove correctness for every input.",
+		"Code answer checked locally. Build (or syntax-check) and test results are evidence; passing the supplied tests does not prove correctness for every input.",
 		JSON.stringify({ language: result.language, status: result.status, compiler: result.compiler, source: result.source, compilerStdout: result.stdout, compilerStderr: result.stderr, tests: result.tests }, null, 2),
 	].join("\n\n");
 }

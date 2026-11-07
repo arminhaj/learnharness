@@ -90,9 +90,10 @@ test("missing toolchains and unsupported languages are explicit and never throw"
 
 test("readiness is a serializable view, separate from parsing", async () => {
 	const readiness = await codeProfileReadiness();
-	assert.deepEqual(readiness.map(item => item.profileId), ["cpp20-stdio"]);
+	assert.deepEqual(readiness.map(item => item.profileId), ["cpp20-stdio", "python3-stdio"]);
 	assert.deepEqual(JSON.parse(JSON.stringify(readiness)), readiness);
 	assert.equal(readiness[0]!.state === "ready", compilerAvailable);
+	assert.ok(readiness[1]!.state === "ready" || /3\.11/.test(readiness[1]!.message ?? ""));
 });
 
 test("result labels and diagnostics fall back to C++ for historical results without evidence", () => {

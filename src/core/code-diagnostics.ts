@@ -5,6 +5,8 @@ export interface ExerciseCodeDiagnostic {
 	line: number;
 	column: number;
 	endColumn?: number;
+	/** No reliable column: `column` is a placeholder and the editor marks the whole line. */
+	lineOnly?: boolean;
 	severity: "error" | "warning";
 	message: string;
 	source?: string;

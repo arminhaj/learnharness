@@ -18,7 +18,8 @@ export function codeStatusLabel(result: Pick<CodeRunResult, "language" | "detail
 	switch (result.status) {
 		case "passed": return "All tests passed";
 		case "tests_failed": return `${labels.buildPassed} · some tests failed`;
-		case "compilation_error": return labels.buildFailed;
+		case "compilation_error":
+		case "preparation_error": return labels.buildFailed;
 		case "runtime_error": return "Program stopped with an error";
 		case "timeout": return "Time limit reached";
 		case "unavailable": return labels.toolchainUnavailable;
@@ -35,6 +36,7 @@ export function learnerDiagnostics(result: CodeRunResult, filename: string): Exe
 			.map(diagnostic => ({
 				line: diagnostic.range!.line,
 				column: diagnostic.range!.column ?? 1,
+				...(diagnostic.range!.column === undefined ? { lineOnly: true } : {}),
 				...(diagnostic.range!.endColumn !== undefined && (diagnostic.range!.endLine === undefined || diagnostic.range!.endLine === diagnostic.range!.line) ? { endColumn: diagnostic.range!.endColumn } : {}),
 				severity: diagnostic.severity as "error" | "warning",
 				message: diagnostic.message,

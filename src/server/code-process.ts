@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 import { CODE_SOURCE_LIMIT, CODE_TEST_LIMIT, CODE_TEST_TEXT_LIMIT } from "../core/code-workspace.ts";
 
@@ -47,6 +48,8 @@ export interface ProcessResult {
 export function runProcess(command: string, args: string[], cwd: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<ProcessResult> {
 	return new Promise((resolve) => {
 		let stdout = "", stderr = "", size = 0, timedOut = false, cancelled = false, outputLimited = false, done = false;
+		// Decode per stream so a multi-byte character split across chunks stays intact.
+		const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
 		const child = spawn(command, args, { cwd, env: codeProcessEnvironment(cwd), shell: false, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
 		const kill = () => {
 			try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { /* Process already stopped. */ }
@@ -54,6 +57,10 @@ export function runProcess(command: string, args: string[], cwd: string, stdin: 
 		const finish = (exitCode: number | null, unavailable = false) => {
 			if (done) return;
 			done = true;
+			// Flush each stream's decoder exactly once: an incomplete trailing UTF-8 sequence
+			// becomes a replacement character instead of silently vanishing.
+			stdout += decoders.stdout.end();
+			stderr += decoders.stderr.end();
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", cancel);
 			resolve({ stdout, stderr, exitCode, timedOut, cancelled, outputLimited, unavailable });
@@ -62,7 +69,7 @@ export function runProcess(command: string, args: string[], cwd: string, stdin: 
 		const timer = setTimeout(() => { timedOut = true; stderr += "\nTime limit exceeded."; kill(); }, timeoutMs);
 		const append = (buffer: Buffer, target: "stdout" | "stderr") => {
 			const remaining = Math.max(0, OUTPUT_LIMIT - size);
-			const text = buffer.subarray(0, remaining).toString("utf8");
+			const text = decoders[target].write(buffer.subarray(0, remaining));
 			if (target === "stdout") stdout += text; else stderr += text;
 			size += buffer.length;
 			if (size > OUTPUT_LIMIT) { outputLimited = true; stderr += "\nOutput limit exceeded; process stopped."; kill(); }

@@ -26,7 +26,8 @@ test("both teaching profiles expose and validate the coding route on the current
         assert.equal(wrongNode.isError, true);
         const prompt = composeInstructions("teacher", undefined, profile);
         assert.match(prompt, /## Hands-on coding within the lesson/);
-        assert.match(prompt, /write, complete, modify, or debug C\+\+ code/);
+        assert.match(prompt, /write, complete, modify, or debug code in an executable language/);
+        assert.match(prompt, /`cpp` \(C\+\+20\)[\s\S]*`python` \(Python 3\.11\+\)/);
         assert.match(prompt, /passing check alone does not complete/);
     }
     const ask = teachAskToolFor(ctx);
@@ -59,4 +60,28 @@ test("ordinary questions and malformed coding payloads cannot move the lesson", 
         assert.equal(phaseAt3([{ parts }], undefined, "plan"), "plan");
         assert.equal(phaseAt3Lh([message("ask_user_question", input)], undefined, "plan"), "plan");
     }
+});
+
+test("native plan-linked coding compares the step's language with the exercise through the catalog", async () => {
+    const planned = (language?: string): TeacherToolContext => ({
+        chatId: "lesson", jobStore: {}, spawn: () => {},
+        chatStore: { getChat: () => ({ tree: { nodes: [{ id: "step", title: "Step", ...(language ? { coding: { goal: "g", mode: "problem", language } } : {}) }], edges: [], version: 1 } }) },
+    } as unknown as TeacherToolContext);
+    const ask = (ctxFor: TeacherToolContext, language: string, nodeId: string | null = "step") =>
+        teachAskToolFor(ctxFor).execute("code", { question: "Write it.", ...(nodeId ? { nodeId } : {}), codeExercise: { ...CODE_DEMO_EXERCISE, language: language as "cpp" } }, undefined, undefined);
+    // A Python step accepts Python, including by alias; a C++ exercise on it is rejected.
+    for (const [stepLanguage, exerciseLanguage] of [["python", "python"], ["py", "python"], ["python3", "python"], ["PYTHON", "python"], ["cpp", "cpp"], ["c++", "cpp"], ["cxx", "cpp"]] as [string, string][]) {
+        assert.notEqual((await ask(planned(stepLanguage), exerciseLanguage)).isError, true, `${stepLanguage} step accepts ${exerciseLanguage}`);
+    }
+    for (const [stepLanguage, exerciseLanguage] of [["python", "cpp"], ["py", "cpp"], ["cpp", "python"], ["c++", "python"]] as [string, string][]) {
+        const result = await ask(planned(stepLanguage), exerciseLanguage);
+        assert.equal(result.isError, true, `${stepLanguage} step rejects ${exerciseLanguage}`);
+        assert.match((result.details as { problems: string[] }).problems.join(" "), /calls for/);
+    }
+    // Steps without an explicit language stay permissive, and off-plan exercises are unaffected.
+    assert.notEqual((await ask(planned(), "python")).isError, true);
+    assert.notEqual((await ask(planned(), "cpp")).isError, true);
+    assert.notEqual((await ask(planned("python"), "cpp", null)).isError, true, "off-plan (no nodeId) ignores plan languages");
+    const unknown = await ask(planned("python"), "cpp", "missing-node");
+    assert.equal(unknown.isError, true, "an unknown node id is still rejected for its own reason");
 });

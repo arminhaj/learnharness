@@ -11,6 +11,12 @@ const examples: Record<CodingLanguageId, CodingLanguage> = {
 			{ href: "/code-demo/api", title: "Borrow a book" },
 		],
 	},
+	python: {
+		label: "Python 3.11+",
+		exercises: [
+			{ href: "/code-demo/python", title: "Add two integers" },
+		],
+	},
 	rust: {
 		label: "Rust",
 		exercises: [

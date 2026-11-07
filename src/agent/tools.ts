@@ -14,7 +14,7 @@ import {
 	quizInputObject,
 	quizInputProblems,
 } from "../core/question-core.ts";
-import { executableLanguageNames } from "../core/code-language-catalog.ts";
+import { executableLanguageNames, findCodeLanguage } from "../core/code-language-catalog.ts";
 import { filterEnabledTools, type EnabledTools } from "../core/pending.ts";
 import type { JobRecord } from "../core/contracts.ts";
 import type { JobStore } from "../core/ports.ts";
@@ -371,6 +371,18 @@ export function createProberTools(
 
 /** The nodeId-against-live-tree check the teacher's quiz chains after the
  *  shared authoring contract (the old superRefine, verbatim). */
+/** A plan step with an explicit coding language fixes the exercise language, compared by catalog
+ *  canonicalization (aliases accepted). Steps without one stay permissive. */
+function nodeLanguageProblem(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeId: string, exerciseLanguage: unknown): string | null {
+	const planned = ctx.chatStore.getChat(ctx.chatId)?.tree?.nodes.find((node) => node.id === nodeId)?.coding?.language;
+	if (!planned) return null;
+	const wanted = findCodeLanguage(planned)?.id ?? planned;
+	const actual = findCodeLanguage(exerciseLanguage)?.id ?? exerciseLanguage;
+	return wanted === actual
+		? null
+		: `Plan step "${nodeId}" calls for ${planned}, but codeExercise.language is ${String(exerciseLanguage)}. Pose the exercise in the step's language, or omit nodeId for an off-plan exercise.`;
+}
+
 function nodeIdProblem(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeId: string): string | null {
 	const record = ctx.chatStore.getChat(ctx.chatId);
 	const known = record?.tree?.nodes.map((n) => n.id) ?? [];
@@ -428,7 +440,7 @@ export function teachAskToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStore
 		...askUserQuestionTool,
 		execute: async (id, input, signal, update) => {
 			if (input.codeExercise && input.nodeId) {
-				const problem = nodeIdProblem(ctx, input.nodeId);
+				const problem = nodeIdProblem(ctx, input.nodeId) ?? nodeLanguageProblem(ctx, input.nodeId, input.codeExercise.language);
 				if (problem) return invalidInputResult("ask_user_question", [problem]);
 			}
 			return askUserQuestionTool.execute(id, input, signal, update);
