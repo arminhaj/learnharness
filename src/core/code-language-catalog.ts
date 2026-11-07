@@ -106,14 +106,36 @@ export const PYTHON3_STDIO_PROFILE: CodeProfileDescriptor = {
 	labels: { buildPassed: "Syntax valid", buildFailed: "Syntax check failed", buildOutput: "Syntax check output", toolchainUnavailable: "Python unavailable" },
 };
 
-export const CODE_PROFILES: readonly CodeProfileDescriptor[] = [CPP20_STDIO_PROFILE, PYTHON3_STDIO_PROFILE];
+export const RUST2021_STDIO_PROFILE: CodeProfileDescriptor = {
+	id: "rust2021-stdio",
+	version: 1,
+	language: "rust",
+	label: "Rust 2021",
+	checkKinds: ["stdio"],
+	entryFilename: "solution.rs",
+	supportExtensions: [".rs"],
+	supportPaths: "nested",
+	exactSupportSource: true,
+	authoring: {
+		starterCode:
+			"Complete standalone Rust 2021 source using only the standard library (no crates, no Cargo): `use` imports, an unfinished " +
+			"function whose placeholder body compiles and runs without panicking (for example returns a default value), and a `fn main` " +
+			"that reads standard input and writes standard output.",
+		project:
+			"one editable crate root named solution.rs; put the working harness modules and fixtures in supportFiles as relative .rs " +
+			"module paths (for example helpers.rs or util/mod.rs, which solution.rs declares with ordinary `mod helpers;` / `mod util;`). " +
+			"Use only the standard library and no Cargo.toml.",
+		runtime: "Checks compile solution.rs as one crate root with the learner's local rustc (--edition=2021), following `mod` declarations to supporting files, then run the program once per test. No Cargo, crates, or toolchains are installed or downloaded.",
+	},
+	labels: { buildPassed: "Compiled", buildFailed: "Compilation failed", buildOutput: "Compiler output", toolchainUnavailable: "Rust compiler unavailable" },
+};
+
+export const CODE_PROFILES: readonly CodeProfileDescriptor[] = [CPP20_STDIO_PROFILE, PYTHON3_STDIO_PROFILE, RUST2021_STDIO_PROFILE];
 
 export const CODE_LANGUAGES = [
 	{ id: "cpp", label: "C++20", aliases: ["c++", "cxx"], editor: { syntax: "cpp", assistance: true }, profiles: ["cpp20-stdio"] },
 	{ id: "python", label: "Python 3.11+", aliases: ["py", "python3"], editor: { syntax: "python", assistance: false }, profiles: ["python3-stdio"] },
-	// Rust is named for the workspace picker's types only. It has no implemented
-	// profile, so it cannot pass executable validation.
-	{ id: "rust", label: "Rust 2021", aliases: [], editor: { assistance: false }, profiles: [] },
+	{ id: "rust", label: "Rust 2021", aliases: ["rs"], editor: { syntax: "rust", assistance: false }, profiles: ["rust2021-stdio"] },
 ] as const satisfies readonly CodeLanguageDescriptor[];
 
 /** Every language the catalog recognizes, executable or not. */
@@ -144,14 +166,17 @@ export function executableCodeLanguages(): CodeLanguageDescriptor[] {
 	return (CODE_LANGUAGES as readonly CodeLanguageDescriptor[]).filter(language => executableProfileFor(language.id) !== undefined);
 }
 
-/** "C++20" or "C++20 and Rust 2021": names of what this build can execute, for prompts and copy. */
+const joinList = (items: string[], conjunction: "and" | "or") =>
+	items.length < 3 ? items.join(` ${conjunction} `) : `${items.slice(0, -1).join(", ")}, ${conjunction} ${items.at(-1)}`;
+
+/** "C++20 and Python 3.11+", or "C++20, Python 3.11+, and Rust 2021": names of what this build can execute, for prompts and copy. */
 export function executableLanguageNames(): string {
-	return executableCodeLanguages().map(language => language.label).join(" and ");
+	return joinList(executableCodeLanguages().map(language => language.label), "and");
 }
 
-/** Canonical IDs of executable languages, e.g. "'cpp' or 'python'", for error text. */
+/** Canonical IDs of executable languages, e.g. "'cpp', 'python', or 'rust'", for error text. */
 export function executableLanguageIds(): string {
-	return executableCodeLanguages().map(language => `'${language.id}'`).join(" or ");
+	return joinList(executableCodeLanguages().map(language => `'${language.id}'`), "or");
 }
 
 /** Deterministic, catalog-generated description of what is executable and what each profile

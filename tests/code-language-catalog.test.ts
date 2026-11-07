@@ -19,17 +19,18 @@ const roots: string[] = [];
 after(() => roots.forEach(directory => fs.rmSync(directory, { recursive: true, force: true })));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
-test("catalog registers only executable C++ and fails closed for everything else", () => {
-	assert.deepEqual(executableCodeLanguages().map(language => language.id), ["cpp", "python"]);
-	assert.deepEqual(CODE_PROFILES.map(profile => profile.id), ["cpp20-stdio", "python3-stdio"]);
+test("catalog registers only executable profiles and fails closed for everything else", () => {
+	assert.deepEqual(executableCodeLanguages().map(language => language.id), ["cpp", "python", "rust"]);
+	assert.deepEqual(CODE_PROFILES.map(profile => profile.id), ["cpp20-stdio", "python3-stdio", "rust2021-stdio"]);
 	for (const alias of ["cpp", "C++", " cxx "]) assert.equal(executableProfileFor(alias)?.id, "cpp20-stdio");
 	for (const alias of ["python", "PY", " python3 "]) assert.equal(executableProfileFor(alias)?.id, "python3-stdio");
-	for (const name of ["rust", "javascript", "", "c", undefined, 3]) assert.equal(executableProfileFor(name), undefined);
-	assert.equal(findCodeLanguage("rust")?.profiles.length, 0, "Rust is named but not executable");
+	for (const alias of ["rust", "RS", " rs "]) assert.equal(executableProfileFor(alias)?.id, "rust2021-stdio");
+	for (const name of ["javascript", "", "c", "rustc", "cargo", undefined, 3]) assert.equal(executableProfileFor(name), undefined);
+	assert.deepEqual(findCodeLanguage("rs")?.editor, { syntax: "rust", assistance: false });
 	for (const language of CODE_LANGUAGES) for (const id of language.profiles) assert.ok(CODE_PROFILES.some(profile => profile.id === id && profile.language === language.id));
 	assert.deepEqual(CODING_LANGUAGES.map(language => language.id), CODE_LANGUAGES.map(language => language.id));
-	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp", "python"]);
-	assert.throws(() => parseCodingGoal({ mode: "problem", language: "rust", goal: "x" }), /local runner/);
+	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp", "python", "rust"]);
+	assert.throws(() => parseCodingGoal({ mode: "problem", language: "javascript", goal: "x" }), /local runner/);
 });
 
 test("parser, Teaching schema, and Practice schema agree on executable languages", () => {
@@ -38,13 +39,14 @@ test("parser, Teaching schema, and Practice schema agree on executable languages
 	const practice = (value: unknown) => Value.Check(problemInputObject, { statement: "s", mode: "recall", modelSolution: "m", codeExercise: value });
 	for (const check of [teaching, practice]) assert.equal(check(exercise), true);
 	// Practice leaves alias/unknown handling to the parser, which fails closed.
-	for (const language of ["rust", "javascript"]) assert.equal(practice({ ...exercise, language }), true);
-	assert.equal(teaching({ ...exercise, language: "python" }), true);
+	for (const language of ["ruby", "javascript"]) assert.equal(practice({ ...exercise, language }), true);
+	for (const language of ["python", "rust"]) assert.equal(teaching({ ...exercise, language }), true);
 	assert.equal(teaching({ ...exercise, language: "py" }), false, "Teaching admits canonical ids only; the parser accepts aliases");
 	assert.equal(parseCodeExercise({ ...exercise, language: "py" }).language, "python");
-	assert.equal(teaching({ ...exercise, language: "rust" }), false);
+	assert.equal(teaching({ ...exercise, language: "rs" }), false, "aliases are the parser's job, as for Python");
+	assert.equal(parseCodeExercise({ ...exercise, language: "RS" }).language, "rust");
 	assert.equal(teaching({ ...exercise, language: "javascript" }), false);
-	for (const language of ["rust", "javascript"]) assert.throws(() => parseCodeExercise({ ...exercise, language }), /supports C\+\+20 and Python 3\.11\+/);
+	for (const language of ["ruby", "javascript"]) assert.throws(() => parseCodeExercise({ ...exercise, language }), /supports C\+\+20, Python 3\.11\+, and Rust 2021\. Use language 'cpp', 'python', or 'rust'/);
 	assert.equal(parseCodeExercise({ ...exercise, language: "C++" }).language, "cpp");
 	assert.equal(typeof codeExerciseSchema({ languageInput: "tolerant", closed: true }), "object");
 });
@@ -67,7 +69,7 @@ test("normalizer produces the internal spec without mutating its input", () => {
 	assert.equal(spec.target.entryResourceId, spec.resources[0]!.id);
 	assert.equal(spec.check.kind, "stdio");
 	assert.deepEqual(spec.check.cases.map(({ name, stdin, expectedStdout }) => ({ name, stdin, expectedStdout })), exercise.tests);
-	assert.throws(() => normalizeCodeActivity({ ...exercise, language: "rust" }), /No executable profile/);
+	assert.throws(() => normalizeCodeActivity({ ...exercise, language: "javascript" }), /No executable profile/);
 	assert.throws(() => normalizeCodeActivity(exercise, [{ path: "SOLUTION.cpp", source: "" }]), /Duplicate/);
 	assert.throws(() => normalizeCodeActivity(exercise, [{ path: "../x.cpp", source: "" }]), /Invalid resource path/);
 });
@@ -130,7 +132,8 @@ test("the generated capability section reaches Teaching and Practice, survives o
 			assert.ok(section.includes(`\`${language.id}\` (${profile!.label}): ${profile!.authoring.starterCode} ${profile!.authoring.runtime}`));
 		}
 	}
-	assert.doesNotMatch(section, /rust|Cargo/i);
+	assert.match(section, /`rust` \(Rust 2021\)/);
+	assert.doesNotMatch(section, /Python[^\n]*(?:rustc|Cargo)|C\+\+[^\n]*(?:rustc|Cargo)/, "each profile's text stays on its own line");
 	assert.equal(codeLanguagePromptSection(), section, "deterministic");
 	const { composeInstructions } = await import("../src/agent/teacher-agent.ts");
 	for (const kind of ["teacher", "practice"] as const) assert.ok(composeInstructions(kind).endsWith(section), `${kind} ends with the generated section`);

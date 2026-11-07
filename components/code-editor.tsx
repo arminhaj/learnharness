@@ -7,6 +7,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { cpp } from "@codemirror/lang-cpp";
 import { python } from "@codemirror/lang-python";
+import { rust } from "@codemirror/lang-rust";
 import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completeAnyWord, completionStatus, moveCompletionSelection, startCompletion } from "@codemirror/autocomplete";
 import { forEachDiagnostic, linter, lintKeymap, setDiagnostics, setDiagnosticsEffect, type Diagnostic } from "@codemirror/lint";
 import { tags } from "@lezer/highlight";
@@ -31,7 +32,7 @@ export interface CodeEditorProps {
 // The editor is a separate input surface: prose editing and path chips retain
 // their own selection model. Language extensions can be added independently of
 // compiler adapters; unsupported languages still get plain code editing.
-const SYNTAX_PROVIDERS: Record<string, () => Extension> = { cpp: () => cpp(), python: () => python() };
+const SYNTAX_PROVIDERS: Record<string, () => Extension> = { cpp: () => cpp(), python: () => python(), rust: () => rust() };
 const languageExtension = (language: string): Extension => {
 	const syntax = findCodeLanguage(language)?.editor.syntax;
 	return syntax && SYNTAX_PROVIDERS[syntax] ? SYNTAX_PROVIDERS[syntax]!() : [];

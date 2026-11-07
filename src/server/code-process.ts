@@ -16,7 +16,7 @@ export const CODE_RUN_RECORD_LIMIT =
 	(CODE_TEST_LIMIT + 1) * 2 * PROCESS_TEXT_BOUND * JSON_ESCAPE_FACTOR
 	+ (CODE_SOURCE_LIMIT + CODE_TEST_LIMIT * (2 * CODE_TEST_TEXT_LIMIT + 120)) * JSON_ESCAPE_FACTOR
 	+ 64 * 1024;
-const DEFAULT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+export const DEFAULT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
 /** Intentionally a trusted local runner, not an OS sandbox. Never inherit API keys. */
 export function codeProcessEnvironment(directory: string): NodeJS.ProcessEnv {
@@ -44,13 +44,15 @@ export interface ProcessResult {
 	unavailable: boolean;
 }
 
-/** Run one fixed command. Callers supply trusted argv; nothing here parses a command string. */
-export function runProcess(command: string, args: string[], cwd: string, stdin: string, timeoutMs: number, signal?: AbortSignal): Promise<ProcessResult> {
+/** Run one fixed command. Callers supply trusted argv; nothing here parses a command string.
+ *  `environment` is for trusted toolchain discovery only (never learner programs or builds);
+ *  it replaces, not extends, the sanitized default. */
+export function runProcess(command: string, args: string[], cwd: string, stdin: string, timeoutMs: number, signal?: AbortSignal, environment?: NodeJS.ProcessEnv): Promise<ProcessResult> {
 	return new Promise((resolve) => {
 		let stdout = "", stderr = "", size = 0, timedOut = false, cancelled = false, outputLimited = false, done = false;
 		// Decode per stream so a multi-byte character split across chunks stays intact.
 		const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
-		const child = spawn(command, args, { cwd, env: codeProcessEnvironment(cwd), shell: false, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+		const child = spawn(command, args, { cwd, env: environment ?? codeProcessEnvironment(cwd), shell: false, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
 		const kill = () => {
 			try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { /* Process already stopped. */ }
 		};

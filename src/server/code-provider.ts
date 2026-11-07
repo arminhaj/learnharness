@@ -13,7 +13,7 @@ export interface CodeBuildContext {
 	explicitSources?: string[];
 	timeoutMs: number;
 	signal?: AbortSignal;
-	run: (command: string, args: string[], cwd: string, stdin: string, timeoutMs: number, signal?: AbortSignal) => Promise<ProcessResult>;
+	run: (command: string, args: string[], cwd: string, stdin: string, timeoutMs: number, signal?: AbortSignal, environment?: NodeJS.ProcessEnv) => Promise<ProcessResult>;
 }
 
 export interface CodeBuildResult {

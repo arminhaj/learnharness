@@ -52,10 +52,10 @@ describe("practice coding exercise authoring", () => {
 	it("the language field stays extensible while runtime rejects unsupported execution", async () => {
 		const gate = { problemActive: false };
 		const tool = problemTool(gate);
-		const input = validate({ ...codingProblem, codeExercise: { ...exercise, language: "rust" } });
+		const input = validate({ ...codingProblem, codeExercise: { ...exercise, language: "javascript" } });
 		const result = await tool.execute("unsupported", input);
 		assert.equal(result.isError, true);
-		assert.match((result.details as { problems: string[] }).problems[0]!, /C\+\+.*cpp/);
+		assert.match((result.details as { problems: string[] }).problems[0]!, /C\+\+20, Python 3\.11\+, and Rust 2021.*'cpp', 'python', or 'rust'/);
 		assert.equal(gate.problemActive, false);
 		const retry = await tool.execute("supported", validate(codingProblem));
 		assert.equal(retry.isError, undefined, "correcting the language can pose again in the same turn");

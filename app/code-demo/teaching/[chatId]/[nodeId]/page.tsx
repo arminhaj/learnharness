@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { NewCodingWorkspace } from "@/components/new-coding-workspace";
-import { findCodeLanguage, type TeachingCodingStep } from "@/src/core";
+import { executableLanguageNames, findCodeLanguage, type TeachingCodingStep } from "@/src/core";
 import { codeProfileReadiness, codingLanguages, getCodingSession, getTeachingCodingStep, teachingCodingSessionId } from "@/src/server";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,7 @@ export default async function TeachingCodingPage({ params }: { params: Promise<T
 			) : (
 				<>
 					<h2 className="font-title text-2xl">{step.node.title}</h2>
-					<p className="text-sm text-muted-foreground">This step needs a {requested} runner. This build supports {codingLanguages().map(language => language.label).join(" and ")}.</p>
+					<p className="text-sm text-muted-foreground">This step needs a {requested} runner. This build supports {executableLanguageNames()}.</p>
 				</>
 			)}
 		</div>

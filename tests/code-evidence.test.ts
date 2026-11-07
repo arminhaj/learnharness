@@ -82,15 +82,16 @@ test("missing toolchains and unsupported languages are explicit and never throw"
 	assert.equal(missing.status, "unavailable");
 	assert.equal(missing.detail!.evidence.phases[0]!.status, "unavailable");
 	assert.equal(codeStatusLabel(missing), "Compiler unavailable");
-	const unsupported = await runCodeExercise({ ...base, source: solved, exercise: { ...CODE_DEMO_EXERCISE, language: "rust" } });
+	const unsupported = await runCodeExercise({ ...base, source: solved, exercise: { ...CODE_DEMO_EXERCISE, language: "javascript" } });
 	assert.equal(unsupported.status, "unavailable");
-	assert.match(unsupported.stderr, /No local runner for rust/);
-	assert.equal(providerForLanguage("rust"), undefined);
+	assert.match(unsupported.stderr, /No local runner for javascript/);
+	assert.equal(providerForLanguage("javascript"), undefined);
+	assert.equal(providerForLanguage("rs")?.profileId, "rust2021-stdio");
 });
 
 test("readiness is a serializable view, separate from parsing", async () => {
 	const readiness = await codeProfileReadiness();
-	assert.deepEqual(readiness.map(item => item.profileId), ["cpp20-stdio", "python3-stdio"]);
+	assert.deepEqual(readiness.map(item => item.profileId), ["cpp20-stdio", "python3-stdio", "rust2021-stdio"]);
 	assert.deepEqual(JSON.parse(JSON.stringify(readiness)), readiness);
 	assert.equal(readiness[0]!.state === "ready", compilerAvailable);
 	assert.ok(readiness[1]!.state === "ready" || /3\.11/.test(readiness[1]!.message ?? ""));

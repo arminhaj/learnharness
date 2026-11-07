@@ -18,11 +18,9 @@ const examples: Record<CodingLanguageId, CodingLanguage> = {
 		],
 	},
 	rust: {
-		label: "Rust",
+		label: "Rust 2021",
 		exercises: [
 			{ href: "/code-demo/rust", title: "Add two integers" },
-			{ href: "/code-demo/api/rust", title: "Borrow a book" },
-			{ href: "/code-demo/axum", title: "Build an HTTP handler" },
 		],
 	},
 };

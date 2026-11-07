@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { PATHS } from "../../config.ts";
-import { CODE_DEMO_EXERCISE, PYTHON_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExercise, type CodeRunResult, type CodeWorkspaceView } from "../core/code-workspace.ts";
+import { CODE_DEMO_EXERCISE, PYTHON_DEMO_EXERCISE, RUST_DEMO_EXERCISE, CODE_SOURCE_LIMIT, parseCodeExercise, type CodeExercise, type CodeRunResult, type CodeWorkspaceView } from "../core/code-workspace.ts";
 import { activeProblemOf, danglingQuestionOf, type LhMessage } from "../core/native-messages.ts";
 import { askInputProblems } from "../core/question-core.ts";
 import { chatStore } from "../store/chats.ts";
@@ -121,6 +121,7 @@ function activeExercise(chatId: string, problemCallId: string): { exercise: Work
 	}
 	if (chatId === "demo" && problemCallId === "cpp-sum") return { exercise: CODE_DEMO_EXERCISE, occurrence: "" };
 	if (chatId === "demo" && problemCallId === "python-sum") return { exercise: PYTHON_DEMO_EXERCISE, occurrence: "" };
+	if (chatId === "demo" && problemCallId === "rust-sum") return { exercise: RUST_DEMO_EXERCISE, occurrence: "" };
 	const chat = chatStore.getChat(chatId);
 	if (!chat) throw new CodeWorkspaceError("This chat no longer exists.", 404);
 	return activeCodeExerciseFromRecord(chat, problemCallId);

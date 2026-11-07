@@ -116,10 +116,10 @@ test("generated Python projects accept clean relative .py modules and keep the e
 	assert.equal(parseCodingDraft(draft([{ path: "x.hpp", source: "int x;\n" }]), { mode: "project", language: "cpp" }).supportFiles.length, 1);
 });
 
-test("saved Python sessions parse regardless of installed runtimes; Rust stays unexecutable", () => {
-	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp", "python"]);
+test("saved Python sessions parse regardless of installed runtimes; unknown languages stay unexecutable", () => {
+	assert.deepEqual(codingLanguages().map(language => language.id), ["cpp", "python", "rust"]);
 	assert.equal(parseCodingGoal({ mode: "problem", language: "python", goal: "g" }).language, "python");
-	assert.throws(() => parseCodingGoal({ mode: "problem", language: "rust", goal: "g" }), /local runner/);
+	assert.throws(() => parseCodingGoal({ mode: "problem", language: "javascript", goal: "g" }), /local runner/);
 	const original = process.env.PATH;
 	process.env.PATH = "/nonexistent";
 	try { assert.equal(parseCodingDraft(draft([]), { mode: "problem", language: "python" }).exercise.language, "python"); }
@@ -130,7 +130,7 @@ test("generation and prompt text condition requirements on the selected language
 	const python = codingInstructions("python");
 	assert.match(python, /solution\.py/);
 	assert.match(python, /Python 3\.11\+/);
-	assert.doesNotMatch(python, /solution\.cpp|C\+\+|Rust|Cargo|compile_flags/i);
+	assert.doesNotMatch(python, /solution\.cpp|solution\.rs|C\+\+|Rust|Cargo|compile_flags/i);
 	const cpp = codingInstructions("cpp");
 	assert.match(cpp, /solution\.cpp/);
 	assert.doesNotMatch(cpp, /solution\.py|Python/);

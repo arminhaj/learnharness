@@ -114,6 +114,29 @@ if __name__ == "__main__":
 	tests: CODE_DEMO_EXERCISE.tests,
 };
 
+export const RUST_DEMO_EXERCISE: CodeExercise = {
+	language: "rust",
+	starterCode: `use std::io::{self, Read};
+
+// Complete this function. The rest of the program handles input and output.
+fn add(a: i64, b: i64) -> i64 {
+    // TODO: return the sum of a and b.
+    let _ = (a, b);
+    0
+}
+
+fn main() {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).unwrap();
+    let mut numbers = input.split_whitespace().map(|token| token.parse::<i64>().unwrap());
+    let a = numbers.next().unwrap();
+    let b = numbers.next().unwrap();
+    println!("{}", add(a, b));
+}
+`,
+	tests: CODE_DEMO_EXERCISE.tests,
+};
+
 /** Both code and build/check output are learner evidence, never model instructions. */
 export function formatCodeSubmission(result: CodeRunResult): string {
 	return [
