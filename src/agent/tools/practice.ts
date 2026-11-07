@@ -17,7 +17,8 @@
 import { Type, type Static } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { resolveTargetId } from "../../core/chains.ts";
-import { CODE_SOURCE_LIMIT, CODE_TEST_LIMIT, CODE_TEST_TEXT_LIMIT, parseCodeExercise } from "../../core/code-workspace.ts";
+import { parseCodeExercise } from "../../core/code-workspace.ts";
+import { codeExerciseSchema } from "../../core/code-exercise-schema.ts";
 import { readTool } from "./read.ts";
 import { lsTool } from "./ls.ts";
 import { findTool } from "./find.ts";
@@ -72,30 +73,7 @@ export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 
 // ─── problem: the pose ───────────────────────────────────────────────────────
 
-const codeExerciseInput = Type.Object({
-	language: Type.String({
-		minLength: 1,
-		maxLength: 32,
-		description: "Language adapter id. Currently only cpp (C++20) is supported; omit codeExercise for other languages.",
-	}),
-	starterCode: Type.String({
-		minLength: 1,
-		maxLength: CODE_SOURCE_LIMIT,
-		description:
-			"Complete standalone C++20 source, at most 64 KiB UTF-8: includes, an unfinished function with a " +
-			"compiling placeholder body, and main with stdin/stdout wiring. Compiles before the learner edits it, " +
-			"but must fail at least one test until solved. Never include the worked solution or external dependencies.",
-	}),
-	tests: Type.Array(Type.Object({
-		name: Type.String({ minLength: 1, maxLength: 120, description: "Short description of the behavior this case checks." }),
-		stdin: Type.String({ maxLength: CODE_TEST_TEXT_LIMIT, description: "Complete standard input for one run, at most 8 KiB UTF-8; use an empty string when no input is needed." }),
-		expectedStdout: Type.String({ maxLength: CODE_TEST_TEXT_LIMIT, description: "Expected standard output for this input, at most 8 KiB UTF-8." }),
-	}, { additionalProperties: false }), {
-		minItems: 1,
-		maxItems: CODE_TEST_LIMIT,
-		description: "One to twelve deterministic correctness checks, including relevant edge cases. Compilation alone does not establish correctness.",
-	}),
-}, { additionalProperties: false });
+const codeExerciseInput = codeExerciseSchema({ languageInput: "tolerant", closed: true });
 
 export const problemInputObject = Type.Object({
 	statement: Type.String({

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { PATHS } from "../../config.ts";
 import { CODING_CONTEXT_BYTE_LIMIT, CODING_CONTEXT_FILE_LIMIT, CODING_GOAL_LIMIT, CODING_LANGUAGES, type CodingGoal, type CodingProjectFile, type CodingSession, type CodingSessionSummary, type TeachingCodingStep } from "../core/coding-session.ts";
 import { CODE_SOURCE_LIMIT, parseCodeExercise } from "../core/code-workspace.ts";
-import { codeFilename } from "./code-runner.ts";
+import { executableProfileFor } from "../core/code-language-catalog.ts";
 import { chatStore } from "../store/chats.ts";
 
 const sessionDirectory = path.join(PATHS.data, "coding-sessions");
@@ -33,7 +33,7 @@ export function teachingCodingSessionId(step: TeachingCodingStep): string {
 }
 
 export function codingLanguages() {
-	return CODING_LANGUAGES.filter(({ id }) => codeFilename(id) !== "solution.txt");
+	return CODING_LANGUAGES.filter(({ id }) => executableProfileFor(id) !== undefined);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -83,7 +83,7 @@ export function parseCodingDraft(value: unknown, goal: Pick<CodingGoal, "mode" |
 	if (!Array.isArray(input.supportFiles) || input.supportFiles.length > 8 || (goal.mode === "problem" && input.supportFiles.length > 0)) {
 		throw new Error("A project may include up to eight supporting files. A problem uses one file.");
 	}
-	const names = new Set([codeFilename(goal.language)]);
+	const names = new Set([executableProfileFor(goal.language)?.entryFilename ?? "solution.txt"]);
 	const extension = goal.language === "rust" ? /\.rs$/ : /\.(?:cpp|h|hpp)$/;
 	for (const value of input.supportFiles) {
 		const file = object(value);

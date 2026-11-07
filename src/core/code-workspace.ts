@@ -1,3 +1,6 @@
+import { executableProfileFor } from "./code-language-catalog.ts";
+import type { CodeRunDetail } from "./code-activity.ts";
+
 /** Portable exercise data. Execution and editor access live in the server layer. */
 export interface CodeExercise {
 	language: string;
@@ -27,6 +30,8 @@ export interface CodeRunResult {
 	stderr: string;
 	tests: CodeTestResult[];
 	createdAt: string;
+	/** Versioned evidence for new runs; absent on historical saved runs. */
+	detail?: CodeRunDetail;
 }
 export type CodeCheckResult = CodeRunResult;
 export interface CodeWorkspaceView {
@@ -48,8 +53,8 @@ const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 export function parseCodeExercise(value: unknown): CodeExercise {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A code exercise must be an object.");
 	const raw = value as Record<string, unknown>;
-	const language = typeof raw.language === "string" ? raw.language.trim().toLowerCase() : "";
-	if (!["cpp", "c++", "cxx"].includes(language)) throw new Error("Code checking currently supports C++ only. Use language 'cpp'.");
+	const profile = executableProfileFor(raw.language);
+	if (!profile) throw new Error("Code checking currently supports C++ only. Use language 'cpp'.");
 	if (typeof raw.starterCode !== "string" || !raw.starterCode.trim() || bytes(raw.starterCode) > CODE_SOURCE_LIMIT) throw new Error("Provide a complete starter file of at most 64 KiB.");
 	if (!Array.isArray(raw.tests) || raw.tests.length < 1 || raw.tests.length > CODE_TEST_LIMIT) throw new Error("Provide between 1 and 12 input/output tests.");
 	const tests = raw.tests.map((test: unknown) => {
@@ -59,7 +64,7 @@ export function parseCodeExercise(value: unknown): CodeExercise {
 		if (typeof row.stdin !== "string" || typeof row.expectedStdout !== "string" || bytes(row.stdin) > CODE_TEST_TEXT_LIMIT || bytes(row.expectedStdout) > CODE_TEST_TEXT_LIMIT) throw new Error("Each test needs stdin and expectedStdout strings of at most 8 KiB.");
 		return { name: row.name.trim(), stdin: row.stdin, expectedStdout: row.expectedStdout };
 	});
-	return { language: "cpp", starterCode: raw.starterCode, tests };
+	return { language: profile.language, starterCode: raw.starterCode, tests };
 }
 
 export const CODE_DEMO_EXERCISE: CodeExercise = {

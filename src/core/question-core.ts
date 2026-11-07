@@ -21,6 +21,7 @@ import { Type, type Static } from "typebox";
 import { stripModelValueDebris } from "./value-debris.ts";
 import { moleculeMarkdown, type MoleculeDocument } from "./chemistry.ts";
 import { parseCodeExercise, type CodeRunResult } from "./code-workspace.ts";
+import { codeExerciseSchema } from "./code-exercise-schema.ts";
 
 // ─── shared types ───────────────────────────────────────────────────────────
 
@@ -406,15 +407,11 @@ export const askInputSchema = Type.Object({
 		Type.Boolean({ description: "Set to true to allow multiple answers to the same question." }),
 	),
 	nodeId: Type.Optional(Type.String({ minLength: 1, description: "For a Teaching codeExercise, the current lesson-plan node ID. Use its exact plan_init slug to keep coding attached to the lesson. Omit for ordinary preference questions." })),
-	codeExercise: Type.Optional(Type.Object({
-		language: Type.Literal("cpp"),
-		starterCode: Type.String({ description: "A complete compilable C++20 program with an unfinished function and supplied input/output boilerplate. Maximum 64 KiB. Keep the solution out of the starter." }),
-		tests: Type.Array(Type.Object({
-			name: Type.String({ minLength: 1, maxLength: 120 }),
-			stdin: Type.String({ description: "Test standard input, at most 8 KiB." }),
-			expectedStdout: Type.String({ description: "Exact expected standard output, at most 8 KiB. Checks normalize CRLF and final newlines only." }),
-		}), { minItems: 1, maxItems: 12 }),
-	}, { description: "Optional native coding workspace for this free-response question. Omit options and multiSelect. The learner can edit, compile, test, and submit saved code with compiler evidence while staying in Teaching." })),
+	codeExercise: Type.Optional(codeExerciseSchema({
+		languageInput: "canonical",
+		closed: false,
+		description: "Optional native coding workspace for this free-response question. Omit options and multiSelect. The learner can edit, compile, test, and submit saved code with compiler evidence while staying in Teaching.",
+	})),
 });
 
 /** Shared authoring/display validation for a free-response coding question. */
