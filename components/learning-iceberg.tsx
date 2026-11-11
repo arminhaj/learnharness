@@ -38,7 +38,7 @@ export function LearningProgressLegend({ className }: { className?: string }) {
 export interface LearningIcebergProps {
 	learning: LearningGraphSnapshot;
 	selectedId: string | null;
-	onSelect: (id: string) => void;
+	onSelect: (id: string, clickCount?: number) => void;
 	visibleIds?: ReadonlySet<string>;
 	subject?: Pick<LearningSubject, "id" | "name">;
 	className?: string;
@@ -102,7 +102,7 @@ export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, su
 		<div data-testid="learning-iceberg" className={cn("lh-no-drag overflow-y-auto overscroll-contain bg-background px-4 pb-8 pt-4 sm:px-6", className)}>
 			<div className="mb-6 max-w-2xl">
 				<h2 className="font-title text-2xl">{subject?.name ?? "The shape of the subject"}</h2>
-				<p className="mt-2 font-prose text-base leading-relaxed text-muted-foreground">Concepts learned together, from foundations toward deeper applications. Your understanding sits on top of the map.</p>
+				<p className="mt-2 font-prose text-base leading-relaxed text-muted-foreground">Concepts learned together, from foundations toward deeper applications. Double-click a concept to explore its levels.</p>
 				{subject && subject.id !== ALL_SUBJECTS_SCOPE.id && <p className="mt-2 text-xs text-muted-foreground">{subject.id === LEARNING_SUBJECT_UNASSIGNED_ID ? "These concepts have no subject assignment yet. Set subjects in their details." : `Showing concepts assigned to ${subject.name}. Change a concept’s subjects in its details.`}</p>}
 				<LearningProgressLegend className="mt-4" />
 				<p className="mt-3 text-xs text-muted-foreground">Ready means the recorded prerequisites are comfortable, including prerequisites in other subjects. It does not mark the next concept as understood.</p>
@@ -136,7 +136,7 @@ export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, su
 										<ul className="mt-3 space-y-1">
 											{members.filter((node) => !visibleIds || visibleIds.has(node.id)).map((node) => (
 												<li key={node.id}>
-													<button type="button" aria-pressed={selectedId === node.id} onClick={() => onSelect(node.id)} className={cn("flex min-h-11 w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent", selectedId === node.id && "bg-accent")}>
+												<button type="button" aria-pressed={selectedId === node.id} onClick={(event) => onSelect(node.id, event.detail)} className={cn("flex min-h-11 w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent", selectedId === node.id && "bg-accent")}>
 														<LearningProgressDot progress={node.progress} />
 														<span className="min-w-0 flex-1 break-words font-prose text-base">{node.name}<span className="sr-only">, {LEARNING_PROGRESS_LABELS[node.progress]}</span></span>
 														{node.ready && node.progress !== "comfortable" && <span className="shrink-0 text-xs text-muted-foreground">Ready</span>}
@@ -148,7 +148,7 @@ export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, su
 										{unlocked.length > 0 && (
 											<div className="mt-3 border-t border-border/50 pt-3">
 												<p className="text-xs text-muted-foreground">Comfort with this group unlocks</p>
-												{unlocked.map((node) => <button key={node.id} type="button" onClick={() => onSelect(node.id)} className="mt-1 flex min-h-9 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />{node.name}</button>)}
+											{unlocked.map((node) => <button key={node.id} type="button" onClick={(event) => onSelect(node.id, event.detail)} className="mt-1 flex min-h-9 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />{node.name}</button>)}
 											</div>
 										)}
 									</article>
@@ -161,7 +161,7 @@ export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, su
 			{ungrouped.length > 0 && <section aria-label="Not grouped yet" className="mt-6 border-t border-dashed border-border/70 pt-4">
 				<h3 className="text-xs uppercase tracking-wider text-muted-foreground">Not grouped yet</h3>
 				<p className="mt-2 font-prose text-sm text-muted-foreground">These concepts are on your map. A later update can place them alongside related concepts.</p>
-				<ul className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-2">{ungrouped.map((node) => <li key={node.id}><button type="button" onClick={() => onSelect(node.id)} aria-pressed={selectedId === node.id} className={cn("flex min-h-11 w-full items-center gap-3 rounded-md border border-border/50 px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent", selectedId === node.id && "bg-accent")}><LearningProgressDot progress={node.progress} /><span className="font-prose text-base">{node.name}<span className="sr-only">, {LEARNING_PROGRESS_LABELS[node.progress]}</span></span></button></li>)}</ul>
+				<ul className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-2">{ungrouped.map((node) => <li key={node.id}><button type="button" onClick={(event) => onSelect(node.id, event.detail)} aria-pressed={selectedId === node.id} className={cn("flex min-h-11 w-full items-center gap-3 rounded-md border border-border/50 px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent", selectedId === node.id && "bg-accent")}><LearningProgressDot progress={node.progress} /><span className="font-prose text-base">{node.name}<span className="sr-only">, {LEARNING_PROGRESS_LABELS[node.progress]}</span></span></button></li>)}</ul>
 			</section>}
 			{learning.cycles.length > 0 && <p role="status" className="mt-6 rounded-lg border border-dashed p-3 text-xs leading-relaxed text-muted-foreground">Some prerequisites form a loop. These concepts share a depth until you correct the connections in their details.</p>}
 		</div>

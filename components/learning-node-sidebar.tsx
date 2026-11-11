@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { ArrowUpRightIcon, BookOpenIcon, DumbbellIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
+import { ArrowUpRightIcon, BookOpenIcon, DumbbellIcon, FocusIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { normalizeLearningSubjects, propositionSessionHref } from "@/src/core";
 import type { ProvenancePoint } from "@/src/core";
@@ -29,6 +29,7 @@ export interface LearningNodeSidebarProps {
 	learning: LearningGraphSnapshot;
 	onClose: () => void;
 	onSelect: (id: string, subjectId?: string) => void;
+	onFocus?: () => void;
 	onSave: (patch: LearningNodePatch) => Promise<void>;
 	onPrerequisiteChange: (patch: LearningPrerequisitePatch) => Promise<void>;
 	onStartSession?: (mode: "teach" | "practice") => Promise<void>;
@@ -112,7 +113,7 @@ function displayDate(value: string | null): string {
 
 /** The parent keys this panel by node id; background assessments never replace
  * a dirty metadata draft. All writes finish before the panel reports success. */
-export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave, onPrerequisiteChange, onStartSession, sessionStarting = null, sessionError = null, sessions = {}, fileSources = {}, mapSubjectId, mapSubjects = [], className }: LearningNodeSidebarProps) {
+export function LearningNodeSidebar({ node, learning, onClose, onSelect, onFocus, onSave, onPrerequisiteChange, onStartSession, sessionStarting = null, sessionError = null, sessions = {}, fileSources = {}, mapSubjectId, mapSubjects = [], className }: LearningNodeSidebarProps) {
 	const titleId = useId();
 	const closeRef = useRef<HTMLButtonElement>(null);
 	const [name, setName] = useState(node.name);
@@ -204,6 +205,7 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 			</header>
 			<div className="min-h-0 overflow-y-auto overscroll-contain px-4 pb-2">
 				<p className="py-4 font-prose text-base leading-relaxed text-muted-foreground">{node.statement}</p>
+				{onFocus && <button type="button" onClick={onFocus} disabled={locked || unsavedSessionEdits} className={cn(actionClass, "mb-3 border border-border/70")}><FocusIcon aria-hidden="true" className="size-4" />Focus here</button>}
 				{node.future && <p className="mb-4 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">On your subject map. Not encountered in a conversation yet.</p>}
 				<Section title="Your understanding">
 					<div className="flex items-center gap-3">

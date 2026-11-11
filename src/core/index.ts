@@ -19,6 +19,7 @@ export * from "./contracts.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
 export * from "./learning-graph.ts";
+export * from "./learning-focus.ts";
 export * from "./learning-subjects.ts";
 export * from "./learning-session.ts";
 export * from "./learning-history.ts";
