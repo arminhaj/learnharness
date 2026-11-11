@@ -45,12 +45,16 @@ export interface LearningIcebergProps {
 }
 
 const SUBJECT_STORAGE_KEY = "lh.graph.subject.v1";
+/** A browsing scope outside the set of assignable learning subjects. */
+export const ALL_SUBJECTS_SCOPE = { id: "all-subjects", name: "All subjects" } as const;
 
 /** Remember the initial fallback too: a newly discovered subject must not
  * switch the open map. An empty refresh does not erase the user's choice. */
 export function useLearningSubjectSelection(subjects: readonly { id: string }[]) {
 	const [subjectId, setSubjectId] = useState<string | null | undefined>();
-	const activeSubjectId = subjects.find((subject) => subject.id === subjectId)?.id ?? subjects[0]?.id ?? null;
+	const activeSubjectId = subjects.length && subjectId === ALL_SUBJECTS_SCOPE.id
+		? subjectId
+		: subjects.find((subject) => subject.id === subjectId)?.id ?? subjects[0]?.id ?? null;
 	useEffect(() => {
 		try {
 			setSubjectId(window.localStorage.getItem(SUBJECT_STORAGE_KEY));
@@ -70,15 +74,17 @@ export function useLearningSubjectSelection(subjects: readonly { id: string }[])
 	return [activeSubjectId, setSubjectId] as const;
 }
 
-export function LearningSubjectSelect({ subjects, subjectId, onChange }: {
+export function LearningSubjectSelect({ subjects, subjectId, totalConcepts, onChange }: {
 	subjects: readonly LearningSubject[];
 	subjectId: string | null;
+	totalConcepts: number;
 	onChange: (id: string) => void;
 }) {
 	return (
 		<label className="flex min-w-0 max-w-56 items-center gap-2 rounded-xl border bg-card/95 p-1 pl-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
 			Subject
 			<select value={subjectId ?? ""} onChange={(event) => onChange(event.target.value)} className="min-h-8 min-w-0 truncate rounded-lg bg-transparent px-2 text-foreground focus-visible:outline-ring">
+				<option value={ALL_SUBJECTS_SCOPE.id}>{ALL_SUBJECTS_SCOPE.name} · {totalConcepts}</option>
 				{subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name} · {subject.nodeIds.length}</option>)}
 			</select>
 		</label>
@@ -97,7 +103,7 @@ export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, su
 			<div className="mb-6 max-w-2xl">
 				<h2 className="font-title text-2xl">{subject?.name ?? "The shape of the subject"}</h2>
 				<p className="mt-2 font-prose text-base leading-relaxed text-muted-foreground">Concepts learned together, from foundations toward deeper applications. Your understanding sits on top of the map.</p>
-				{subject && <p className="mt-2 text-xs text-muted-foreground">{subject.id === LEARNING_SUBJECT_UNASSIGNED_ID ? "These concepts have no subject assignment yet. Set subjects in their details." : `Showing concepts assigned to ${subject.name}. Change a concept’s subjects in its details.`}</p>}
+				{subject && subject.id !== ALL_SUBJECTS_SCOPE.id && <p className="mt-2 text-xs text-muted-foreground">{subject.id === LEARNING_SUBJECT_UNASSIGNED_ID ? "These concepts have no subject assignment yet. Set subjects in their details." : `Showing concepts assigned to ${subject.name}. Change a concept’s subjects in its details.`}</p>}
 				<LearningProgressLegend className="mt-4" />
 				<p className="mt-3 text-xs text-muted-foreground">Ready means the recorded prerequisites are comfortable, including prerequisites in other subjects. It does not mark the next concept as understood.</p>
 			</div>

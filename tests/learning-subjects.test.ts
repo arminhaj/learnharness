@@ -111,7 +111,7 @@ function mixedSnapshot(): LearningGraphSnapshot {
 }
 
 describe("subject-scoped curriculum projections", () => {
-	it("lists stable explicit subjects, shared memberships, and unassigned/ungrouped concepts without an All bucket", () => {
+	it("lists assignable subjects, shared memberships, and unassigned/ungrouped concepts", () => {
 		const snapshot = mixedSnapshot();
 		const subjects = learningSubjects(snapshot);
 		assert.deepEqual(subjects.map(({ id, name }) => ({ id, name })), [{ id: "subject:c%2B%2B", name: "C++" }, { id: "subject:mechanics", name: "Mechanics" }, { id: "unassigned", name: "Unassigned" }]);

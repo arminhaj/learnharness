@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { LearningNodeSidebar, LearningSessionActions, learningMetadataPatch } from "../components/learning-node-sidebar.tsx";
-import { LearningIceberg, LearningSubjectSelect, useLearningSubjectSelection } from "../components/learning-iceberg.tsx";
+import { ALL_SUBJECTS_SCOPE, LearningIceberg, LearningSubjectSelect, useLearningSubjectSelection } from "../components/learning-iceberg.tsx";
 import { learningSubjectId, learningSubjects, scopeLearningGraphToSubject } from "../src/core/learning-subjects.ts";
 import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch } from "../src/core/contracts/learning-graph.ts";
 
@@ -185,24 +185,32 @@ describe("subject-scoped learning views", () => {
 	const snapshot: LearningGraphSnapshot = {
 		...learning,
 		nodes: [cpp, cppUngrouped, mechanics, mechanicsUngrouped, shared, unassigned],
-		prerequisites: [],
+		prerequisites: [{ id: "external-blocker", from: mechanics.id, to: cpp.id, explanation: "Review this foundation first.", origin: "automatic", provenance: [] }],
 		groups: [
 			{ ...learning.groups[0]!, id: "g_cpp", name: "C++ fundamentals", members: [cpp.id, shared.id], unlocks: [] },
 			{ ...learning.groups[1]!, id: "g_mechanics", name: "Mechanics foundations", members: [mechanics.id, shared.id], unlocks: [] },
 		],
-		groupEdges: [],
+		groupEdges: [{ from: "g_mechanics", to: "g_cpp", prerequisiteIds: ["external-blocker"] }],
 	};
 	const subjects = learningSubjects(snapshot);
 	const renderSubject = (label: string, visibleIds?: ReadonlySet<string>) => {
 		const id = label === "Unassigned" ? "unassigned" : learningSubjectId(label);
 		return renderToStaticMarkup(<LearningIceberg learning={scopeLearningGraphToSubject(snapshot, id)} selectedId={null} onSelect={() => {}} subject={subjects.find((subject) => subject.id === id)} visibleIds={visibleIds} />);
 	};
-	it("uses an accessible explicit subject selector without an All bucket", () => {
-		const html = renderToStaticMarkup(<LearningSubjectSelect subjects={subjects} subjectId={learningSubjectId("C++")} onChange={() => {}} />);
+	it("offers All subjects with the unique concept count while a named subject remains selected", () => {
+		const html = renderToStaticMarkup(<LearningSubjectSelect subjects={subjects} subjectId={learningSubjectId("C++")} totalConcepts={snapshot.nodes.length} onChange={() => {}} />);
 		assert.match(html, />Subject<select/);
 		assert.match(html, /value="subject:c%2B%2B" selected=""/);
 		assert.match(html, /<option value="unassigned">Unassigned · 1<\/option>/);
-		assert.doesNotMatch(html, /<option[^>]*>All/);
+		assert.match(html, /<option value="all-subjects">All subjects · 6<\/option>/);
+	});
+	it("shows groups across subjects, cross-subject connections, and unassigned concepts in the full Iceberg", () => {
+		const html = renderToStaticMarkup(<LearningIceberg learning={snapshot} selectedId={null} onSelect={() => {}} subject={ALL_SUBJECTS_SCOPE} />);
+		assert.match(html, />All subjects<\/h2>/);
+		assert.match(html, /Pointer ownership/);
+		assert.match(html, /Stationary action/);
+		assert.match(html, /Unsorted concept/);
+		assert.match(html, /Builds on Mechanics foundations/);
 	});
 	it("keeps grouped and ungrouped concept rows within the selected subject", () => {
 		const cppHtml = renderSubject("C++");
@@ -268,16 +276,17 @@ describe("subject-scoped learning views", () => {
 		const root = createRoot(host);
 		function Selection({ ready }: { ready: boolean }) {
 			const [selected, setSubject] = useLearningSubjectSelection(ready ? subjects : []);
-			return <button type="button" onClick={() => setSubject(learningSubjectId("Mechanics"))}>{selected ?? "empty"}</button>;
+			return <button type="button" onClick={() => setSubject(ALL_SUBJECTS_SCOPE.id)}>{selected ?? "empty"}</button>;
 		}
 		try {
 			await act(async () => root.render(<Selection key="first" ready />));
+			assert.equal(host.textContent, "subject:c%2B%2B");
 			await act(async () => { host.querySelector("button")!.click(); });
-			assert.equal(host.textContent, "subject:mechanics");
+			assert.equal(host.textContent, ALL_SUBJECTS_SCOPE.id);
 			await act(async () => root.render(<Selection key="second" ready={false} />));
 			assert.equal(host.textContent, "empty");
 			await act(async () => root.render(<Selection key="second" ready />));
-			assert.equal(host.textContent, "subject:mechanics");
+			assert.equal(host.textContent, ALL_SUBJECTS_SCOPE.id);
 		} finally {
 			await act(async () => root.unmount());
 			Object.assign(globalThis, previous);
@@ -297,14 +306,19 @@ describe("subject-scoped learning views", () => {
 			{ id: "internal-prerequisite", from: shared.id, to: cpp.id, explanation: "A shared prerequisite.", origin: "automatic" as const, provenance: [] },
 		] };
 		const selections: Array<[string, string | undefined]> = [];
+		const onSelect = (id: string, subjectId?: string) => { selections.push([id, subjectId]); };
 		try {
-			await act(async () => root.render(<LearningNodeSidebar node={target} learning={globalMap} {...actions} mapSubjects={subjects} mapSubjectId={learningSubjectId("C++")} onSelect={(id, subjectId) => { selections.push([id, subjectId]); }} />));
+			await act(async () => root.render(<LearningNodeSidebar node={target} learning={globalMap} {...actions} mapSubjects={subjects} mapSubjectId={learningSubjectId("C++")} onSelect={onSelect} />));
 			assert.match(host.textContent ?? "", /1 prerequisite needs more understanding/);
 			assert.match(host.textContent ?? "", /Review this foundation first/);
 			await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Open Stationary action in Mechanics"]')!.click(); });
 			const sharedLink = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes(shared.name));
 			await act(async () => { sharedLink!.click(); });
-			assert.deepEqual(selections, [[mechanics.id, learningSubjectId("Mechanics")], [shared.id, undefined]]);
+			await act(async () => root.render(<LearningNodeSidebar node={target} learning={globalMap} {...actions} mapSubjects={subjects} onSelect={onSelect} />));
+			assert.equal(host.querySelector('[aria-label="Open Stationary action in Mechanics"]'), null);
+			const globalLink = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes(mechanics.name));
+			await act(async () => { globalLink!.click(); });
+			assert.deepEqual(selections, [[mechanics.id, learningSubjectId("Mechanics")], [shared.id, undefined], [mechanics.id, undefined]]);
 		} finally {
 			await act(async () => root.unmount());
 			Object.assign(globalThis, previous);

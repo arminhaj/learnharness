@@ -79,7 +79,7 @@ import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { Hint } from "@/components/ui/hint";
 import { useAppearance } from "@/components/settings/appearance";
 import { LearningNodeSidebar } from "./learning-node-sidebar";
-import { LearningIceberg, LearningProgressLegend, LearningSubjectSelect, useLearningSubjectSelection } from "./learning-iceberg";
+import { ALL_SUBJECTS_SCOPE, LearningIceberg, LearningProgressLegend, LearningSubjectSelect, useLearningSubjectSelection } from "./learning-iceberg";
 import {
 	ARROW_LENGTH_LADDER,
 	CHARGE_RANGE,
@@ -1000,8 +1000,9 @@ export function GraphView({
 	const learning = useMemo(() => snapshot?.learning ?? buildLearningGraphSnapshot(snapshot?.propositions ?? []), [snapshot]);
 	const subjects = useMemo(() => learningSubjects(learning), [learning]);
 	const [activeSubjectId, setSubjectId] = useLearningSubjectSelection(subjects);
+	const showAllSubjects = activeSubjectId === ALL_SUBJECTS_SCOPE.id;
 	const activeSubject = subjects.find((subject) => subject.id === activeSubjectId);
-	const scopedLearning = useMemo(() => scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId]);
+	const scopedLearning = useMemo(() => showAllSubjects ? learning : scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId, showAllSubjects]);
 	const scopedLearningRef = useRef(scopedLearning);
 	scopedLearningRef.current = scopedLearning;
 	useEffect(() => { onSubjectsChange?.(subjects); }, [onSubjectsChange, subjects]);
@@ -1601,10 +1602,10 @@ export function GraphView({
 					)}
 				</div>
 			)}
-			{!isEmpty && mapView === "iceberg" && <LearningIceberg learning={scopedLearning} selectedId={canonicalSelectedId} onSelect={setSelectedId} visibleIds={visibleIds} subject={activeSubject} className={`absolute inset-x-0 top-36 bottom-40 overflow-y-auto px-4 py-4 sm:top-28 ${selected ? "md:pr-[24rem]" : ""}`} />}
+			{!isEmpty && mapView === "iceberg" && <LearningIceberg learning={scopedLearning} selectedId={canonicalSelectedId} onSelect={setSelectedId} visibleIds={visibleIds} subject={showAllSubjects ? ALL_SUBJECTS_SCOPE : activeSubject} className={`absolute inset-x-0 top-36 bottom-40 overflow-y-auto px-4 py-4 sm:top-28 ${selected ? "md:pr-[24rem]" : ""}`} />}
 
 			<div className="lh-no-drag absolute inset-x-3 top-14 z-10 flex flex-wrap items-start gap-2">
-				{subjects.length > 0 && <LearningSubjectSelect subjects={subjects} subjectId={activeSubjectId} onChange={changeSubject} />}
+				{subjects.length > 0 && <LearningSubjectSelect subjects={subjects} subjectId={activeSubjectId} totalConcepts={learning.nodes.length} onChange={changeSubject} />}
 				<div className="flex rounded-xl border bg-card/95 p-1 shadow-sm backdrop-blur" aria-label="Map view">
 					{(["prerequisites", "iceberg"] as const).map((view) => (
 						<button key={view} type="button" aria-pressed={mapView === view} onClick={() => { setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
@@ -1621,7 +1622,7 @@ export function GraphView({
 				<div className="lh-no-drag absolute left-3 top-36 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border bg-card/95 p-3 text-xs shadow-sm backdrop-blur sm:top-28">
 					<LearningProgressLegend />
 					<p className="mt-2 text-[11px] text-muted-foreground">Arrows mean learning prerequisites. Dashed rings mean ready to learn.</p>
-					{scopedLearning.prerequisites.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">No prerequisite connections within this subject.</p>}
+					{scopedLearning.prerequisites.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">{showAllSubjects ? "No prerequisite connections recorded." : "No prerequisite connections within this subject."}</p>}
 					<details className="mt-2" open={query.trim() ? true : undefined}>
 						<summary className="cursor-pointer py-1 text-muted-foreground">{query.trim() ? `${visibleIds.size} matching concepts` : `Browse ${scopedLearning.nodes.length} concepts`}</summary>
 						<div className="mt-1 max-h-48 overflow-auto" aria-label="Concepts">
@@ -1749,13 +1750,13 @@ export function GraphView({
 					learning={learning}
 					sessions={snapshot?.sessions}
 					fileSources={snapshot?.fileSources}
-					mapSubjectId={activeSubjectId}
+					mapSubjectId={activeSubject?.id}
 					mapSubjects={subjects}
 					onClose={() => setSelectedId(null)}
 					onSelect={selectRelatedConcept}
 					onSave={(patch) => patchLearning(`/api/graph/nodes/${encodeURIComponent(selected.id)}`, patch)}
 					onPrerequisiteChange={(patch) => patchLearning("/api/graph/prerequisites", patch)}
-					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode, activeSubjectId ?? undefined) : undefined}
+					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode, activeSubject?.id) : undefined}
 					sessionStarting={conceptStarting}
 					className="lh-no-drag absolute inset-x-2 bottom-36 z-20 max-h-[52%] md:inset-x-auto md:right-3 md:top-28 md:bottom-40 md:max-h-none md:w-[22rem]"
 				/>
