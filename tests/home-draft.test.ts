@@ -20,13 +20,18 @@ const draft: HomeDraft = {
 const fail = () => { throw new Error("synthetic storage failure"); };
 
 describe("home draft handoff", () => {
-	it("resnapshots text, mode and picks edited during a deferred session creation", async () => {
+	it("resnapshots text, mode, picks and subject edited during a deferred session creation", async () => {
 		const { storage } = fixture();
 		let current = draft;
 		let release!: (destination: string) => void;
 		const destination = new Promise<string>((resolve) => { release = resolve; });
 		const handoff = withHomeDraftHandoff(() => current, () => destination, storage);
-		current = { topic: "Edited while waiting", mode: "teach", picks: [{ id: "n_new", name: "New pick", statement: "A changed selection." }] };
+		current = {
+			topic: "Edited while waiting",
+			mode: "teach",
+			picks: [{ id: "n_new", name: "New pick", statement: "A changed selection." }],
+			learningSubjectId: "subject:mechanics",
+		};
 		release("/chat/new_session");
 		assert.equal(await handoff, "/chat/new_session");
 		assert.deepEqual(takeHomeDraft(storage), current);

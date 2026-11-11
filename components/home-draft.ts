@@ -3,6 +3,7 @@ export interface HomeDraft {
 	topic: string;
 	mode: "teach" | "practice";
 	picks: readonly { id: string; name: string; statement: string }[];
+	learningSubjectId?: string;
 }
 
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -18,7 +19,12 @@ function parseDraft(value: unknown): HomeDraft | null {
 		const candidate = pick as Partial<HomeDraft["picks"][number]>;
 		return typeof candidate.id === "string" && typeof candidate.name === "string" && typeof candidate.statement === "string";
 	})) return null;
-	return { topic: draft.topic, mode: draft.mode, picks: draft.picks.map(({ id, name, statement }) => ({ id, name, statement })) };
+	return {
+		topic: draft.topic,
+		mode: draft.mode,
+		picks: draft.picks.map(({ id, name, statement }) => ({ id, name, statement })),
+		...(typeof draft.learningSubjectId === "string" && draft.learningSubjectId ? { learningSubjectId: draft.learningSubjectId } : {}),
+	};
 }
 
 /** Verify the write before the caller navigates away from its draft. */

@@ -7,7 +7,7 @@ import { ArrowUpRightIcon, BookOpenIcon, DumbbellIcon, PlusIcon, RotateCcwIcon, 
 import { cn } from "@/lib/utils";
 import { normalizeLearningSubjects, propositionSessionHref } from "@/src/core";
 import type { ProvenancePoint } from "@/src/core";
-import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch, LearningPrerequisitePatch, LearningProgress, LearningSymbol } from "@/src/core";
+import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch, LearningPrerequisitePatch, LearningProgress, LearningSubject, LearningSymbol } from "@/src/core";
 import { LEARNING_PROGRESS_LABELS, LearningProgressDot } from "./learning-iceberg.tsx";
 
 const fieldClass = "min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-colors focus:border-foreground/60 disabled:opacity-50";
@@ -28,7 +28,7 @@ export interface LearningNodeSidebarProps {
 	node: LearningConcept;
 	learning: LearningGraphSnapshot;
 	onClose: () => void;
-	onSelect: (id: string) => void;
+	onSelect: (id: string, subjectId?: string) => void;
 	onSave: (patch: LearningNodePatch) => Promise<void>;
 	onPrerequisiteChange: (patch: LearningPrerequisitePatch) => Promise<void>;
 	onStartSession?: (mode: "teach" | "practice") => Promise<void>;
@@ -36,6 +36,8 @@ export interface LearningNodeSidebarProps {
 	sessionError?: string | null;
 	sessions?: Record<string, string>;
 	fileSources?: Record<string, string>;
+	mapSubjectId?: string | null;
+	mapSubjects?: readonly LearningSubject[];
 	className?: string;
 }
 
@@ -72,6 +74,36 @@ function SourceLinks({ provenance, sessions, fileSources }: { provenance: Proven
 		: <span key={sourceId} className="text-xs text-muted-foreground">Source unavailable</span>)}</div>;
 }
 
+function RelatedConcept({ node, destinations, onSelect, follow = false }: {
+	node: LearningConcept;
+	destinations: readonly LearningSubject[];
+	onSelect: LearningNodeSidebarProps["onSelect"];
+	follow?: boolean;
+}) {
+	const label = <>
+		{follow ? <ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" /> : <LearningProgressDot progress={node.progress} />}
+		{node.name}
+		{follow ? node.ready && node.progress !== "comfortable" && <span className="text-xs text-muted-foreground">Ready</span>
+			: <span className="sr-only">, {LEARNING_PROGRESS_LABELS[node.progress]}</span>}
+	</>;
+	const rowClass = "flex min-h-8 items-center gap-2 text-left font-prose text-sm";
+	if (!destinations.length) {
+		return <button type="button" onClick={() => onSelect(node.id)} className={cn(rowClass, "hover:underline focus-visible:underline")}>{label}</button>;
+	}
+	return (
+		<div>
+			<div className={rowClass}>{label}</div>
+			<div className="flex flex-wrap gap-x-3 gap-y-1">
+				{destinations.map((subject) => (
+					<button key={subject.id} type="button" aria-label={`Open ${node.name} in ${subject.name}`} onClick={() => onSelect(node.id, subject.id)} className="inline-flex min-h-7 items-center gap-1 text-xs text-muted-foreground underline-offset-4 hover:underline focus-visible:underline">
+						Open in {subject.name}<ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />
+					</button>
+				))}
+			</div>
+		</div>
+	);
+}
+
 function displayDate(value: string | null): string {
 	if (!value) return "Not encountered yet";
 	const date = new Date(value);
@@ -80,7 +112,7 @@ function displayDate(value: string | null): string {
 
 /** The parent keys this panel by node id; background assessments never replace
  * a dirty metadata draft. All writes finish before the panel reports success. */
-export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave, onPrerequisiteChange, onStartSession, sessionStarting = null, sessionError = null, sessions = {}, fileSources = {}, className }: LearningNodeSidebarProps) {
+export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave, onPrerequisiteChange, onStartSession, sessionStarting = null, sessionError = null, sessions = {}, fileSources = {}, mapSubjectId, mapSubjects = [], className }: LearningNodeSidebarProps) {
 	const titleId = useId();
 	const closeRef = useRef<HTMLButtonElement>(null);
 	const [name, setName] = useState(node.name);
@@ -107,6 +139,11 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 	const corrections = learning.prerequisiteCorrections.filter((edge) => edge.to === node.id);
 	const following = learning.prerequisites.filter((edge) => edge.from === node.id).map((edge) => nodes.get(edge.to)).filter((value) => value !== undefined);
 	const candidates = learning.nodes.filter((value) => value.id !== node.id && !prerequisites.some((edge) => edge.from === value.id)).sort((a, b) => a.name.localeCompare(b.name));
+	const subjectDestinations = (id: string) => {
+		if (!mapSubjectId) return [];
+		const containing = mapSubjects.filter((subject) => subject.nodeIds.includes(id));
+		return containing.some((subject) => subject.id === mapSubjectId) ? [] : containing;
+	};
 
 	useEffect(() => {
 		if (!dirtyFields.name) setName(node.name);
@@ -190,7 +227,7 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 						if (!prerequisite) return null;
 						const correction = corrections.find((value) => value.from === edge.from);
 						return <li key={edge.id} className="rounded-md border border-border/60 p-3">
-							<button type="button" onClick={() => onSelect(prerequisite.id)} className="flex min-h-8 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><LearningProgressDot progress={prerequisite.progress} />{prerequisite.name}<span className="sr-only">, {LEARNING_PROGRESS_LABELS[prerequisite.progress]}</span></button>
+							<RelatedConcept node={prerequisite} destinations={subjectDestinations(prerequisite.id)} onSelect={onSelect} />
 							<p className="mt-1 font-prose text-sm leading-relaxed text-muted-foreground">{edge.explanation}</p>
 							<SourceLinks provenance={edge.provenance} sessions={sessions} fileSources={fileSources} />
 							<div className="mt-1 flex flex-wrap items-center justify-between gap-1"><span className="text-xs text-muted-foreground">{edge.origin === "manual" ? "Your connection" : "Automatic connection"}</span><button type="button" disabled={locked} aria-label={`Remove prerequisite ${prerequisite.name}`} onClick={() => void run(() => onPrerequisiteChange({ from: edge.from, to: edge.to, enabled: false }), "Prerequisite removed. Your correction is saved.")} className={cn(actionClass, "-mr-2 text-muted-foreground")}>Remove</button></div>
@@ -205,7 +242,7 @@ export function LearningNodeSidebar({ node, learning, onClose, onSelect, onSave,
 						<textarea id={`${titleId}-reason`} rows={2} value={reason} onChange={(event) => setReason(event.target.value)} className={fieldClass} disabled={locked} />
 						<div className="flex justify-end gap-1"><button type="button" disabled={locked} onClick={() => setAdding(false)} className={actionClass}>Cancel</button><button type="submit" disabled={locked || !prerequisiteId} className={cn(actionClass, "border border-border")}>Add prerequisite</button></div>
 					</form> : <button type="button" disabled={locked || candidates.length === 0} onClick={() => setAdding(true)} className={cn(actionClass, "mt-2 -ml-3")}><PlusIcon aria-hidden="true" className="size-3" />Add prerequisite</button>}
-					{following.length > 0 && <div className="mt-3"><p className="text-xs text-muted-foreground">Helps unlock</p>{following.map((next) => <button type="button" key={next.id} onClick={() => onSelect(next.id)} className="mt-1 flex min-h-8 items-center gap-2 text-left font-prose text-sm hover:underline focus-visible:underline"><ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />{next.name}<span className="text-xs text-muted-foreground">{next.ready && next.progress !== "comfortable" ? "Ready" : ""}</span></button>)}</div>}
+					{following.length > 0 && <div className="mt-3"><p className="text-xs text-muted-foreground">Helps unlock</p>{following.map((next) => <RelatedConcept key={next.id} node={next} destinations={subjectDestinations(next.id)} onSelect={onSelect} follow />)}</div>}
 				</Section>
 				<Section title="Subjects">
 					<form onSubmit={(event) => { event.preventDefault(); if (subjectsDirty) void run(async () => { await onSave({ subjects: normalizeLearningSubjects(subjects.split(",")) }); setSubjectsDirty(false); }, "Subjects saved. Your correction is active."); }}>

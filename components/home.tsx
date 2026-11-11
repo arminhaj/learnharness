@@ -6,7 +6,7 @@ import { CornerDownLeftIcon, DumbbellIcon } from "lucide-react";
 import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
-import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
+import { ComposerActions, NodePickerControl, TeachingSubjectPicker } from "@/components/composer-actions";
 import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { DictationBar, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
@@ -16,7 +16,7 @@ import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { PathInput } from "@/components/path-input";
 import { SessionStarter } from "@/components/start-session";
 import { takeHomeDraft, withHomeDraftHandoff } from "@/components/home-draft";
-import { createConceptSessionRequest, type LearningConcept, type TurnUsage } from "@/src/core";
+import { createConceptSessionRequest, LEARNING_SUBJECT_UNASSIGNED_ID, type LearningConcept, type LearningSubject, type TurnUsage } from "@/src/core";
 
 /**
  * Home — the knowledge graph is the main view, full-bleed edge to edge
@@ -99,8 +99,14 @@ export function Home({
 	const [mode, setMode] = useState<"teach" | "practice">("teach");
 	const [practiceProps, setPracticeProps] = useState<{ id: string; name: string; statement: string }[]>([]);
 	const [chainSelectOpen, setChainSelectOpen] = useState(false);
-	const homeDraftRef = useRef({ mode, picks: practiceProps });
-	homeDraftRef.current = { mode, picks: practiceProps };
+	const [subjects, setSubjects] = useState<readonly LearningSubject[]>([]);
+	const [teachingSubjectId, setTeachingSubjectId] = useState<string>();
+	const namedSubjects = subjects.filter(({ id }) => id !== LEARNING_SUBJECT_UNASSIGNED_ID);
+	const teachingSubject = namedSubjects.find(({ id }) => id === teachingSubjectId);
+	const teachingSubjectRef = useRef(teachingSubject);
+	teachingSubjectRef.current = teachingSubject;
+	const homeDraftRef = useRef({ mode, picks: practiceProps, learningSubjectId: teachingSubjectId });
+	homeDraftRef.current = { mode, picks: practiceProps, learningSubjectId: teachingSubjectId };
 	useEffect(() => {
 		const saved = takeHomeDraft();
 		if (!saved || topicRef.current) return;
@@ -108,11 +114,12 @@ export function Home({
 		setTopic(saved.topic);
 		setMode(saved.mode);
 		setPracticeProps([...saved.picks]);
+		setTeachingSubjectId(saved.learningSubjectId);
 	}, []);
 	// The chain table is CONTROLLED off this id set (the lifted pick).
 	const pickedIds = useMemo(() => new Set(practiceProps.map((p) => p.id)), [practiceProps]);
 
-	const startConceptSession = async (node: LearningConcept, sessionMode: "teach" | "practice") => {
+	const startConceptSession = async (node: LearningConcept, sessionMode: "teach" | "practice", subjectId?: string) => {
 		if (startingRef.current) throw new Error("A session is already starting. Please wait.");
 		// Share the synchronous lock with the composer, but keep its draft
 		// and opening-message retry separate from this concept launch.
@@ -133,7 +140,7 @@ export function Home({
 			const target = await withHomeDraftHandoff(
 				() => ({ topic: topicRef.current, ...homeDraftRef.current }),
 				async () => {
-					const destination = await conceptStarterRef.current.start(createConceptSessionRequest(node, sessionMode), fetch, JSON.stringify(catalog?.slots.strong));
+					const destination = await conceptStarterRef.current.start(createConceptSessionRequest(node, sessionMode, subjectId), fetch, JSON.stringify(catalog?.slots.strong));
 					// The learner may have restarted dictation while creation waited.
 					if (dictationRef.current.active) await dictationRef.current.finish();
 					return destination;
@@ -164,6 +171,8 @@ export function Home({
 	const begin = async () => {
 		const t = topicRef.current.trim();
 		if (!t || startingRef.current) return;
+		const { mode, picks } = homeDraftRef.current;
+		const subject = teachingSubjectRef.current;
 		// Unconfigured: the send INTERCEPTS into the setup flow (the draft
 		// stays in the textarea; the learner sends it after Save).
 		if (!configured) {
@@ -198,7 +207,8 @@ export function Home({
 			const target = await starterRef.current.start({
 				title: t,
 				...(mode === "practice" ? { kind: "practice" } : {}),
-				...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
+				...(mode === "teach" && subject ? { learningSubjectId: subject.id } : {}),
+				...(picks.length > 0 ? { graphContext: { propositions: picks } } : {}),
 			}, fetch, JSON.stringify(catalog?.slots.strong));
 			router.push(target);
 		} catch {
@@ -236,6 +246,7 @@ export function Home({
 						onPracticeSelectionChange={setPracticeProps}
 						onChainSelectClose={() => setChainSelectOpen(false)}
 						onStartConcept={startConceptSession}
+						onSubjectsChange={setSubjects}
 						conceptStarting={conceptStarting}
 					/>
 				) : (
@@ -244,6 +255,7 @@ export function Home({
 						practiceSelection={pickedIds}
 						onPracticeSelectionChange={setPracticeProps}
 						onChainSelectClose={() => setChainSelectOpen(false)}
+						onSubjectsChange={setSubjects}
 					/>
 				)}
 			</main>
@@ -270,16 +282,20 @@ export function Home({
 					    propositions show here as a count + Clear in EITHER
 					    mode (it survives mode switches; only a practice
 					    send consumes it). Practice mode with nothing picked
-					    shows the pick HINT so the affordance is discoverable;
-					    teaching mode with nothing picked renders nothing. */}
+					    shows the pick HINT so the affordance is discoverable. */}
 					<ComposerActions
-						picker={(practiceProps.length > 0 || mode === "practice") && (
-							<NodePickerControl
-								count={practiceProps.length}
-								onOpen={() => setChainSelectOpen(true)}
-								onClear={() => setPracticeProps([])}
-							/>
-						)}
+						picker={(practiceProps.length > 0 || mode === "practice" || namedSubjects.length > 0) && <>
+							{(practiceProps.length > 0 || mode === "practice") && (
+								<NodePickerControl
+									count={practiceProps.length}
+									onOpen={() => setChainSelectOpen(true)}
+									onClear={() => setPracticeProps([])}
+								/>
+							)}
+							{mode === "teach" && namedSubjects.length > 0 && (
+								<TeachingSubjectPicker subjects={namedSubjects} value={teachingSubject?.id} onChange={setTeachingSubjectId} disabled={busy} />
+							)}
+						</>}
 						setup={zeroKeys ? (
 							<ZeroKeysPill inline onOpen={() => setSetupOpen(true)} />
 						) : (

@@ -11,10 +11,10 @@ import { SetupDialog } from "@/components/setup-dialog";
 import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { StatsBar } from "@/components/stats-bar";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
-import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
+import { ComposerActions, NodePickerControl, TeachingSubjectPicker } from "@/components/composer-actions";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { SessionStarter } from "@/components/start-session";
-import type { ChatSettings, GraphSnapshot } from "@/src/core";
+import type { GraphSnapshot, LearningSessionSubject } from "@/src/core";
 
 /** The draft's pick set (owner round 10): the SAME shape the home pick
  *  bar lifts — resolved nodes as the learner SAW them at pick time. */
@@ -47,6 +47,7 @@ export async function startDraftSession(
 	picks?: readonly DraftPick[],
 	starter = new SessionStarter(),
 	settingsIdentity?: string,
+	learningSubjectId?: string,
 ): Promise<string | null> {
 	const t = text.trim();
 	if (!t) return null;
@@ -57,7 +58,7 @@ export async function startDraftSession(
 	return starter.start(
 		mode === "practice"
 			? { title: t, kind: "practice", ...(picks && picks.length > 0 ? { graphContext: { propositions: picks } } : {}) }
-			: { title: t },
+			: { title: t, ...(learningSubjectId ? { learningSubjectId } : {}) },
 		fetchLike,
 		settingsIdentity,
 	);
@@ -79,6 +80,9 @@ export function DraftShell({
 	picks = [],
 	onOpenPicker,
 	onClearPicks,
+	subjects = [],
+	learningSubjectId,
+	onLearningSubjectChange,
 	overlay,
 }: {
 	busy: boolean;
@@ -102,6 +106,9 @@ export function DraftShell({
 	picks?: DraftPick[];
 	onOpenPicker?: () => void;
 	onClearPicks?: () => void;
+	subjects?: readonly LearningSessionSubject[];
+	learningSubjectId?: string;
+	onLearningSubjectChange?: (id: string | undefined) => void;
 	/** THE PICKER SLOT (owner round 10b): the chain-table overlay hosts
 	 *  INSIDE the content column's relative container — the same law as
 	 *  the graph view (the overlay fills its column, never the sidebar).
@@ -183,9 +190,13 @@ export function DraftShell({
 						<div className="bg-background pb-4">
 							<div className={DOCK}>
 								<ComposerActions
-									picker={(picks.length > 0 || mode === "practice") && (
-										<NodePickerControl count={picks.length} onOpen={onOpenPicker} onClear={onClearPicks} />
-									)}
+									picker={
+										mode === "teach" && subjects.length > 0 && onLearningSubjectChange ? (
+											<TeachingSubjectPicker subjects={subjects} value={learningSubjectId} onChange={onLearningSubjectChange} disabled={busy} />
+										) : (picks.length > 0 || mode === "practice") && (
+											<NodePickerControl count={picks.length} onOpen={onOpenPicker} onClear={onClearPicks} />
+										)
+									}
 									setup={setupCta}
 								/>
 								{startError && <p role="alert" className="pointer-events-auto mb-2 text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
@@ -229,7 +240,11 @@ export function DraftShell({
 	);
 }
 
-export function NewSession({ initialConfigured, mode = "teach" }: { initialConfigured: boolean; mode?: "teach" | "practice" }) {
+export function NewSession({ initialConfigured, mode = "teach", subjects }: {
+	initialConfigured: boolean;
+	mode?: "teach" | "practice";
+	subjects?: readonly LearningSessionSubject[];
+}) {
 	const router = useRouter();
 	const [text, setText] = useState("");
 	/* The draft MIRROR ("nothing gets lost" round, 2026-10-01): the shell's
@@ -240,6 +255,12 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 	const applyText = (v: string) => {
 		textRef.current = v;
 		setText(v);
+	};
+	const [learningSubjectId, setLearningSubjectId] = useState<string>();
+	const learningSubjectRef = useRef<string | undefined>(undefined);
+	const applyLearningSubject = (id: string | undefined) => {
+		learningSubjectRef.current = id;
+		setLearningSubjectId(id);
 	};
 	const [busy, setBusy] = useState(false);
 	const startingRef = useRef(false);
@@ -306,7 +327,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 		setBusy(true);
 		setStartError(false);
 		void startDraftSession(draft, fetch, mode === "practice" ? "practice" : undefined, mode === "practice" ? picksRef.current : undefined,
-			starterRef.current, JSON.stringify(catalog?.slots.strong))
+			starterRef.current, JSON.stringify(catalog?.slots.strong), learningSubjectRef.current)
 			.then((target) => {
 				if (target) router.push(target);
 				else { startingRef.current = false; setBusy(false); }
@@ -330,6 +351,9 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 				picks={picks}
 				onOpenPicker={openPicker}
 				onClearPicks={() => applyPicks([])}
+				subjects={subjects}
+				learningSubjectId={learningSubjectId}
+				onLearningSubjectChange={applyLearningSubject}
 				overlay={
 					// THE PICKER (owner round 10b): hosted INSIDE the content
 					// column — absolute inset-0 resolves to the column's relative

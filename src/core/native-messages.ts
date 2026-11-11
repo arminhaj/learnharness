@@ -1,4 +1,6 @@
 import { teachingPauseReason } from "./teaching-flow.ts";
+import type { LearningSessionContext, LearningSessionSubject } from "./learning-session.ts";
+import { LEARNING_SUBJECT_UNASSIGNED_ID } from "./learning-subjects.ts";
 /**
  * THE NATIVE MESSAGE RECORD (Wave B, owner-approved 2026-09-26): chat
  * records store pi's own message shapes — the exact history the agent
@@ -278,6 +280,10 @@ export interface GraphContextPick {
 	statement: string;
 }
 
+function selectedSubjectLine(name: string): string {
+	return `Selected subject: ${name}. Use it to interpret the session goal. Subject choice does not establish what the learner understands.`;
+}
+
 /** The session's map context (owner, 2026-10-04): a SEPARATE custom
  *  message BEFORE the learner's first user message — the picked
  *  propositions plus the reasoning chains among them (pre-formatted
@@ -285,13 +291,13 @@ export interface GraphContextPick {
  *  to a user message by toLlmMessages like every marker); `details`
  *  feeds the transcript's collapsible GraphContextCard. No more seed
  *  text glued into the first prompt. */
-export function newGraphContextMessage(picks: readonly GraphContextPick[], chains: readonly string[], learningContext?: import("./learning-session.ts").LearningSessionContext): LhMarkerMessage {
+export function newGraphContextMessage(picks: readonly GraphContextPick[], chains: readonly string[], learningContext?: LearningSessionContext, subject?: LearningSessionSubject): LhMarkerMessage {
 	// IDS FIRST (owner round 9, 2026-10-05 — the mastery-trace contract):
 	// each proposition is introduced ONCE with its id, name, and statement;
 	// the problem tool's `target` field takes these ids (names normalize to
 	// ids at the seam). Chains below stay NAMES — they are comprehension
 	// context, not tags; names read, ids reference.
-	const lines = [
+	const lines = picks.length > 0 ? [
 		// PREAMBLE LAW (owner, 2026-10-10): custom markers flatten to
 		// USER-role messages on the wire (toLlmMessages) — this text arrives
 		// in the learner's voice channel, so it must not read like a system
@@ -301,7 +307,12 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 		"",
 		"Propositions (id — name: statement; the problem tool's target field uses these ids):",
 		...picks.map((p) => `- [${p.id}] ${p.name}: ${p.statement}`),
-	];
+	] : ["[Session context] — selected when starting this session:"];
+	if (subject) {
+		lines.push("", subject.id === LEARNING_SUBJECT_UNASSIGNED_ID
+			? "Map view: Unassigned concepts. No subject membership is recorded for this selection."
+			: selectedSubjectLine(subject.name));
+	}
 	if (chains.length > 0) {
 		lines.push("", "Reasoning chains among them (premises → conclusion):", ...chains.map((c) => `- ${c}`));
 	}
@@ -319,7 +330,7 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 		customType: "graph-context",
 		content: lines.join("\n"),
 		display: true,
-		details: { propositions: picks, chains, ...(learningContext ? { learningContext } : {}) },
+		details: { propositions: picks, chains, ...(learningContext ? { learningContext } : {}), ...(subject ? { subject } : {}) },
 		timestamp: Date.now(),
 	};
 }
@@ -620,19 +631,6 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	// missing id degrades honestly (everything renders — never throw).
 	const lhMessages = messages as readonly LhMessage[];
 	const active = activeCompactionOf(lhMessages);
-	let start = 0;
-	let head: Message | null = null;
-	if (active) {
-		const kept = keptIndexFor(lhMessages, active);
-		if (kept > 0) {
-			start = kept;
-			head = {
-				role: "user",
-				content: [{ type: "text", text: active.content }],
-				timestamp: active.timestamp,
-			};
-		}
-	}
 	// THE LEADING SYSTEM MESSAGE IS REQUEST CHROME, NEVER COMPACTABLE
 	// PAYLOAD (the OpenRouter no-tools incident, owner 2026-10-05):
 	// pi-agent-core's Agent seeds a SystemMessage carrying the system
@@ -646,10 +644,34 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	// context.systemPrompt + context.tools around its projection.
 	const leading =
 		(messages[0] as { role?: string } | undefined)?.role === "system" ? (messages[0] as Message) : null;
+	const firstIndex = leading ? 1 : 0;
+	let start = 0;
+	let head: Message | null = null;
+	if (active) {
+		const kept = keptIndexFor(lhMessages, active);
+		if (kept > 0) {
+			start = kept;
+			let content = active.content;
+			// The compacted transcript drops the launch marker. Keep its subject
+			// choice available without replaying the old graph snapshot.
+			const launch = firstIndex < kept ? lhMessages[firstIndex] : undefined;
+			if (launch?.role === "custom" && launch.customType === "graph-context") {
+				const subject = (launch.details as { subject?: Partial<LearningSessionSubject> } | undefined)?.subject;
+				if (typeof subject?.id === "string" && subject.id !== LEARNING_SUBJECT_UNASSIGNED_ID && typeof subject.name === "string") {
+					content += `\n\n[Session context] ${selectedSubjectLine(subject.name)}`;
+				}
+			}
+			head = {
+				role: "user",
+				content: [{ type: "text", text: content }],
+				timestamp: active.timestamp,
+			};
+		}
+	}
 	const out: Message[] = [];
 	if (leading) out.push(leading);
 	if (head) out.push(head);
-	for (let i = leading ? Math.max(start, 1) : start; i < messages.length; i++) {
+	for (let i = Math.max(start, firstIndex); i < messages.length; i++) {
 		const m = messages[i]!;
 		const role = (m as { role?: string }).role;
 		if (role === "custom") {

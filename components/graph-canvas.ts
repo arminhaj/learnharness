@@ -788,9 +788,7 @@ export class GraphCanvasRenderer {
 		if (this.dragId) { this.pendingData = data; return; }
 		// Topology updates need a new simulation, but a drag that has just
 		// settled still owns unsaved coordinates. Flush them before replacing it.
-		if (this.data && this.simMoved) {
-			this.callbacks.onCommit(Object.fromEntries(this.data.nodes.map((node) => [node.id, { x: node.x, y: node.y }])));
-		}
+		this.commitMovedPositions();
 		// New concepts/links may arrive during a drag. Keep existing live
 		// positions; only genuinely new concepts consume the server seed.
 		for (const n of data.nodes) {
@@ -881,14 +879,14 @@ export class GraphCanvasRenderer {
 	 *  survive; velocities restart clean, which reads as "re-relax with
 	 *  the new feel"). A mid-settle change re-anneals, which is the
 	 *  honest response to new physics. */
-	setPhysicsTuning(input: Partial<PhysicsTuning>): void {
+	setPhysicsTuning(input: Partial<PhysicsTuning>, reheat = true): void {
 		this.physicsTuning = sanitizePhysicsTuning(input);
 		this.buildSim();
 		// Reheat: a tuning change re-anneals the layout from its current
 		// state, so mode toggles (off/vertical/radial) visibly RE-FORM the
 		// graph instead of waiting for the next drag. Mid-drag is safe —
 		// buildSim preserved the pinned node's fx/fy.
-		if (this.sim) {
+		if (this.sim && reheat) {
 			this.sim.alpha(1);
 			this.simActive = true;
 		}
@@ -983,6 +981,13 @@ export class GraphCanvasRenderer {
 		this.canvas.removeEventListener("pointerleave", this.onPointerLeave);
 		this.canvas.removeEventListener("contextmenu", this.onContextMenu);
 		this.canvas.style.cursor = "";
+	}
+
+	/** Preserve moved positions when switching away before the debounce fires. */
+	commitMovedPositions(): void {
+		if (!this.data || !this.simMoved) return;
+		this.simMoved = false;
+		this.callbacks.onCommit(Object.fromEntries(this.data.nodes.map((node) => [node.id, { x: node.x, y: node.y }])));
 	}
 
 	// ── Event handlers (state mutation only — never draw) ──
@@ -1232,11 +1237,7 @@ export class GraphCanvasRenderer {
 		if (this.commitTimer) clearTimeout(this.commitTimer);
 		this.commitTimer = setTimeout(() => {
 			this.commitTimer = null;
-			if (!this.data || !this.simMoved) return;
-			this.simMoved = false;
-			const positions: Record<string, Position> = {};
-			for (const n of this.data.nodes) positions[n.id] = { x: n.x, y: n.y };
-			this.callbacks.onCommit(positions);
+			this.commitMovedPositions();
 		}, COMMIT_DEBOUNCE_MS);
 	}
 

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowDownIcon, ArrowUpRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LEARNING_SUBJECT_UNASSIGNED_ID } from "@/src/core";
-import type { LearningGraphSnapshot, LearningProgress } from "@/src/core";
+import type { LearningGraphSnapshot, LearningProgress, LearningSubject } from "@/src/core";
 
 export const LEARNING_PROGRESS_LABELS: Record<LearningProgress, string> = {
 	unassessed: "Unassessed",
@@ -40,35 +40,61 @@ export interface LearningIcebergProps {
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	visibleIds?: ReadonlySet<string>;
-	subjects?: { id: string; name: string; nodeIds: string[] }[];
-	subjectId?: string | null;
-	onSubjectChange?: (id: string) => void;
+	subject?: Pick<LearningSubject, "id" | "name">;
 	className?: string;
 }
+
+const SUBJECT_STORAGE_KEY = "lh.graph.subject.v1";
 
 /** Remember the initial fallback too: a newly discovered subject must not
  * switch the open map. An empty refresh does not erase the user's choice. */
 export function useLearningSubjectSelection(subjects: readonly { id: string }[]) {
-	const [subjectId, setSubjectId] = useState<string | null>(null);
-	const activeSubjectId = subjects.some((subject) => subject.id === subjectId) ? subjectId : subjects[0]?.id ?? null;
+	const [subjectId, setSubjectId] = useState<string | null | undefined>();
+	const activeSubjectId = subjects.find((subject) => subject.id === subjectId)?.id ?? subjects[0]?.id ?? null;
 	useEffect(() => {
-		if (activeSubjectId !== null) setSubjectId(activeSubjectId);
-	}, [activeSubjectId]);
+		try {
+			setSubjectId(window.localStorage.getItem(SUBJECT_STORAGE_KEY));
+		} catch {
+			setSubjectId(null);
+		}
+	}, []);
+	useEffect(() => {
+		if (subjectId === undefined || activeSubjectId == null) return;
+		if (subjectId !== activeSubjectId) setSubjectId(activeSubjectId);
+		try {
+			window.localStorage.setItem(SUBJECT_STORAGE_KEY, activeSubjectId);
+		} catch {
+			// Browser storage is optional.
+		}
+	}, [activeSubjectId, subjectId]);
 	return [activeSubjectId, setSubjectId] as const;
 }
 
-export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, subjects, subjectId, onSubjectChange, className }: LearningIcebergProps) {
+export function LearningSubjectSelect({ subjects, subjectId, onChange }: {
+	subjects: readonly LearningSubject[];
+	subjectId: string | null;
+	onChange: (id: string) => void;
+}) {
+	return (
+		<label className="flex min-w-0 max-w-56 items-center gap-2 rounded-xl border bg-card/95 p-1 pl-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
+			Subject
+			<select value={subjectId ?? ""} onChange={(event) => onChange(event.target.value)} className="min-h-8 min-w-0 truncate rounded-lg bg-transparent px-2 text-foreground focus-visible:outline-ring">
+				{subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name} · {subject.nodeIds.length}</option>)}
+			</select>
+		</label>
+	);
+}
+
+export function LearningIceberg({ learning, selectedId, onSelect, visibleIds, subject, className }: LearningIcebergProps) {
 	const nodeById = new Map(learning.nodes.map((node) => [node.id, node]));
 	const groups = learning.groups.filter((group) => group.members.some((id) => !visibleIds || visibleIds.has(id)));
 	const levels = [...new Set(groups.map((group) => group.depth))].sort((a, b) => a - b);
 	const groupById = new Map(learning.groups.map((group) => [group.id, group]));
 	const groupedIds = new Set(learning.groups.flatMap((group) => group.members));
 	const ungrouped = learning.nodes.filter((node) => !groupedIds.has(node.id) && (!visibleIds || visibleIds.has(node.id)));
-	const subject = subjects?.find((value) => value.id === subjectId);
 	return (
 		<div data-testid="learning-iceberg" className={cn("lh-no-drag overflow-y-auto overscroll-contain bg-background px-4 pb-8 pt-4 sm:px-6", className)}>
 			<div className="mb-6 max-w-2xl">
-				{subjects && onSubjectChange && <label className="mb-4 flex max-w-sm items-center gap-3 text-xs text-muted-foreground">Subject<select aria-label="Iceberg subject" value={subjectId ?? ""} onChange={(event) => onSubjectChange(event.target.value)} disabled={subjects.length === 0} className="min-h-10 min-w-0 flex-1 rounded-md border border-input bg-card px-3 py-2 text-sm text-foreground focus:border-foreground/60 disabled:opacity-50">{subjects.map((value) => <option key={value.id} value={value.id}>{value.name} · {value.nodeIds.length}</option>)}</select></label>}
 				<h2 className="font-title text-2xl">{subject?.name ?? "The shape of the subject"}</h2>
 				<p className="mt-2 font-prose text-base leading-relaxed text-muted-foreground">Concepts learned together, from foundations toward deeper applications. Your understanding sits on top of the map.</p>
 				{subject && <p className="mt-2 text-xs text-muted-foreground">{subject.id === LEARNING_SUBJECT_UNASSIGNED_ID ? "These concepts have no subject assignment yet. Set subjects in their details." : `Showing concepts assigned to ${subject.name}. Change a concept’s subjects in its details.`}</p>}

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { DumbbellIcon } from "lucide-react";
+import type { LearningSubject } from "@/src/core";
 
 /** Home and the draft share one wrapping action row. Picker controls lead;
  * setup is centered only when it is the sole action. */
@@ -15,6 +16,29 @@ export function ComposerActions({ picker, setup }: { picker?: ReactNode; setup?:
 			{picker}
 			{setup}
 		</div>
+	);
+}
+
+export function TeachingSubjectPicker({ subjects, value, onChange, disabled }: {
+	subjects: readonly Pick<LearningSubject, "id" | "name">[];
+	value?: string;
+	onChange: (id: string | undefined) => void;
+	disabled?: boolean;
+}) {
+	return (
+		<label className="flex max-w-full items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground">
+			Subject
+			<select
+				aria-label="Teaching subject"
+				value={value ?? ""}
+				onChange={(event) => onChange(event.target.value || undefined)}
+				disabled={disabled}
+				className="min-w-0 max-w-48 bg-card text-foreground"
+			>
+				<option value="">No subject</option>
+				{subjects.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+			</select>
+		</label>
 	);
 }
 
