@@ -81,7 +81,7 @@ import { useAppearance } from "@/components/settings/appearance";
 import { LearningNodeSidebar } from "./learning-node-sidebar";
 import { ALL_SUBJECTS_SCOPE, LearningIceberg, LearningProgressLegend, LearningSubjectSelect, useLearningSubjectSelection } from "./learning-iceberg";
 import { LearningFocusControls } from "./learning-focus-controls";
-import { learningFocus, learningFocusLevel, type LearningFocusDirection } from "@/src/core";
+import { learningDescendantFocusIds, learningFocus, learningFocusLevel, type LearningFocusDirection } from "@/src/core";
 import {
 	ARROW_LENGTH_LADDER,
 	CHARGE_RANGE,
@@ -999,6 +999,7 @@ export function GraphView({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [mapView, setMapView] = useState<"prerequisites" | "iceberg">("prerequisites");
 	const [focus, setFocus] = useState<{ anchorId: string; direction: LearningFocusDirection; level: number; showPaths: boolean } | null>(null);
+	const [branchAnchorId, setBranchAnchorId] = useState<string | null>(null);
 	const learning = useMemo(() => snapshot?.learning ?? buildLearningGraphSnapshot(snapshot?.propositions ?? []), [snapshot]);
 	const subjects = useMemo(() => learningSubjects(learning), [learning]);
 	const [activeSubjectId, setSubjectId] = useLearningSubjectSelection(subjects);
@@ -1007,6 +1008,12 @@ export function GraphView({
 	const scopedLearning = useMemo(() => showAllSubjects ? learning : scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId, showAllSubjects]);
 	const scopedLearningRef = useRef(scopedLearning);
 	scopedLearningRef.current = scopedLearning;
+	const canonicalBranchId = branchAnchorId ? scopedLearning.idAliases?.[branchAnchorId] ?? branchAnchorId : null;
+	const branchAnchor = scopedLearning.nodes.find((node) => node.id === canonicalBranchId);
+	const branchIds = useMemo(
+		() => branchAnchor ? learningDescendantFocusIds(scopedLearning, branchAnchor.id) : null,
+		[scopedLearning, branchAnchor],
+	);
 	const focusAnchorId = focus?.anchorId;
 	const focusDirection = focus?.direction ?? "prerequisites";
 	const focusGraph = useMemo(
@@ -1031,6 +1038,10 @@ export function GraphView({
 		};
 	}, [scopedLearning, focusGraph, focusLevel, showFocusPaths]);
 	const canvasLearning = focusView ?? scopedLearning;
+	const listedNodes = useMemo(
+		() => branchIds ? canvasLearning.nodes.filter((node) => branchIds.has(node.id)) : canvasLearning.nodes,
+		[canvasLearning, branchIds],
+	);
 	const focusCanvasKey = focusAnchor ? JSON.stringify([focusAnchor.id, focusDirection, focusLevel, showFocusPaths]) : null;
 	const showCanvas = focusView !== null || mapView === "prerequisites";
 	useEffect(() => { onSubjectsChange?.(subjects); }, [onSubjectsChange, subjects]);
@@ -1044,9 +1055,10 @@ export function GraphView({
 	// Search panel state: the query text + the settings section toggle.
 	const [overviewQuery, setOverviewQuery] = useState("");
 	const [focusQuery, setFocusQuery] = useState("");
-	const query = focusView ? focusQuery : overviewQuery;
-	const setQuery = focusView ? setFocusQuery : setOverviewQuery;
-	const visibleIds = useMemo(() => new Set(canvasLearning.nodes.filter((node) => isNodeVisible(node, query)).map((node) => node.id)), [canvasLearning, query]);
+	const isFocused = focusView !== null || branchIds !== null;
+	const query = isFocused ? focusQuery : overviewQuery;
+	const setQuery = isFocused ? setFocusQuery : setOverviewQuery;
+	const visibleIds = useMemo(() => new Set(listedNodes.filter((node) => isNodeVisible(node, query)).map((node) => node.id)), [listedNodes, query]);
 	const canonicalSelectedId = selectedId ? learning.idAliases?.[selectedId] ?? selectedId : null;
 	const selected = canonicalSelectedId && visibleIds.has(canonicalSelectedId)
 		? learning.nodes.find((node) => node.id === canonicalSelectedId) ?? null
@@ -1328,25 +1340,38 @@ export function GraphView({
 		if (conceptClickTimer.current !== null) clearTimeout(conceptClickTimer.current);
 		conceptClickTimer.current = null;
 	}, []);
-	useEffect(() => cancelConceptClick, [cancelConceptClick, activeSubjectId, mapView, focusCanvasKey]);
+	useEffect(() => cancelConceptClick, [cancelConceptClick, activeSubjectId, mapView, focusCanvasKey, branchAnchorId]);
 	useEffect(() => {
 		if (focusAnchorId && !focusAnchor) setFocus(null);
 	}, [focusAnchorId, focusAnchor]);
+	useEffect(() => {
+		if (branchAnchorId && !branchAnchor) setBranchAnchorId(null);
+	}, [branchAnchorId, branchAnchor]);
 
 	const focusConcept = useCallback((anchorId: string) => {
 		cancelConceptClick();
 		const graph = scopedLearningRef.current;
 		if (!graph.nodes.some((node) => node.id === anchorId)) return;
 		const hasPrerequisites = graph.prerequisites.some((edge) => edge.to === anchorId);
+		setBranchAnchorId(null);
 		setFocus({ anchorId, direction: hasPrerequisites ? "prerequisites" : "unlocks", level: 1, showPaths: false });
 		setFocusQuery("");
 		setSelectedId(null);
 		setCtxNode(null);
 	}, [cancelConceptClick]);
+	const focusDescendants = useCallback((anchorId: string) => {
+		cancelConceptClick();
+		if (!scopedLearningRef.current.nodes.some((node) => node.id === anchorId)) return;
+		setBranchAnchorId(anchorId);
+		setFocusQuery("");
+		setSelectedId(null);
+		setCtxNode(null);
+	}, [cancelConceptClick]);
+	const activateConceptFocus = mapView === "iceberg" ? focusConcept : focusDescendants;
 	function clickConcept(id: string, clickCount = 0) {
 		cancelConceptClick();
 		if (clickCount > 1) {
-			focusConcept(id);
+			activateConceptFocus(id);
 		} else if (clickCount === 0) {
 			setSelectedId(id);
 		} else {
@@ -1361,12 +1386,16 @@ export function GraphView({
 	function changeSubject(id: string) {
 		setSubjectId(id);
 		setFocus(null);
+		setBranchAnchorId(null);
 		setCtxNode(null);
 	}
 	function selectRelatedConcept(id: string, subjectId?: string) {
-		const leavesFocus = focusView && (subjectId || !focusView.nodes.some((node) => node.id === id));
+		const leavesFocus = isFocused && (subjectId || !listedNodes.some((node) => node.id === id));
 		if (subjectId) changeSubject(subjectId);
-		else if (leavesFocus) setFocus(null);
+		else if (leavesFocus) {
+			setFocus(null);
+			setBranchAnchorId(null);
+		}
 		const node = learning.nodes.find((candidate) => candidate.id === id);
 		if (node && !isNodeVisible(node, leavesFocus ? overviewQuery : query)) (leavesFocus ? setOverviewQuery : setQuery)("");
 		setSelectedId(id);
@@ -1461,7 +1490,7 @@ export function GraphView({
 			canvas,
 			{
 				onSelect: (nodeId) => setSelectedId(nodeId),
-				onFocusNode: focusConcept,
+				onFocusNode: focusCanvasKey ? focusConcept : focusDescendants,
 				onStageClick: () => setSelectedId(null),
 				// Right-click → the node context menu (node interlude). Null
 				// (empty stage) closes a stale menu; a pick opens one anchored
@@ -1535,7 +1564,7 @@ export function GraphView({
 			renderer.commitMovedPositions();
 			renderer.destroy();
 		};
-	}, [activeSubjectId, focusCanvasKey, focusConcept, isEmpty]);
+	}, [activeSubjectId, focusCanvasKey, focusConcept, focusDescendants, isEmpty]);
 
 	// Feed #1 — data: positions + edges + clusters + resolved colors. Runs
 	// after the layout effect (same commit, declaration order) and after
@@ -1584,11 +1613,11 @@ export function GraphView({
 	// Feed #3 — visibility: hidden nodes drop out of rendering, picking,
 	// hover, AND labels; edges drop when either endpoint is hidden.
 	useEffect(() => {
-		rendererRef.current?.setVisible(query.trim() ? visibleIds : null);
+		rendererRef.current?.setVisible(branchIds !== null || query.trim() ? visibleIds : null);
 		// The open detail card cannot outlive its node's visibility.
 		setSelectedId((id) => (id && visibleIds.has(learning.idAliases?.[id] ?? id) ? id : null));
 		setCtxNode((current) => current && visibleIds.has(current.id) ? current : null);
-	}, [visibleIds, query, learning.idAliases]);
+	}, [visibleIds, branchIds, query, learning.idAliases]);
 
 	// Feed #4 — region tuning. `isEmpty` in the deps (same as Feed #2):
 	// the settings fetch resolves BEFORE the snapshot creates the renderer,
@@ -1642,9 +1671,9 @@ export function GraphView({
 
 	const conceptList = showCanvas && (
 		<details className="mt-2" open={query.trim() ? true : undefined}>
-			<summary className="cursor-pointer py-1 text-muted-foreground">{query.trim() ? `${visibleIds.size} matching concepts` : `Browse ${canvasLearning.nodes.length} concepts`}</summary>
+			<summary className="cursor-pointer py-1 text-muted-foreground">{query.trim() ? `${visibleIds.size} matching concepts` : `Browse ${listedNodes.length} concepts`}</summary>
 			<div className="mt-1 max-h-48 overflow-auto" aria-label="Concepts">
-				{canvasLearning.nodes.filter((node) => visibleIds.has(node.id)).map((node) => (
+				{listedNodes.filter((node) => visibleIds.has(node.id)).map((node) => (
 					<button key={node.id} type="button" onClick={(event) => clickConcept(node.id, event.detail)} aria-pressed={canonicalSelectedId === node.id} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left hover:bg-accent">
 						<span>{node.name}</span>
 						<span className="shrink-0 text-[10px] text-muted-foreground">{node.progress === "comfortable" ? "Comfortable" : node.progress === "learning" ? "Learning" : "Unassessed"}{node.ready && node.progress !== "comfortable" ? " · Ready" : ""}</span>
@@ -1711,7 +1740,7 @@ export function GraphView({
 				{subjects.length > 0 && <LearningSubjectSelect subjects={subjects} subjectId={activeSubjectId} totalConcepts={learning.nodes.length} onChange={changeSubject} />}
 				<div className="flex rounded-xl border bg-card/95 p-1 shadow-sm backdrop-blur" aria-label="Map view">
 					{(["prerequisites", "iceberg"] as const).map((view) => (
-						<button key={view} type="button" aria-pressed={!focusView && mapView === view} onClick={() => { setFocus(null); setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${!focusView && mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+						<button key={view} type="button" aria-pressed={!focusView && mapView === view} onClick={() => { setFocus(null); setBranchAnchorId(null); setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${!focusView && mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
 							{view === "prerequisites" ? "Prerequisites" : "Iceberg"}
 						</button>
 					))}
@@ -1719,13 +1748,21 @@ export function GraphView({
 				<button type="button" disabled={mapUpdating || pipelineRuns.length > 0} onClick={refreshLearning} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground disabled:opacity-50">
 					{mapUpdating ? "Updating…" : "Update map"}
 				</button>
-				{!isEmpty && showCanvas && <button type="button" aria-label="Fit graph" onClick={() => rendererRef.current?.fit()} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground">Fit<span className="hidden sm:inline"> graph</span></button>}
+				{!isEmpty && showCanvas && <button type="button" aria-label="Fit graph" onClick={() => rendererRef.current?.fit({ visibleOnly: branchIds !== null })} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground">Fit<span className="hidden sm:inline"> graph</span></button>}
 			</div>
 			{!isEmpty && showCanvas && !focusView && (
 				<div className="lh-no-drag absolute left-3 top-36 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border bg-card/95 p-3 text-xs shadow-sm backdrop-blur sm:top-28">
 					<LearningProgressLegend />
 					<p className="mt-2 text-[11px] text-muted-foreground">Arrows mean learning prerequisites. Dashed rings mean ready to learn.</p>
-					<p className="mt-1 text-[11px] text-muted-foreground">Double-click a concept to explore its levels.</p>
+					{branchAnchor ? (
+						<div className="mt-2 rounded-md border border-border/70 px-2 py-1.5">
+							<div className="flex items-center gap-2">
+								<span role="status" className="min-w-0 flex-1 truncate" title={branchAnchor.name}>Focused on {branchAnchor.name}</span>
+								<button type="button" onClick={() => setBranchAnchorId(null)} className="shrink-0 rounded-md px-2 py-1 text-muted-foreground hover:bg-accent focus-visible:outline-ring">Clear focus</button>
+							</div>
+							{branchIds?.size === 0 && <p className="mt-1 text-muted-foreground">No dependent concepts in this view.</p>}
+						</div>
+					) : <p className="mt-1 text-[11px] text-muted-foreground">Double-click a concept to see what builds on it.</p>}
 					{scopedLearning.prerequisites.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">{showAllSubjects ? "No prerequisite connections recorded." : "No prerequisite connections within this subject."}</p>}
 					{conceptList}
 				</div>
@@ -1853,7 +1890,7 @@ export function GraphView({
 					mapSubjects={subjects}
 					onClose={() => setSelectedId(null)}
 					onSelect={selectRelatedConcept}
-					onFocus={() => focusConcept(selected.id)}
+					onFocus={() => activateConceptFocus(selected.id)}
 					onSave={(patch) => patchLearning(`/api/graph/nodes/${encodeURIComponent(selected.id)}`, patch)}
 					onPrerequisiteChange={(patch) => patchLearning("/api/graph/prerequisites", patch)}
 					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode, activeSubject?.id) : undefined}

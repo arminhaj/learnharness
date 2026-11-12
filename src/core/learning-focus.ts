@@ -1,6 +1,12 @@
 import type { LearningGraphSnapshot } from "./contracts/learning-graph.ts";
 import { learningPrerequisiteId } from "./learning-graph.ts";
 
+type FocusGraph = Pick<LearningGraphSnapshot, "nodes" | "prerequisites" | "idAliases">;
+
+function focusNodeId(aliases: FocusGraph["idAliases"], id: string): string {
+	return aliases && Object.hasOwn(aliases, id) ? aliases[id] ?? id : id;
+}
+
 export type LearningFocusDirection = "prerequisites" | "unlocks";
 
 export interface LearningFocus {
@@ -12,15 +18,14 @@ export interface LearningFocus {
 }
 
 export function learningFocus(
-	graph: Pick<LearningGraphSnapshot, "nodes" | "prerequisites" | "idAliases">,
+	graph: FocusGraph,
 	anchorId: string,
 	direction: LearningFocusDirection,
 ): LearningFocus {
 	const levels: string[][] = [];
 	const towardAnchor = new Map<string, string[]>();
 	const focus = { direction, levels, towardAnchor };
-	const aliases = graph.idAliases ?? {};
-	const canonical = (id: string) => Object.hasOwn(aliases, id) ? aliases[id] ?? id : id;
+	const canonical = (id: string) => focusNodeId(graph.idAliases, id);
 	const anchor = canonical(anchorId);
 	const included = new Set(graph.nodes.map(({ id }) => canonical(id)));
 	if (!included.has(anchor)) return focus;
@@ -56,6 +61,23 @@ export function learningFocus(
 		if (nextLevel.length > 0) levels.push(nextLevel);
 	}
 	return focus;
+}
+
+/** The canvas keeps downstream concepts and their immediate prerequisites. */
+export function learningDescendantFocusIds(graph: FocusGraph, anchorId: string): Set<string> {
+	const { levels } = learningFocus(graph, anchorId, "unlocks");
+	const descendants = new Set(levels.slice(1).flat());
+	const visible = new Set(descendants);
+	if (descendants.size === 0) return visible;
+
+	const canonical = (id: string) => focusNodeId(graph.idAliases, id);
+	const anchor = canonical(anchorId);
+	const included = new Set(graph.nodes.map(({ id }) => canonical(id)));
+	for (const edge of graph.prerequisites) {
+		const parent = canonical(edge.from);
+		if (parent !== anchor && included.has(parent) && descendants.has(canonical(edge.to))) visible.add(parent);
+	}
+	return visible;
 }
 
 /** Walk the shortest-path predecessor graph once, even when routes share steps. */

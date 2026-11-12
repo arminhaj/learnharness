@@ -447,9 +447,11 @@ export function labelAlpha(
 	return clamp01(1 - (ratio - labelZoom) / span);
 }
 
+type CanvasBounds = { minX: number; maxX: number; minY: number; maxY: number };
+
 /** The camera transform that frames `bbox` in a w×h viewport with padding. */
 export function fitTransform(
-	bbox: { minX: number; maxX: number; minY: number; maxY: number },
+	bbox: CanvasBounds,
 	w: number,
 	h: number,
 	padding: number,
@@ -461,6 +463,18 @@ export function fitTransform(
 	const cx = (bbox.minX + bbox.maxX) / 2;
 	const cy = (bbox.minY + bbox.maxY) / 2;
 	return { x: w / 2 - cx * k, y: h / 2 - cy * k, k };
+}
+
+function canvasNodeBounds(nodes: readonly CanvasNode[], visible: ReadonlySet<string> | null = null): CanvasBounds | null {
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const node of nodes) {
+		if (visible && !visible.has(node.id)) continue;
+		minX = Math.min(minX, node.x);
+		minY = Math.min(minY, node.y);
+		maxX = Math.max(maxX, node.x);
+		maxY = Math.max(maxY, node.y);
+	}
+	return minX <= maxX ? { minX, minY, maxX, maxY } : null;
 }
 
 /** The arrowhead geometry for a directed edge a→b: shaft endpoints
@@ -606,7 +620,7 @@ export class GraphCanvasRenderer {
 	private kFit = 1;
 	/** World-space bounds of the current nodes — fit() and the resize-time
 	 *  kFit refresh share it (computed once per setData, not per resize). */
-	private worldBBox: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+	private worldBBox: CanvasBounds | null = null;
 
 	private data: CanvasData | null = null;
 	private pendingData: CanvasData | null = null;
@@ -683,7 +697,7 @@ export class GraphCanvasRenderer {
 	private physicsTuning: PhysicsTuning = DEFAULT_PHYSICS_TUNING;
 	/** Gravity center for the live sim (graph bbox centroid at setData). */
 	private simCenter: Pt = { x: 0, y: 0 };
-	private regionBuiltVersion = -1;
+	private regionBuiltVersion: number | null = null;
 	private frameCount = 0; // draw counter for the live-sim splat throttle
 	private labelLines = new Map<string, string[]>();
 	private worldLabelFont = "";
@@ -814,17 +828,8 @@ export class GraphCanvasRenderer {
 		this.topologyKey = topology;
 		this.data = data;
 		this.nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-		let minX = Infinity;
-		let minY = Infinity;
-		let maxX = -Infinity;
-		let maxY = -Infinity;
-		for (const n of data.nodes) {
-			if (n.x < minX) minX = n.x;
-			if (n.y < minY) minY = n.y;
-			if (n.x > maxX) maxX = n.x;
-			if (n.y > maxY) maxY = n.y;
-		}
-		this.worldBBox = { minX, maxX, minY, maxY };
+		const bounds = canvasNodeBounds(data.nodes);
+		this.worldBBox = bounds;
 		if (!this.hasFit && data.nodes.length > 0) this.fit();
 		// The camera may be user-restored (constructor initialCamera) — the
 		// gate's "1×" reference still needs the fresh bbox's fit zoom.
@@ -839,7 +844,7 @@ export class GraphCanvasRenderer {
 		this.simActive = false;
 		this.dragId = null;
 		this.simMoved = false;
-		this.simCenter = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+		this.simCenter = bounds ? { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 } : { x: 0, y: 0 };
 		this.buildSim();
 		this.geoVersion++; // new data → rebuild world geometry
 		this.markDirty();
@@ -879,7 +884,7 @@ export class GraphCanvasRenderer {
 	 *  emptied while typing. Forces a region bitmap rebuild. */
 	setRegionTuning(input: Partial<RegionTuning>): void {
 		this.regionTuning = sanitizeRegionTuning(input);
-		this.regionBuiltVersion = -2; // never equals geoVersion → rebuild
+		this.regionBuiltVersion = null;
 		// Off switch turning off: drop the bitmap immediately so the
 		// blit stops on the next frame — the rebuild itself skips all
 		// compute (buildRegions).
@@ -947,24 +952,28 @@ export class GraphCanvasRenderer {
 
 	setVisible(visible: ReadonlySet<string> | null): void {
 		this.visible = visible;
+		// Visibility changes apply to the region bitmap and labels on the
+		// next frame, even when live physics normally defers that rebuild.
+		this.regionBuiltVersion = null;
+		if (this.pendingNodeClick && visible && !visible.has(this.pendingNodeClick.nodeId)) this.clearPendingNodeClick();
 		this.geoVersion++; // member visibility changes hulls + paths
 		this.markDirty();
 	}
 
-	/** Frame the whole graph (padding included). Keeps the camera on later
-	 *  setData calls — call fit() only for an explicit re-frame (the
-	 *  first-ever open; afterwards the caller-persisted camera wins). */
-	fit(): void {
-		if (!this.data || this.data.nodes.length === 0 || !this.worldBBox) return;
-		// Drag/physics may have moved nodes since setData. Fit the live map.
-		const xs = this.data.nodes.map((node) => node.x);
-		const ys = this.data.nodes.map((node) => node.y);
-		this.worldBBox = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+	/** Frame live coordinates. Fitting the visible subset moves the
+	 * camera while keeping the overview's label zoom reference. */
+	fit({ visibleOnly = false }: { visibleOnly?: boolean } = {}): void {
+		if (!this.data) return;
+		const bounds = canvasNodeBounds(this.data.nodes, visibleOnly ? this.visible : null);
+		if (!bounds) return;
 		const w = this.canvas.clientWidth;
 		const h = this.canvas.clientHeight;
 		if (w < 10 || h < 10) return; // layout not ready yet; the ResizeObserver retries
-		const t = this.frameBounds(this.worldBBox, w, h);
-		this.kFit = t.k;
+		const t = this.frameBounds(bounds, w, h, visibleOnly);
+		if (!visibleOnly) {
+			this.worldBBox = bounds;
+			this.kFit = t.k;
+		}
 		this.hasFit = true;
 		select(this.canvas).call(
 			this.zoomBehavior.transform,
@@ -982,8 +991,8 @@ export class GraphCanvasRenderer {
 		if (w >= 10 && h >= 10) this.kFit = this.frameBounds(this.worldBBox, w, h).k;
 	}
 
-	private frameBounds(bounds: NonNullable<GraphCanvasRenderer["worldBBox"]>, w: number, h: number) {
-		if (this.data?.focused) return fitTransform(bounds, w, h, Math.min(90, w / 4, h / 4), 5);
+	private frameBounds(bounds: CanvasBounds, w: number, h: number, visibleOnly = false) {
+		if (visibleOnly || this.data?.focused) return fitTransform(bounds, w, h, Math.min(90, w / 4, h / 4), 5);
 		return fitTransform(bounds, w, h, 40);
 	}
 
@@ -1789,7 +1798,7 @@ export class GraphCanvasRenderer {
 		// every REGION_EVERY-th frame (others blit the last bitmap).
 		if (
 			this.regionBuiltVersion !== this.geoVersion &&
-			(!this.simActive || this.frameCount % REGION_EVERY === 0)
+			(this.regionBuiltVersion === null || !this.simActive || this.frameCount % REGION_EVERY === 0)
 		) {
 			this.buildRegions();
 			this.regionBuiltVersion = this.geoVersion;

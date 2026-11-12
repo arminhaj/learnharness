@@ -124,6 +124,9 @@ test("only a same-node mouse double-click focuses and interrupted clicks do not 
 
 		click(160, "touch");
 		assert.deepEqual(events.splice(0), ["select n_b"]);
+		renderer.setVisible(new Set(["n_a"]));
+		click(160, "touch");
+		assert.deepEqual(events.splice(0), ["stage"]);
 		click(80);
 	} finally {
 		renderer.destroy();
@@ -138,6 +141,32 @@ test("only a same-node mouse double-click focuses and interrupted clicks do not 
 		legacy.destroy();
 	}
 	t.mock.timers.tick(1000);
+});
+
+test("visibility leaves the camera alone and fitting a subset preserves the overview zoom reference", () => {
+	const bounds = { minX: 20, minY: 20, maxX: 900, maxY: 600 };
+	const transforms: Array<{ k: number; x: number; y: number }> = [];
+	const state = {
+		canvas: { clientWidth: 500, clientHeight: 400 },
+		data: { nodes: [{ id: "n_a", x: 20, y: 20 }, { id: "n_b", x: 900, y: 600 }] },
+		visible: null, pendingNodeClick: null, worldBBox: bounds, kFit: 0.48, hasFit: true,
+		geoVersion: 7, regionBuiltVersion: 7,
+		zoomBehavior: { transform(_selection: unknown, { k, x, y }: { k: number; x: number; y: number }) { transforms.push({ k, x, y }); } },
+		markDirty() {},
+	};
+	const renderer = Object.setPrototypeOf(state, GraphCanvasRenderer.prototype) as unknown as GraphCanvasRenderer;
+	renderer.setVisible(new Set(["n_a"]));
+	assert.deepEqual(transforms, []);
+	assert.equal(state.regionBuiltVersion, null);
+	renderer.fit({ visibleOnly: true });
+	assert.deepEqual(transforms, [{ k: 5, x: 150, y: 100 }]);
+	assert.equal(state.kFit, 0.48);
+	assert.equal(state.worldBBox, bounds);
+	renderer.setVisible(new Set());
+	renderer.fit({ visibleOnly: true });
+	assert.equal(transforms.length, 1);
+	renderer.fit();
+	assert.deepEqual(transforms[1], fitTransform(bounds, 500, 400, 40));
 });
 
 test("theme repaint preserves graph data, camera, active drag and pending commit", () => {

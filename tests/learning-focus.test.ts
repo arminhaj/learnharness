@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { LearningGraphSnapshot, LearningPrerequisite } from "../src/core/contracts/learning-graph.ts";
-import { learningFocus, learningFocusLevel } from "../src/core/learning-focus.ts";
+import { learningDescendantFocusIds, learningFocus, learningFocusLevel } from "../src/core/learning-focus.ts";
 import { buildLearningGraphSnapshot, learningPrerequisiteId } from "../src/core/learning-graph.ts";
 
 const prerequisite = ([from, to]: readonly [string, string]): LearningPrerequisite => ({
@@ -72,4 +72,29 @@ it("uses canonical concept IDs and excludes missing endpoints, loops and missing
 	assert.deepEqual(learningFocusLevel(missing, 0, true), {
 		levelIds: [], pathIds: new Set(), pathEdgeIds: new Set(),
 	});
+});
+
+it("keeps every descendant and its immediate parents without expanding the added parents", () => {
+	const input = graph([
+		"anchor", "direct", "deep", "later", "co_parent", "other_parent",
+		"ancestor", "sibling", "anchor_parent", "unrelated",
+	], [
+		["anchor", "direct"], ["direct", "deep"], ["deep", "later"],
+		["co_parent", "direct"], ["other_parent", "deep"], ["ancestor", "co_parent"],
+		["co_parent", "sibling"], ["anchor_parent", "anchor"],
+	]);
+	assert.deepEqual(learningDescendantFocusIds(input, "anchor"),
+		new Set(["direct", "deep", "later", "co_parent", "other_parent"]));
+	assert.deepEqual(learningDescendantFocusIds(input, "later"), new Set());
+});
+
+it("excludes the anchor in cycles and ignores unavailable endpoints in canvas focus", () => {
+	const input = graph(["anchor", "direct", "deep", "co_parent", "out_of_reach"], [
+		["old_anchor", "old_direct"], ["anchor", "direct"], ["direct", "deep"],
+		["deep", "old_anchor"], ["direct", "old_direct"], ["co_parent", "old_direct"],
+		["anchor", "missing"], ["missing", "out_of_reach"], ["missing_parent", "deep"],
+	]);
+	input.idAliases = { old_anchor: "anchor", old_direct: "direct" };
+	assert.deepEqual(learningDescendantFocusIds(input, "old_anchor"), new Set(["direct", "deep", "co_parent"]));
+	assert.deepEqual(learningDescendantFocusIds(input, "missing"), new Set());
 });
