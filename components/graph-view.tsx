@@ -65,7 +65,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import { ListTreeIcon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
-import { buildLearningGraphSnapshot, learningSubjects, scopeLearningGraphToSubject, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningConcept, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSymbol, type ExtractionProgress } from "@/src/core";
+import { buildLearningGraphSnapshot, learningSubjects, scopeLearningGraphToSubject, matchesLearningConcept, incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot, type LearningConcept, type LearningGraphSnapshot, type LearningNodePatch, type LearningPrerequisitePatch, type LearningSubject, type LearningSymbol, type Position, type ExtractionProgress } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type CanvasColors, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
@@ -79,7 +79,9 @@ import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { Hint } from "@/components/ui/hint";
 import { useAppearance } from "@/components/settings/appearance";
 import { LearningNodeSidebar } from "./learning-node-sidebar";
-import { LearningIceberg, LearningProgressLegend, useLearningSubjectSelection } from "./learning-iceberg";
+import { ALL_SUBJECTS_SCOPE, LearningIceberg, LearningProgressLegend, LearningSubjectSelect, useLearningSubjectSelection } from "./learning-iceberg";
+import { LearningFocusControls } from "./learning-focus-controls";
+import { learningDescendantFocusIds, learningFocus, learningFocusLevel, type LearningFocusDirection } from "@/src/core";
 import {
 	ARROW_LENGTH_LADDER,
 	CHARGE_RANGE,
@@ -117,7 +119,7 @@ const NODE_COLOR_TOKEN = "--primary";
 
 /** Per-device graph camera persistence (zoom+pan view state). v1 in the
  *  key: the stored shape is the renderer's d3 transform {k, x, y}. */
-const CAMERA_STORAGE_KEY = "lh.graph.camera.v1";
+const CAMERA_STORAGE_PREFIX = "lh.graph.camera.subject.v1";
 
 // ---- Render settings (the settings-panel controls) ------------------------
 //
@@ -974,6 +976,7 @@ export function GraphView({
 	onPracticeSelectionChange,
 	onChainSelectClose,
 	onStartConcept,
+	onSubjectsChange,
 	conceptStarting = null,
 }: {
 	/** PRACTICE SELECT (owner vision, 2026-10-04): the LIFTED, persistent
@@ -985,29 +988,63 @@ export function GraphView({
 	practiceSelection?: ReadonlySet<string>;
 	onPracticeSelectionChange?: (nodes: { id: string; name: string; statement: string }[]) => void;
 	onChainSelectClose?: () => void;
-	onStartConcept?: (node: LearningConcept, mode: "teach" | "practice") => Promise<void>;
+	onStartConcept?: (node: LearningConcept, mode: "teach" | "practice", subjectId?: string) => Promise<void>;
+	onSubjectsChange?: (subjects: readonly LearningSubject[]) => void;
 	conceptStarting?: "teach" | "practice" | null;
 }) {
 	const { appearance, resolvedMode } = useAppearance();
-	const containerRef = useRef<HTMLDivElement | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
 	const [graphError, setGraphError] = useState<string | null>(null);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [mapView, setMapView] = useState<"prerequisites" | "iceberg">("prerequisites");
+	const [focus, setFocus] = useState<{ anchorId: string; direction: LearningFocusDirection; level: number; showPaths: boolean } | null>(null);
+	const [branchAnchorId, setBranchAnchorId] = useState<string | null>(null);
 	const learning = useMemo(() => snapshot?.learning ?? buildLearningGraphSnapshot(snapshot?.propositions ?? []), [snapshot]);
 	const subjects = useMemo(() => learningSubjects(learning), [learning]);
 	const [activeSubjectId, setSubjectId] = useLearningSubjectSelection(subjects);
-	const icebergLearning = useMemo(() => scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId]);
-	const previousSubjectRef = useRef<string | null>(activeSubjectId);
-	useEffect(() => {
-		if (mapView === "iceberg" && previousSubjectRef.current !== activeSubjectId) setSelectedId(null);
-		previousSubjectRef.current = activeSubjectId;
-	}, [activeSubjectId, mapView]);
-	const canonicalSelectedId = selectedId ? learning.idAliases?.[selectedId] ?? selectedId : null;
-	const selected = learning.nodes.find((n) => n.id === canonicalSelectedId) ?? null;
-	const learningRef = useRef(learning);
-	learningRef.current = learning;
+	const showAllSubjects = activeSubjectId === ALL_SUBJECTS_SCOPE.id;
+	const activeSubject = subjects.find((subject) => subject.id === activeSubjectId);
+	const scopedLearning = useMemo(() => showAllSubjects ? learning : scopeLearningGraphToSubject(learning, activeSubjectId ?? ""), [learning, activeSubjectId, showAllSubjects]);
+	const scopedLearningRef = useRef(scopedLearning);
+	scopedLearningRef.current = scopedLearning;
+	const canonicalBranchId = branchAnchorId ? scopedLearning.idAliases?.[branchAnchorId] ?? branchAnchorId : null;
+	const branchAnchor = scopedLearning.nodes.find((node) => node.id === canonicalBranchId);
+	const branchIds = useMemo(
+		() => branchAnchor ? learningDescendantFocusIds(scopedLearning, branchAnchor.id) : null,
+		[scopedLearning, branchAnchor],
+	);
+	const focusAnchorId = focus?.anchorId;
+	const focusDirection = focus?.direction ?? "prerequisites";
+	const focusGraph = useMemo(
+		() => focusAnchorId ? learningFocus(scopedLearning, focusAnchorId, focusDirection) : null,
+		[scopedLearning, focusAnchorId, focusDirection],
+	);
+	const focusAnchor = scopedLearning.nodes.find((node) => node.id === focusGraph?.levels[0]?.[0]);
+	const maxFocusLevel = Math.max(0, (focusGraph?.levels.length ?? 0) - 1);
+	const focusLevel = Math.min(focus?.level ?? 1, maxFocusLevel);
+	const showFocusPaths = focus?.showPaths ?? false;
+	const focusView = useMemo(() => {
+		if (!focusGraph?.levels.length) return null;
+		const { levelIds, pathIds, pathEdgeIds } = learningFocusLevel(focusGraph, focusLevel, showFocusPaths);
+		const level = new Set(levelIds);
+		const connections = scopedLearning.prerequisites.filter((edge) => level.has(edge.from) && level.has(edge.to));
+		return {
+			nodes: scopedLearning.nodes.filter((node) => level.has(node.id) || pathIds.has(node.id)),
+			prerequisites: [...connections, ...scopedLearning.prerequisites.filter((edge) => pathEdgeIds.has(edge.id))],
+			groups: [],
+			levelCount: levelIds.length,
+			connectionCount: connections.length,
+		};
+	}, [scopedLearning, focusGraph, focusLevel, showFocusPaths]);
+	const canvasLearning = focusView ?? scopedLearning;
+	const listedNodes = useMemo(
+		() => branchIds ? canvasLearning.nodes.filter((node) => branchIds.has(node.id)) : canvasLearning.nodes,
+		[canvasLearning, branchIds],
+	);
+	const focusCanvasKey = focusAnchor ? JSON.stringify([focusAnchor.id, focusDirection, focusLevel, showFocusPaths]) : null;
+	const showCanvas = focusView !== null || mapView === "prerequisites";
+	useEffect(() => { onSubjectsChange?.(subjects); }, [onSubjectsChange, subjects]);
 	const [mapUpdating, setMapUpdating] = useState(false);
 	const [mapMessage, setMapMessage] = useState("");
 	// The latest snapshot for the renderer's click callbacks (they are
@@ -1016,7 +1053,16 @@ export function GraphView({
 	snapshotRef.current = snapshot;
 
 	// Search panel state: the query text + the settings section toggle.
-	const [query, setQuery] = useState("");
+	const [overviewQuery, setOverviewQuery] = useState("");
+	const [focusQuery, setFocusQuery] = useState("");
+	const isFocused = focusView !== null || branchIds !== null;
+	const query = isFocused ? focusQuery : overviewQuery;
+	const setQuery = isFocused ? setFocusQuery : setOverviewQuery;
+	const visibleIds = useMemo(() => new Set(listedNodes.filter((node) => isNodeVisible(node, query)).map((node) => node.id)), [listedNodes, query]);
+	const canonicalSelectedId = selectedId ? learning.idAliases?.[selectedId] ?? selectedId : null;
+	const selected = canonicalSelectedId && visibleIds.has(canonicalSelectedId)
+		? learning.nodes.find((node) => node.id === canonicalSelectedId) ?? null
+		: null;
 	// ⌘F (shortcut wave C): the find event focuses the node search —
 	// surface-scoped, dispatched as lh:kbd-find (only this page listens).
 	const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1085,24 +1131,14 @@ export function GraphView({
 		return () => clearTimeout(id);
 	}, [settings]);
 
-	// The renderer instance lives across snapshot refetches and settings
-	// changes (its camera is never reset by either); `posRef` carries the
-	// frozen layout out of the layout effect.
+	// The renderer survives refetches and settings changes within a subject.
+	// posRef carries the subject's resting layout into the data feed.
 	const rendererRef = useRef<GraphCanvasRenderer | null>(null);
 	const posRef = useRef<Map<string, { x: number; y: number }> | null>(null);
-
-	// The id set that survives the current search — consumed by the
-	// visibility feed and the "no matches" hint.
-	const visibleIds = useMemo(() => {
-		const set = new Set<string>();
-		if (snapshot)
-			for (const node of learning.nodes) {
-				if (isNodeVisible(node, query)) set.add(node.id);
-			}
-		return set;
-	}, [snapshot, learning, query]);
-	const icebergVisibleIds = useMemo(() => new Set(icebergLearning.nodes.filter((node) => isNodeVisible(node, query)).map((node) => node.id)), [icebergLearning, query]);
-	const viewVisibleIds = mapView === "iceberg" ? icebergVisibleIds : visibleIds;
+	const pendingPositions = useRef(new Map<string, Position>());
+	const positionWrites = useRef(Promise.resolve());
+	const positionsSavedDuringRead = useRef<Record<string, Position> | null>(null);
+	const appliedPhysics = useRef<typeof physicsTuning | null>(null);
 
 	// Fetch the derived graph. Re-runs when a background pipeline run
 	// finishes (refreshTick) — its merges just landed in the ledger.
@@ -1119,6 +1155,8 @@ export function GraphView({
 	}, [chainSelectOpen]);
 	useEffect(() => {
 		let cancelled = false;
+		const savedWhileLoading: Record<string, Position> = {};
+		positionsSavedDuringRead.current = savedWhileLoading;
 		fetch("/api/graph")
 			.then((res) => {
 				if (!res.ok) throw new Error("The graph could not be loaded. Your saved data has not been changed.");
@@ -1126,13 +1164,20 @@ export function GraphView({
 			})
 			.then((data) => {
 				if (!cancelled) {
-					setSnapshot((current) => isCurrentGraphRevision(current?.graphRevision, data.graphRevision) ? data : current);
+					// A graph read started before a position save may still carry
+					// the old layout at the same graph revision.
+					const next = Object.keys(savedWhileLoading).length
+						? { ...data, positions: { ...data.positions, ...savedWhileLoading } }
+						: data;
+					setSnapshot((current) => isCurrentGraphRevision(current?.graphRevision, data.graphRevision) ? next : current);
 					setGraphError(null);
 				}
 			})
-			.catch((err) => { if (!cancelled) setGraphError(err instanceof Error ? err.message : "The graph could not be loaded."); });
+			.catch((err) => { if (!cancelled) setGraphError(err instanceof Error ? err.message : "The graph could not be loaded."); })
+			.finally(() => { if (positionsSavedDuringRead.current === savedWhileLoading) positionsSavedDuringRead.current = null; });
 		return () => {
 			cancelled = true;
+			if (positionsSavedDuringRead.current === savedWhileLoading) positionsSavedDuringRead.current = null;
 		};
 	}, [refreshTick]);
 
@@ -1290,6 +1335,71 @@ export function GraphView({
 	// any element. Camera moves close the menu (it would float stale);
 	// the dismissal contract is the sidebar's (wave 6).
 	const [ctxNode, setCtxNode] = useState<{ id: string; name: string; x: number; y: number } | null>(null);
+	const conceptClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const cancelConceptClick = useCallback(() => {
+		if (conceptClickTimer.current !== null) clearTimeout(conceptClickTimer.current);
+		conceptClickTimer.current = null;
+	}, []);
+	useEffect(() => cancelConceptClick, [cancelConceptClick, activeSubjectId, mapView, focusCanvasKey, branchAnchorId]);
+	useEffect(() => {
+		if (focusAnchorId && !focusAnchor) setFocus(null);
+	}, [focusAnchorId, focusAnchor]);
+	useEffect(() => {
+		if (branchAnchorId && !branchAnchor) setBranchAnchorId(null);
+	}, [branchAnchorId, branchAnchor]);
+
+	const focusConcept = useCallback((anchorId: string) => {
+		cancelConceptClick();
+		const graph = scopedLearningRef.current;
+		if (!graph.nodes.some((node) => node.id === anchorId)) return;
+		const hasPrerequisites = graph.prerequisites.some((edge) => edge.to === anchorId);
+		setBranchAnchorId(null);
+		setFocus({ anchorId, direction: hasPrerequisites ? "prerequisites" : "unlocks", level: 1, showPaths: false });
+		setFocusQuery("");
+		setSelectedId(null);
+		setCtxNode(null);
+	}, [cancelConceptClick]);
+	const focusDescendants = useCallback((anchorId: string) => {
+		cancelConceptClick();
+		if (!scopedLearningRef.current.nodes.some((node) => node.id === anchorId)) return;
+		setBranchAnchorId(anchorId);
+		setFocusQuery("");
+		setSelectedId(null);
+		setCtxNode(null);
+	}, [cancelConceptClick]);
+	const activateConceptFocus = mapView === "iceberg" ? focusConcept : focusDescendants;
+	function clickConcept(id: string, clickCount = 0) {
+		cancelConceptClick();
+		if (clickCount > 1) {
+			activateConceptFocus(id);
+		} else if (clickCount === 0) {
+			setSelectedId(id);
+		} else {
+			// Opening details changes the width of the map. Give the second
+			// click time to reach the original concept button.
+			conceptClickTimer.current = setTimeout(() => {
+				conceptClickTimer.current = null;
+				setSelectedId(id);
+			}, 300);
+		}
+	}
+	function changeSubject(id: string) {
+		setSubjectId(id);
+		setFocus(null);
+		setBranchAnchorId(null);
+		setCtxNode(null);
+	}
+	function selectRelatedConcept(id: string, subjectId?: string) {
+		const leavesFocus = isFocused && (subjectId || !listedNodes.some((node) => node.id === id));
+		if (subjectId) changeSubject(subjectId);
+		else if (leavesFocus) {
+			setFocus(null);
+			setBranchAnchorId(null);
+		}
+		const node = learning.nodes.find((candidate) => candidate.id === id);
+		if (node && !isNodeVisible(node, leavesFocus ? overviewQuery : query)) (leavesFocus ? setOverviewQuery : setQuery)("");
+		setSelectedId(id);
+	}
 	const ctxAnchorRef = useRef<HTMLDivElement | null>(null);
 	const [deletingNode, setDeletingNode] = useState<{ id: string; name: string } | null>(null);
 	useEffect(() => {
@@ -1314,58 +1424,40 @@ export function GraphView({
 		};
 	}, [ctxNode]);
 
-	// Layout (Option A): the positions ledger (written by the server's
-	// incremental settle after every merge) IS the layout — the renderer
-	// receives it as frozen data. The local one-shot forceAtlas2 pass runs
-	// ONLY as a fallback when the ledger is absent (a graph never merged
-	// through the pipeline, e.g. tests or a fresh install).
+	// Focus lays out the visible level independently. The overview uses
+	// the saved positions and fills gaps when new concepts arrive.
 	useEffect(() => {
-		if (!snapshot || learning.nodes.length === 0) return;
-		// The ledger path: every positioned node uses its resting position;
-		// nodes the ledger doesn't know yet (raced mid-settle) fall through
-		// to seeded scatter below.
-		const ledger = snapshot.positions;
-		if (ledger) {
-			const positions = new Map<string, { x: number; y: number }>();
-			for (const node of learning.nodes) {
-				const p = ledger[node.id];
-				if (p) positions.set(node.id, { x: p.x, y: p.y });
-			}
-			if (positions.size > 0) {
-				// Hygiene (2026-09-23 fix wave): nodes the ledger doesn't know
-				// yet (raced mid-settle) get seeded ring positions instead of
-				// the old ?? 0 origin dump.
-				posRef.current = seedMissingNodePositions(learning.nodes, positions);
-				return () => {
-					posRef.current = null;
-				};
+		if (!snapshot || canvasLearning.nodes.length === 0) return;
+		const positions = new Map<string, Position>();
+		if (!focusCanvasKey) {
+			for (const node of canvasLearning.nodes) {
+				const point = pendingPositions.current.get(node.id) ?? snapshot.positions?.[node.id];
+				if (point) positions.set(node.id, { x: point.x, y: point.y });
 			}
 		}
-		// Bootstrap fallback: the ledger is absent (fresh graph) — run
-		// the SAME engine the server settle uses (d3-force via
-		// incrementalLayout, seeded deterministic) and freeze the result.
-		// Deterministic for a given node set across remounts.
-		posRef.current = incrementalLayout(learning.nodes, learning.prerequisites, new Map());
+		posRef.current = positions.size
+			? seedMissingNodePositions(canvasLearning.nodes, positions)
+			: incrementalLayout(canvasLearning.nodes, canvasLearning.prerequisites, positions);
 		return () => {
 			posRef.current = null;
 		};
-	}, [snapshot, learning]);
+	}, [snapshot, canvasLearning, focusCanvasKey]);
 
-	// Construct the renderer once the canvas exists; destroy when it goes
-	// away (the empty-graph placeholder replaces it). The callbacks are
-	// created once and read through refs, so they never go stale.
+	// Give each subject its own camera and renderer. Refetches within the
+	// subject keep the current viewport and any live drag.
 	const isEmpty = learning.nodes.length === 0;
 	useEffect(() => {
-		if (isEmpty) return;
+		if (isEmpty || !activeSubjectId) return;
 		const canvas = canvasRef.current;
 		if (!canvas) return;
+		const cameraStorageKey = `${CAMERA_STORAGE_PREFIX}.${activeSubjectId}`;
 		// Persisted camera (2026-09-15): the graph reopens exactly where the
 		// user left it — zoom AND pan, in localStorage (per-device view
 		// state, deliberately NOT the server settings ledger). Absent or
 		// corrupt → undefined → the renderer fits on first open, ever.
 		let initialCamera: { k: number; x: number; y: number } | null = null;
 		try {
-			const stored = localStorage.getItem(CAMERA_STORAGE_KEY);
+			const stored = !focusCanvasKey && localStorage.getItem(cameraStorageKey);
 			if (stored) {
 				const parsed = JSON.parse(stored) as { k?: unknown; x?: unknown; y?: unknown };
 				if (
@@ -1388,7 +1480,7 @@ export function GraphView({
 			cameraTimer = setTimeout(() => {
 				cameraTimer = null;
 				try {
-					localStorage.setItem(CAMERA_STORAGE_KEY, JSON.stringify(t));
+					localStorage.setItem(cameraStorageKey, JSON.stringify(t));
 				} catch {
 					// Storage full/blocked: camera persistence is best-effort.
 				}
@@ -1398,6 +1490,7 @@ export function GraphView({
 			canvas,
 			{
 				onSelect: (nodeId) => setSelectedId(nodeId),
+				onFocusNode: focusCanvasKey ? focusConcept : focusDescendants,
 				onStageClick: () => setSelectedId(null),
 				// Right-click → the node context menu (node interlude). Null
 				// (empty stage) closes a stale menu; a pick opens one anchored
@@ -1408,7 +1501,7 @@ export function GraphView({
 						setCtxNode(null);
 						return;
 					}
-					const node = learningRef.current.nodes.find((n) => n.id === nodeId);
+					const node = scopedLearningRef.current.nodes.find((n) => n.id === nodeId);
 					if (!node) return;
 					setCtxNode({ id: node.id, name: node.name, x: pos.x, y: pos.y });
 				},
@@ -1416,20 +1509,44 @@ export function GraphView({
 				// context menu closes; remember the user's view separately.
 				onCameraMove: (t) => {
 					setCtxNode(null);
-					persistCamera(t);
+					if (!focusCanvasKey) persistCamera(t);
 				},
-				// Live physics settled: persist the new rest state. Fire-and-
-				// forget — the next snapshot fetch carries the ledger anyway.
+				// Keep in-flight drags available to a subject opened before
+				// the position commit settles.
 				onCommit: (positions) => {
-					void fetch("/api/graph/positions", {
-						method: "PUT",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(positions),
-					}).catch((err) => console.error("[graph] positions commit failed", err));
+					if (focusCanvasKey) return;
+					const entries = Object.entries(positions);
+					for (const [id, position] of entries) pendingPositions.current.set(id, position);
+					positionWrites.current = positionWrites.current.then(async () => {
+						try {
+							const response = await fetch("/api/graph/positions", {
+								method: "PUT",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify(positions),
+							});
+							if (!response.ok) throw new Error(`Position commit failed (${response.status})`);
+							const saved = await response.json() as { positions: Record<string, Position> };
+							const latest = Object.fromEntries(Object.entries(saved.positions).filter(([id]) => pendingPositions.current.get(id) === positions[id]));
+							if (Object.keys(latest).length) {
+								if (positionsSavedDuringRead.current) Object.assign(positionsSavedDuringRead.current, latest);
+								setSnapshot((current) => current && { ...current, positions: { ...current.positions, ...latest } });
+							}
+						} catch (error) {
+							console.error("[graph] positions commit failed", error);
+						} finally {
+							for (const [id, position] of entries) {
+								if (pendingPositions.current.get(id) === position) pendingPositions.current.delete(id);
+							}
+						}
+					});
 				},
 			},
 			initialCamera,
 		);
+		renderer.setSettings(settingsRef.current);
+		renderer.setRegionTuning(settingsRef.current.regions);
+		renderer.setPhysicsTuning(settingsRef.current.physics, false);
+		appliedPhysics.current = settingsRef.current.physics;
 		rendererRef.current = renderer;
 		return () => {
 			rendererRef.current = null;
@@ -1439,14 +1556,15 @@ export function GraphView({
 				clearTimeout(cameraTimer);
 				cameraTimer = null;
 				try {
-					localStorage.setItem(CAMERA_STORAGE_KEY, JSON.stringify(lastCamera));
+					localStorage.setItem(cameraStorageKey, JSON.stringify(lastCamera));
 				} catch {
 					// best-effort
 				}
 			}
+			renderer.commitMovedPositions();
 			renderer.destroy();
 		};
-	}, [isEmpty]);
+	}, [activeSubjectId, focusCanvasKey, focusConcept, focusDescendants, isEmpty]);
 
 	// Feed #1 — data: positions + edges + clusters + resolved colors. Runs
 	// after the layout effect (same commit, declaration order) and after
@@ -1454,9 +1572,10 @@ export function GraphView({
 	useEffect(() => {
 		const renderer = rendererRef.current;
 		const positions = posRef.current;
-		if (!renderer || !snapshot || learning.nodes.length === 0 || !positions) return;
+		if (!renderer || !positions || canvasLearning.nodes.length === 0) return;
+		const edges = canvasLearning.prerequisites.map((edge) => ({ from: edge.from, to: edge.to }));
 		renderer.setData({
-			nodes: learning.nodes.map((n) => ({
+			nodes: canvasLearning.nodes.map((n) => ({
 				id: n.id,
 				x: positions.get(n.id)?.x ?? 0,
 				y: positions.get(n.id)?.y ?? 0,
@@ -1464,15 +1583,16 @@ export function GraphView({
 				progress: n.progress,
 				ready: n.ready,
 			})),
-			edges: learning.prerequisites.map((e) => ({ from: e.from, to: e.to })),
-			logicalEdges: learning.prerequisites.map((e) => ({ from: e.from, to: e.to })),
+			edges,
+			focused: focusCanvasKey !== null,
+			logicalEdges: edges,
 			impLinks: [],
-			clusters: learning.groups.map((c) => ({ id: c.id, label: c.name, members: c.members })),
+			clusters: canvasLearning.groups.map((c) => ({ id: c.id, label: c.name, members: c.members })),
 			colors: canvasColors(),
 			// Match the app typography (Geist via the body's stack).
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
-	}, [snapshot, learning, isEmpty]);
+	}, [snapshot, canvasLearning, focusCanvasKey]);
 
 	// CSS variables apply in the parent provider's effect. Read them on the
 	// next frame, then repaint without replaying the data/simulation feed.
@@ -1493,11 +1613,11 @@ export function GraphView({
 	// Feed #3 — visibility: hidden nodes drop out of rendering, picking,
 	// hover, AND labels; edges drop when either endpoint is hidden.
 	useEffect(() => {
-		rendererRef.current?.setVisible(query.trim() ? visibleIds : null);
+		rendererRef.current?.setVisible(branchIds !== null || query.trim() ? visibleIds : null);
 		// The open detail card cannot outlive its node's visibility.
-		const selectableIds = query.trim() && mapView === "iceberg" ? icebergVisibleIds : visibleIds;
-		setSelectedId((id) => (id && selectableIds.has(learning.idAliases?.[id] ?? id) ? id : null));
-	}, [visibleIds, icebergVisibleIds, mapView, query, learning.idAliases]);
+		setSelectedId((id) => (id && visibleIds.has(learning.idAliases?.[id] ?? id) ? id : null));
+		setCtxNode((current) => current && visibleIds.has(current.id) ? current : null);
+	}, [visibleIds, branchIds, query, learning.idAliases]);
 
 	// Feed #4 — region tuning. `isEmpty` in the deps (same as Feed #2):
 	// the settings fetch resolves BEFORE the snapshot creates the renderer,
@@ -1511,12 +1631,15 @@ export function GraphView({
 	// survive; a mid-settle change re-anneals, the honest response). Same
 	// isEmpty dep as Feed #4 — see there.
 	useEffect(() => {
-		rendererRef.current?.setPhysicsTuning(physicsTuning);
+		const renderer = rendererRef.current;
+		if (!renderer || appliedPhysics.current === physicsTuning) return;
+		appliedPhysics.current = physicsTuning;
+		renderer.setPhysicsTuning(physicsTuning, userTouched.current);
 	}, [physicsTuning, isEmpty]);
 
 	useEffect(() => {
-		rendererRef.current?.setSelected(canonicalSelectedId);
-	}, [canonicalSelectedId, isEmpty]);
+		rendererRef.current?.setSelected(selected?.id ?? null);
+	}, [activeSubjectId, focusCanvasKey, selected?.id, isEmpty]);
 
 	const applyLearning = (next: LearningGraphSnapshot, revision: number) => {
 		const names = new Map(next.nodes.map((node) => [node.id, node.name]));
@@ -1546,6 +1669,20 @@ export function GraphView({
 		} finally { setMapUpdating(false); }
 	};
 
+	const conceptList = showCanvas && (
+		<details className="mt-2" open={query.trim() ? true : undefined}>
+			<summary className="cursor-pointer py-1 text-muted-foreground">{query.trim() ? `${visibleIds.size} matching concepts` : `Browse ${listedNodes.length} concepts`}</summary>
+			<div className="mt-1 max-h-48 overflow-auto" aria-label="Concepts">
+				{listedNodes.filter((node) => visibleIds.has(node.id)).map((node) => (
+					<button key={node.id} type="button" onClick={(event) => clickConcept(node.id, event.detail)} aria-pressed={canonicalSelectedId === node.id} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left hover:bg-accent">
+						<span>{node.name}</span>
+						<span className="shrink-0 text-[10px] text-muted-foreground">{node.progress === "comfortable" ? "Comfortable" : node.progress === "learning" ? "Learning" : "Unassessed"}{node.ready && node.progress !== "comfortable" ? " · Ready" : ""}</span>
+					</button>
+				))}
+			</div>
+		</details>
+	);
+
 	return (
 		<div className="relative h-full w-full">
 			{isEmpty ? (
@@ -1561,27 +1698,49 @@ export function GraphView({
 					</div>
 				</div>
 			) : (
-				<div ref={containerRef} className={`absolute inset-x-0 top-24 ${selected ? "bottom-[56%] md:right-[23rem] md:bottom-40" : "bottom-40"}`}>
-					{/* THE single canvas: every layer (hulls, edges, nodes, both
-					    label systems, hover) draws into it, once per frame. */}
-					<canvas ref={canvasRef} aria-label="Learning prerequisites graph. Use search or the concept list to select a node." className={`block h-full w-full touch-none ${mapView === "iceberg" ? "invisible" : ""}`} />
-					{/* The context menu's anchor: a zero-size point at the
-					    right-click position (canvas-relative == container-relative,
-					    the canvas fills this div). */}
-					{ctxNode !== null && (
-						<div
-							ref={ctxAnchorRef}
-							style={{ position: "absolute", left: ctxNode.x, top: ctxNode.y, width: 0, height: 0 }}
-						/>
-					)}
+				<div className={`absolute inset-x-0 top-36 flex flex-col sm:top-24 ${selected ? "bottom-[56%] md:right-[23rem] md:bottom-40" : "bottom-40"}`}>
+					{focusAnchor && focusView && <LearningFocusControls
+						className="z-10 mx-3 my-2 max-w-[calc(100%-1.5rem)] shrink-0"
+						anchorName={focusAnchor.name}
+						direction={focusDirection}
+						level={focusLevel}
+						maxLevel={maxFocusLevel}
+						conceptCount={focusLevel > 0 ? focusView.levelCount : 0}
+						connectionCount={focusView.connectionCount}
+						showPaths={showFocusPaths}
+						onDirectionChange={(direction) => {
+							setFocus((current) => current && current.direction !== direction ? { ...current, direction, level: 1 } : current);
+							setFocusQuery("");
+						}}
+						onLevelChange={(level) => {
+							setFocus((current) => current && { ...current, level });
+							setFocusQuery("");
+						}}
+						onShowPathsChange={(showPaths) => {
+							setFocus((current) => current && { ...current, showPaths });
+							setFocusQuery("");
+						}}
+						onExit={() => { setFocus(null); setSelectedId(null); setCtxNode(null); }}
+					/>}
+					<div className="relative min-h-0 flex-1">
+						<canvas ref={canvasRef} aria-label={focusView ? "Focused prerequisite graph. Double-click a concept to focus on it." : "Learning prerequisites graph. Use search or the concept list to select a node."} className={`block h-full w-full touch-none ${showCanvas ? "" : "invisible"}`} />
+						{focusView && <div className="lh-no-drag absolute left-3 top-1 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border bg-card/95 px-3 pb-1 text-xs shadow-sm backdrop-blur">{conceptList}</div>}
+						{ctxNode !== null && (
+							<div
+								ref={ctxAnchorRef}
+								style={{ position: "absolute", left: ctxNode.x, top: ctxNode.y, width: 0, height: 0 }}
+							/>
+						)}
+					</div>
 				</div>
 			)}
-			{!isEmpty && mapView === "iceberg" && <LearningIceberg learning={icebergLearning} selectedId={canonicalSelectedId} onSelect={setSelectedId} visibleIds={icebergVisibleIds} subjects={subjects} subjectId={activeSubjectId} onSubjectChange={(id) => { setSubjectId(id); setSelectedId(null); setCtxNode(null); }} className={`absolute inset-x-0 top-28 bottom-40 overflow-y-auto px-4 py-4 ${selected ? "md:pr-[24rem]" : ""}`} />}
+			{!isEmpty && !showCanvas && <LearningIceberg learning={scopedLearning} selectedId={canonicalSelectedId} onSelect={clickConcept} visibleIds={visibleIds} subject={showAllSubjects ? ALL_SUBJECTS_SCOPE : activeSubject} className={`absolute inset-x-0 top-36 bottom-40 overflow-y-auto px-4 py-4 sm:top-28 ${selected ? "md:pr-[24rem]" : ""}`} />}
 
 			<div className="lh-no-drag absolute inset-x-3 top-14 z-10 flex flex-wrap items-start gap-2">
+				{subjects.length > 0 && <LearningSubjectSelect subjects={subjects} subjectId={activeSubjectId} totalConcepts={learning.nodes.length} onChange={changeSubject} />}
 				<div className="flex rounded-xl border bg-card/95 p-1 shadow-sm backdrop-blur" aria-label="Map view">
 					{(["prerequisites", "iceberg"] as const).map((view) => (
-						<button key={view} type="button" aria-pressed={mapView === view} onClick={() => { if (view === "iceberg" && !icebergLearning.nodes.some((node) => node.id === canonicalSelectedId)) setSelectedId(null); setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+						<button key={view} type="button" aria-pressed={!focusView && mapView === view} onClick={() => { setFocus(null); setBranchAnchorId(null); setMapView(view); setCtxNode(null); }} className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${!focusView && mapView === view ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
 							{view === "prerequisites" ? "Prerequisites" : "Iceberg"}
 						</button>
 					))}
@@ -1589,19 +1748,23 @@ export function GraphView({
 				<button type="button" disabled={mapUpdating || pipelineRuns.length > 0} onClick={refreshLearning} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground disabled:opacity-50">
 					{mapUpdating ? "Updating…" : "Update map"}
 				</button>
-				{!isEmpty && mapView === "prerequisites" && <button type="button" aria-label="Fit graph" onClick={() => rendererRef.current?.fit()} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground">Fit<span className="hidden sm:inline"> graph</span></button>}
+				{!isEmpty && showCanvas && <button type="button" aria-label="Fit graph" onClick={() => rendererRef.current?.fit({ visibleOnly: branchIds !== null })} className="rounded-xl border bg-card/95 px-3 py-2.5 text-xs text-muted-foreground shadow-sm hover:text-foreground">Fit<span className="hidden sm:inline"> graph</span></button>}
 			</div>
-			{!isEmpty && mapView === "prerequisites" && (
-				<div className="lh-no-drag absolute left-3 top-28 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border bg-card/95 p-3 text-xs shadow-sm backdrop-blur">
+			{!isEmpty && showCanvas && !focusView && (
+				<div className="lh-no-drag absolute left-3 top-36 z-10 max-w-[min(22rem,calc(100%-1.5rem))] rounded-xl border bg-card/95 p-3 text-xs shadow-sm backdrop-blur sm:top-28">
 					<LearningProgressLegend />
 					<p className="mt-2 text-[11px] text-muted-foreground">Arrows mean learning prerequisites. Dashed rings mean ready to learn.</p>
-					{learning.prerequisites.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">No prerequisites recorded yet. Update the map from your sessions, or add a connection in node details.</p>}
-					<details className="mt-2" open={query.trim() ? true : undefined}>
-						<summary className="cursor-pointer py-1 text-muted-foreground">{query.trim() ? `${visibleIds.size} matching concepts` : `Browse ${learning.nodes.length} concepts`}</summary>
-						<div className="mt-1 max-h-48 overflow-auto" aria-label="Concepts">
-							{learning.nodes.filter((node) => visibleIds.has(node.id)).map((node) => <button key={node.id} type="button" onClick={() => setSelectedId(node.id)} aria-pressed={canonicalSelectedId === node.id} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left hover:bg-accent"><span>{node.name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{node.progress === "comfortable" ? "Comfortable" : node.progress === "learning" ? "Learning" : "Unassessed"}{node.ready && node.progress !== "comfortable" ? " · Ready" : ""}</span></button>)}
+					{branchAnchor ? (
+						<div className="mt-2 rounded-md border border-border/70 px-2 py-1.5">
+							<div className="flex items-center gap-2">
+								<span role="status" className="min-w-0 flex-1 truncate" title={branchAnchor.name}>Focused on {branchAnchor.name}</span>
+								<button type="button" onClick={() => setBranchAnchorId(null)} className="shrink-0 rounded-md px-2 py-1 text-muted-foreground hover:bg-accent focus-visible:outline-ring">Clear focus</button>
+							</div>
+							{branchIds?.size === 0 && <p className="mt-1 text-muted-foreground">No dependent concepts in this view.</p>}
 						</div>
-					</details>
+					) : <p className="mt-1 text-[11px] text-muted-foreground">Double-click a concept to see what builds on it.</p>}
+					{scopedLearning.prerequisites.length === 0 && <p className="mt-2 text-[11px] text-muted-foreground">{showAllSubjects ? "No prerequisite connections recorded." : "No prerequisite connections within this subject."}</p>}
+					{conceptList}
 				</div>
 			)}
 			{((graphError && !isEmpty) || mapMessage) && <div role={graphError ? "alert" : "status"} className="lh-no-drag absolute left-3 top-[15rem] z-30 max-w-sm rounded-xl border bg-card p-3 text-xs shadow-lg">{graphError ?? mapMessage}<button type="button" aria-label="Dismiss map update message" className="ml-3 text-muted-foreground" onClick={() => { setMapMessage(""); setGraphError(null); }}>×</button></div>}
@@ -1691,7 +1854,7 @@ export function GraphView({
 					isEmpty={isEmpty}
 					query={query}
 					onQuery={setQuery}
-					noMatch={snapshot !== null && viewVisibleIds.size === 0 && query.trim() !== ""}
+					noMatch={snapshot !== null && visibleIds.size === 0 && query.trim() !== ""}
 					importing={importing}
 					searchInputRef={searchInputRef}
 					fileInputRef={fileInputRef}
@@ -1723,11 +1886,14 @@ export function GraphView({
 					learning={learning}
 					sessions={snapshot?.sessions}
 					fileSources={snapshot?.fileSources}
+					mapSubjectId={activeSubject?.id}
+					mapSubjects={subjects}
 					onClose={() => setSelectedId(null)}
-					onSelect={setSelectedId}
+					onSelect={selectRelatedConcept}
+					onFocus={() => activateConceptFocus(selected.id)}
 					onSave={(patch) => patchLearning(`/api/graph/nodes/${encodeURIComponent(selected.id)}`, patch)}
 					onPrerequisiteChange={(patch) => patchLearning("/api/graph/prerequisites", patch)}
-					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode) : undefined}
+					onStartSession={onStartConcept ? (mode) => onStartConcept(selected, mode, activeSubject?.id) : undefined}
 					sessionStarting={conceptStarting}
 					className="lh-no-drag absolute inset-x-2 bottom-36 z-20 max-h-[52%] md:inset-x-auto md:right-3 md:top-28 md:bottom-40 md:max-h-none md:w-[22rem]"
 				/>

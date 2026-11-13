@@ -1,8 +1,7 @@
 /**
  * Pure-helper tests for the hand-rolled canvas renderer
- * (components/graph-canvas.ts). The renderer class itself is DOM-bound
- * (canvas, rAF, ResizeObserver) and is verified live in the browser; the
- * math it runs on every frame must be exact, so it is pinned here.
+ * (components/graph-canvas.ts). A DOM fixture exercises pointer dispatch
+ * without starting the drawing loop.
  *
  * The camera-ratio convention is the load-bearing contract with the
  * persisted settings: sigma's ratio (1 = fit, SMALLER = zoomed in) is kept
@@ -11,6 +10,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it, it as test } from "node:test";
+import { parseHTML } from "linkedom";
 import {
 	applyClusterLabels,
 	applyNodePresentation,
@@ -25,15 +25,149 @@ import {
 	zoomRatioOf,
 	LABELS_FADE_RATIO,
 	GraphCanvasRenderer,
+	type RendererCallbacks,
 } from "../components/graph-canvas.ts";
 import {
 	sanitizePhysicsTuning,
 	sanitizeRegionTuning,
 	DEFAULT_PHYSICS_TUNING,
 	DEFAULT_REGION_TUNING,
+	DEFAULT_RENDER_SETTINGS,
 	REGION_BITMAP_OPTIONS,
 	REGION_BLUR_LADDER,
 } from "../src/core/render-settings.ts";
+
+test("only a same-node mouse double-click focuses and interrupted clicks do not open details later", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const { window, document } = parseHTML("<html><body><canvas></canvas></body></html>");
+	const globals = {
+		window, document, SVGElement: window.SVGElement,
+		Path2D: class {},
+		ResizeObserver: class { observe() {} disconnect() {} },
+		requestAnimationFrame: () => 1,
+		cancelAnimationFrame() {},
+	};
+	const saved = Object.getOwnPropertyDescriptors(globalThis);
+	t.after(() => {
+		for (const key of Object.keys(globals)) {
+			const descriptor = saved[key];
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	});
+	Object.assign(globalThis, globals);
+	const canvas = document.querySelector<HTMLCanvasElement>("canvas")!;
+	Object.defineProperties(canvas, {
+		clientWidth: { value: 500 },
+		clientHeight: { value: 400 },
+		getContext: { value: () => ({ setTransform() {} }) },
+		getBoundingClientRect: { value: () => ({ left: 0, top: 0 }) },
+		setPointerCapture: { value: () => {} },
+		releasePointerCapture: { value: () => {} },
+	});
+	const events: string[] = [];
+	const callbacks: RendererCallbacks = {
+		onSelect: (id) => { events.push(`select ${id}`); },
+		onStageClick: () => { events.push("stage"); },
+		onContext() {}, onCameraMove() {}, onCommit() {},
+	};
+	function createRenderer(onFocusNode?: RendererCallbacks["onFocusNode"]) {
+		const renderer = new GraphCanvasRenderer(canvas, { ...callbacks, onFocusNode }, { k: 1, x: 0, y: 0 });
+		renderer.setSettings(DEFAULT_RENDER_SETTINGS);
+		renderer.setData({
+			nodes: [{ id: "n_a", x: 80, y: 80, label: "A" }, { id: "n_b", x: 160, y: 80, label: "B" }],
+			edges: [], clusters: [], fontFamily: "sans-serif",
+			colors: { node: "#fff", edge: "#000", label: "#fff", hoverText: "#fff", clusterLabelLightness: 78 },
+		});
+		return renderer;
+	}
+	function pointer(type: string, x: number, pointerType = "mouse") {
+		const event = new window.Event(type, { bubbles: true, cancelable: true });
+		Object.assign(event, { clientX: x, clientY: 80, button: 0, pointerId: 1, isPrimary: true, pointerType });
+		canvas.dispatchEvent(event);
+	}
+	function click(x: number, pointerType = "mouse") {
+		pointer("pointerdown", x, pointerType);
+		pointer("pointerup", x, pointerType);
+	}
+	const renderer = createRenderer((id) => { events.push(`focus ${id}`); });
+	try {
+		click(80);
+		assert.deepEqual(events, []);
+		click(80);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), ["focus n_a"]);
+
+		click(80);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), ["select n_a"]);
+		click(80);
+		click(160);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), ["select n_b"]);
+
+		click(80);
+		click(300);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), ["stage"]);
+		click(80);
+		pointer("pointerdown", 80);
+		pointer("pointermove", 110);
+		pointer("pointerup", 80);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), []);
+		click(80);
+		pointer("pointerdown", 80);
+		pointer("pointercancel", 80);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(events.splice(0), []);
+
+		click(160, "touch");
+		assert.deepEqual(events.splice(0), ["select n_b"]);
+		renderer.setVisible(new Set(["n_a"]));
+		click(160, "touch");
+		assert.deepEqual(events.splice(0), ["stage"]);
+		click(80);
+	} finally {
+		renderer.destroy();
+	}
+	t.mock.timers.tick(1000);
+	assert.deepEqual(events, []);
+	const legacy = createRenderer();
+	try {
+		click(80);
+		assert.deepEqual(events, ["select n_a"]);
+	} finally {
+		legacy.destroy();
+	}
+	t.mock.timers.tick(1000);
+});
+
+test("visibility leaves the camera alone and fitting a subset preserves the overview zoom reference", () => {
+	const bounds = { minX: 20, minY: 20, maxX: 900, maxY: 600 };
+	const transforms: Array<{ k: number; x: number; y: number }> = [];
+	const state = {
+		canvas: { clientWidth: 500, clientHeight: 400 },
+		data: { nodes: [{ id: "n_a", x: 20, y: 20 }, { id: "n_b", x: 900, y: 600 }] },
+		visible: null, pendingNodeClick: null, worldBBox: bounds, kFit: 0.48, hasFit: true,
+		geoVersion: 7, regionBuiltVersion: 7,
+		zoomBehavior: { transform(_selection: unknown, { k, x, y }: { k: number; x: number; y: number }) { transforms.push({ k, x, y }); } },
+		markDirty() {},
+	};
+	const renderer = Object.setPrototypeOf(state, GraphCanvasRenderer.prototype) as unknown as GraphCanvasRenderer;
+	renderer.setVisible(new Set(["n_a"]));
+	assert.deepEqual(transforms, []);
+	assert.equal(state.regionBuiltVersion, null);
+	renderer.fit({ visibleOnly: true });
+	assert.deepEqual(transforms, [{ k: 5, x: 150, y: 100 }]);
+	assert.equal(state.kFit, 0.48);
+	assert.equal(state.worldBBox, bounds);
+	renderer.setVisible(new Set());
+	renderer.fit({ visibleOnly: true });
+	assert.equal(transforms.length, 1);
+	renderer.fit();
+	assert.deepEqual(transforms[1], fitTransform(bounds, 500, 400, 40));
+});
 
 test("theme repaint preserves graph data, camera, active drag and pending commit", () => {
 	const colors = { node: "#222222", edge: "#555555", label: "#444444", hoverText: "#111111", clusterLabelLightness: 35 };

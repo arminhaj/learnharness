@@ -34,6 +34,8 @@ const { chatStore } = await import("../src/store/chats.ts");
 const { graphStore } = await import("../src/store/graph.ts");
 const learning = await import("../src/server/learning-graph.ts");
 const { createConceptSessionRequest } = await import("../src/core/learning-session.ts");
+const { LEARNING_SUBJECT_UNASSIGNED_ID, learningSubjectId } = await import("../src/core/learning-subjects.ts");
+const { newCompactionMarker } = await import("../src/core/compaction.ts");
 const { learningPassages } = await import("../src/agent/subagents/learning-map.ts");
 
 after(() => {
@@ -83,6 +85,18 @@ describe("newGraphContextMessage", () => {
 		const part = view[0]!.parts[0] as { type: string; data: unknown };
 		assert.equal(part.type, "data-graph-context");
 		assert.deepEqual(part.data, m.details);
+	});
+
+	it("carries the named subject through compaction without replaying concept statements", () => {
+		const launch = newGraphContextMessage(PICKS, [], undefined, { id: learningSubjectId("Logic"), name: "Logic" });
+		const recent = { id: "recent", role: "user", content: "Continue", timestamp: 1 } as const;
+		const compaction = newCompactionMarker("Earlier lesson summary", {
+			firstKeptMessageId: recent.id, tokensBefore: 100, at: "2026-10-20T12:00:00.000Z",
+		});
+		const wire = JSON.stringify(toLlmMessages([launch, recent, compaction]));
+		assert.match(wire, /Earlier lesson summary/);
+		assert.equal(wire.split("Selected subject: Logic").length - 1, 1);
+		assert.doesNotMatch(wire, /Modus ponens/);
 	});
 });
 
@@ -147,6 +161,65 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 			assert.deepEqual(learningPassages({ ...saved, messages: [...saved.messages, { id: "opening", role: "user", content: request.title, timestamp: Date.parse(date) }] }), []);
 		}
 		assert.equal(graphStore.readNodes().some((node) => node.id === planned.id), false, "launching does not invent encountered evidence");
+	});
+
+	it("validates the chosen subject and persists the scope for concept and freeform sessions", async () => {
+		const date = "2026-10-20T12:00:00.000Z";
+		const shared = { id: "n_shared_launch", name: "Probability", statement: "A probability measures the chance of an event.", aliases: [], createdAt: date, provenance: [] };
+		const unassigned = { ...shared, id: "n_unassigned_launch", name: "Abstraction", statement: "Abstraction omits irrelevant details." };
+		const outside = { ...shared, id: "n_outside_launch", name: "Acidity", statement: "Lower pH indicates higher acidity." };
+		for (const node of [shared, unassigned, outside]) graphStore.appendNode(node);
+		learning.updateLearningNode(shared.id, { subjects: ["Mathematics", "Statistics"] });
+		learning.updateLearningNode(outside.id, { subjects: ["Chemistry"] });
+
+		const create = (body: object) => POST(new Request("http://test/api/chats", { method: "POST", body: JSON.stringify(body) }));
+		const statistics = learningSubjectId("Statistics");
+		const chemistry = learningSubjectId("Chemistry");
+		const unknown = learningSubjectId("Missing");
+		const before = chatStore.listChats().length;
+		for (const [body, status] of [
+			[{ learningContext: { nodeId: shared.id, subjectId: chemistry } }, 400],
+			[{ learningContext: { nodeId: shared.id, subjectId: LEARNING_SUBJECT_UNASSIGNED_ID } }, 400],
+			[{ learningContext: { nodeId: shared.id, subjectId: null } }, 400],
+			[{ learningContext: { nodeId: shared.id, subjectId: unknown } }, 404],
+			[{ learningSubjectId: statistics, learningContext: { nodeId: shared.id } }, 400],
+			[{ learningSubjectId: statistics, kind: "practice" }, 400],
+			[{ learningSubjectId: LEARNING_SUBJECT_UNASSIGNED_ID }, 400],
+			[{ learningSubjectId: unknown }, 404],
+		] as const) {
+			assert.equal((await create(body)).status, status);
+		}
+		assert.equal(chatStore.listChats().length, before);
+
+		for (const request of [
+			createConceptSessionRequest(shared, "teach", statistics),
+			createConceptSessionRequest(shared, "practice", statistics),
+			{ title: "Teach me about repeated trials", learningSubjectId: statistics },
+		]) {
+			const response = await create(request);
+			assert.equal(response.status, 200);
+			const { id } = await response.json() as { id: string };
+			const saved = chatStore.getChat(id)!;
+			assert.equal(saved.learningSubjectId, statistics);
+			assert.equal(initialPromptOwed(saved.messages, request.title), true);
+			const marker = saved.messages[0]!;
+			assert.equal(marker.role, "custom");
+			if (marker.role !== "custom") assert.fail("expected graph context");
+			assert.deepEqual((marker.details as { subject: unknown }).subject, { id: statistics, name: "Statistics" });
+			assert.equal((marker.details as { propositions: unknown[] }).propositions.length, "learningContext" in request ? 1 : 0);
+			assert.match(JSON.stringify(toLlmMessages(saved.messages)), /Selected subject: Statistics/);
+			assert.deepEqual(learningPassages(saved), []);
+			chatStore.saveMessages(id, [...saved.messages, { id: "opening", role: "user", content: request.title, timestamp: Date.parse(date) }]);
+			assert.equal(chatStore.getChat(id)!.learningSubjectId, statistics);
+		}
+
+		const response = await create(createConceptSessionRequest(unassigned, "teach", LEARNING_SUBJECT_UNASSIGNED_ID));
+		assert.equal(response.status, 200);
+		const { id } = await response.json() as { id: string };
+		const record = chatStore.getChat(id)!;
+		assert.equal(record.learningSubjectId, LEARNING_SUBJECT_UNASSIGNED_ID);
+		assert.match(JSON.stringify(toLlmMessages(record.messages)), /Map view: Unassigned concepts/);
+		assert.doesNotMatch(JSON.stringify(toLlmMessages(record.messages)), /Selected subject: Unassigned/);
 	});
 
 	it("writes the marker before any user message; chains derive from the live graph", async () => {

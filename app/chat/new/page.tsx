@@ -1,6 +1,6 @@
 import { NewSession } from "@/components/new-session";
-import { readSettingsRecord } from "@/src/server";
-import { slotsConfigured } from "@/src/core";
+import { learningGraphView, readSettingsRecord } from "@/src/server";
+import { LEARNING_SUBJECT_UNASSIGNED_ID, learningSubjects, slotsConfigured, type LearningSessionSubject } from "@/src/core";
 
 export const dynamic = "force-dynamic";
 
@@ -20,11 +20,23 @@ export default async function NewSessionPage({
 }: {
 	searchParams: Promise<{ mode?: string }>;
 }) {
-	const { mode } = await searchParams;
+	const { mode: requestedMode } = await searchParams;
+	const mode = requestedMode === "practice" ? "practice" : "teach";
+	let subjects: LearningSessionSubject[] = [];
+	if (mode === "teach") {
+		try {
+			subjects = learningSubjects(learningGraphView())
+				.filter(({ id }) => id !== LEARNING_SUBJECT_UNASSIGNED_ID)
+				.map(({ id, name }) => ({ id, name }));
+		} catch (error) {
+			console.warn("[new session] Could not load learning subjects", error);
+		}
+	}
 	return (
 		<NewSession
 			initialConfigured={slotsConfigured(readSettingsRecord()?.models)}
-			mode={mode === "practice" ? "practice" : "teach"}
+			mode={mode}
+			subjects={subjects}
 		/>
 	);
 }

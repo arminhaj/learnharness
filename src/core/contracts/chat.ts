@@ -43,6 +43,7 @@ export interface ChatCreateInit {
 	exploration?: ExplorationContext;
 	messages?: LhMessage[];
 	settings?: ChatSettings;
+	learningSubjectId?: string;
 }
 
 export interface ChatRecord {
@@ -57,6 +58,8 @@ export interface ChatRecord {
 	messages: LhMessage[];
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
+	/** Learning map scope chosen when the session was started. */
+	learningSubjectId?: string;
 	exploration?: ExplorationContext;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
 	tree?: PlanTree;

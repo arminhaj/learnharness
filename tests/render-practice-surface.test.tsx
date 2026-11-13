@@ -268,6 +268,14 @@ describe("GraphContextCard", () => {
 		assert.ok(!html.includes("chain"));
 	});
 
+	it("a subject-only marker shows the subject without an empty expander", () => {
+		const html = renderToStaticMarkup(
+			<GraphContextCard data={{ propositions: [], chains: [], subject: { id: "subject:logic", name: "Logic" } }} />,
+		);
+		assert.match(html, /Subject.*Logic/);
+		assert.doesNotMatch(html, /0 propositions|graph-context-toggle/);
+	});
+
 	it("the marker projects to the card's part (projectView fold)", () => {
 		const view = projectView([newGraphContextMessage(
 			[{ id: "n1", name: "A", statement: "S." }], [],

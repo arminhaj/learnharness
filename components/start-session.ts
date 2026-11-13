@@ -1,10 +1,12 @@
+import type { ConceptSessionRequest } from "@/src/core";
 import { clearOpeningPrompt, OPENING_PROMPT_FAILURE, stashOpeningPrompt } from "./opening-prompt";
 
 interface SessionCreation {
 	title: string;
 	kind?: "practice";
 	graphContext?: { propositions: readonly { id: string; name: string; statement: string }[] };
-	learningContext?: { nodeId: string };
+	learningContext?: ConceptSessionRequest["learningContext"];
+	learningSubjectId?: string;
 }
 
 /** Per source-composer instance. Retain a successful creation if storage

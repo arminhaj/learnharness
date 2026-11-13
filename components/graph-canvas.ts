@@ -145,6 +145,8 @@ export interface CanvasColors {
 export interface CanvasData {
 	nodes: CanvasNode[];
 	edges: CanvasEdge[];
+	/** Focused levels use readable screen-sized labels when framed. */
+	focused?: boolean;
 	/** The LOGICAL arrows (proposition→conclusion, imp contracted) the
 	 *  depth force consumes — absent = the sim derives depth from the
 	 *  drawn edges (legacy). Optional so non-graph callers of the
@@ -162,6 +164,8 @@ export interface CanvasData {
 export interface RendererCallbacks {
 	/** A node was clicked (screen position included for card anchoring). */
 	onSelect: (nodeId: string, screenPos: Pt) => void;
+	/** Two mouse clicks on the same node request concept focus. */
+	onFocusNode?: (nodeId: string) => void;
 	/** Right-click: the picked node (canvas-relative screen position) or
 	 *  null when the pointer hit empty stage — the caller opens/closes
 	 *  its context menu accordingly. (node interlude, wave 7) */
@@ -318,6 +322,7 @@ const PICKING_PAD = 10;
 
 /** Click vs drag threshold: pointer travel under this many px is a click. */
 const CLICK_SLOP = 4;
+const DOUBLE_CLICK_DELAY_MS = 320;
 /** Live-sim tuning — see the class doc comment. */
 const LIVE_ALPHA_DECAY = 0.05; // snappier anneal than the settle's 0.0228
 const DRAG_ALPHA_TARGET = 0.3; // d3-drag's own reheat constant
@@ -442,19 +447,34 @@ export function labelAlpha(
 	return clamp01(1 - (ratio - labelZoom) / span);
 }
 
+type CanvasBounds = { minX: number; maxX: number; minY: number; maxY: number };
+
 /** The camera transform that frames `bbox` in a w×h viewport with padding. */
 export function fitTransform(
-	bbox: { minX: number; maxX: number; minY: number; maxY: number },
+	bbox: CanvasBounds,
 	w: number,
 	h: number,
 	padding: number,
+	maxZoom = Infinity,
 ): { x: number; y: number; k: number } {
 	const bw = Math.max(bbox.maxX - bbox.minX, 1e-6);
 	const bh = Math.max(bbox.maxY - bbox.minY, 1e-6);
-	const k = Math.min((w - 2 * padding) / bw, (h - 2 * padding) / bh);
+	const k = Math.min((w - 2 * padding) / bw, (h - 2 * padding) / bh, maxZoom);
 	const cx = (bbox.minX + bbox.maxX) / 2;
 	const cy = (bbox.minY + bbox.maxY) / 2;
 	return { x: w / 2 - cx * k, y: h / 2 - cy * k, k };
+}
+
+function canvasNodeBounds(nodes: readonly CanvasNode[], visible: ReadonlySet<string> | null = null): CanvasBounds | null {
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const node of nodes) {
+		if (visible && !visible.has(node.id)) continue;
+		minX = Math.min(minX, node.x);
+		minY = Math.min(minY, node.y);
+		maxX = Math.max(maxX, node.x);
+		maxY = Math.max(maxY, node.y);
+	}
+	return minX <= maxX ? { minX, minY, maxX, maxY } : null;
 }
 
 /** The arrowhead geometry for a directed edge a→b: shaft endpoints
@@ -569,7 +589,7 @@ function drawNameLines(
 	x: number,
 	y: number,
 	lines: string[],
-	world: WorldSizes,
+	world: Pick<WorldSizes, "nodeR" | "labelSize" | "labelGap">,
 	color: string,
 ): void {
 	context.fillStyle = color;
@@ -600,7 +620,7 @@ export class GraphCanvasRenderer {
 	private kFit = 1;
 	/** World-space bounds of the current nodes — fit() and the resize-time
 	 *  kFit refresh share it (computed once per setData, not per resize). */
-	private worldBBox: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+	private worldBBox: CanvasBounds | null = null;
 
 	private data: CanvasData | null = null;
 	private pendingData: CanvasData | null = null;
@@ -623,6 +643,7 @@ export class GraphCanvasRenderer {
 	private simActive = false;
 	private dragId: string | null = null;
 	private dragOrigin: Pt | null = null;
+	private dragMoved = false;
 	private simMoved = false; // any real movement since the last commit
 	private commitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -654,7 +675,9 @@ export class GraphCanvasRenderer {
 	private animating = false;
 
 	private resizeObserver: ResizeObserver;
+	private pointerId: number | null = null;
 	private downPos: Pt | null = null;
+	private pendingNodeClick: { nodeId: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
 	// ── Cached world geometry ─────────────────────────────────────────────
 	// Everything above is drawn per frame; everything below is derived from
@@ -674,7 +697,7 @@ export class GraphCanvasRenderer {
 	private physicsTuning: PhysicsTuning = DEFAULT_PHYSICS_TUNING;
 	/** Gravity center for the live sim (graph bbox centroid at setData). */
 	private simCenter: Pt = { x: 0, y: 0 };
-	private regionBuiltVersion = -1;
+	private regionBuiltVersion: number | null = null;
 	private frameCount = 0; // draw counter for the live-sim splat throttle
 	private labelLines = new Map<string, string[]>();
 	private worldLabelFont = "";
@@ -717,6 +740,8 @@ export class GraphCanvasRenderer {
 		canvas.addEventListener("pointermove", this.onPointerMove);
 		canvas.addEventListener("pointerdown", this.onPointerDown);
 		canvas.addEventListener("pointerup", this.onPointerUp);
+		canvas.addEventListener("pointercancel", this.onPointerCancel);
+		canvas.addEventListener("lostpointercapture", this.onPointerCancel);
 		canvas.addEventListener("pointerleave", this.onPointerLeave);
 		// Right-click → the caller's context menu (node interlude). Always
 		// preventDefault: the native menu on a full-bleed custom canvas is
@@ -780,6 +805,11 @@ export class GraphCanvasRenderer {
 		if (this.data && topology === this.topologyKey) {
 			this.data.colors = data.colors;
 			this.data.fontFamily = data.fontFamily;
+			if (this.data.focused !== data.focused) {
+				this.data.focused = data.focused;
+				this.geoVersion++;
+				this.markDirty();
+			}
 			this.setNodePresentation(new Map(data.nodes.map((n) => [n.id, n])));
 			this.setClusterLabels(new Map(data.clusters.map((c) => [c.id, c.label])));
 			return;
@@ -788,9 +818,7 @@ export class GraphCanvasRenderer {
 		if (this.dragId) { this.pendingData = data; return; }
 		// Topology updates need a new simulation, but a drag that has just
 		// settled still owns unsaved coordinates. Flush them before replacing it.
-		if (this.data && this.simMoved) {
-			this.callbacks.onCommit(Object.fromEntries(this.data.nodes.map((node) => [node.id, { x: node.x, y: node.y }])));
-		}
+		this.commitMovedPositions();
 		// New concepts/links may arrive during a drag. Keep existing live
 		// positions; only genuinely new concepts consume the server seed.
 		for (const n of data.nodes) {
@@ -800,17 +828,8 @@ export class GraphCanvasRenderer {
 		this.topologyKey = topology;
 		this.data = data;
 		this.nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-		let minX = Infinity;
-		let minY = Infinity;
-		let maxX = -Infinity;
-		let maxY = -Infinity;
-		for (const n of data.nodes) {
-			if (n.x < minX) minX = n.x;
-			if (n.y < minY) minY = n.y;
-			if (n.x > maxX) maxX = n.x;
-			if (n.y > maxY) maxY = n.y;
-		}
-		this.worldBBox = { minX, maxX, minY, maxY };
+		const bounds = canvasNodeBounds(data.nodes);
+		this.worldBBox = bounds;
 		if (!this.hasFit && data.nodes.length > 0) this.fit();
 		// The camera may be user-restored (constructor initialCamera) — the
 		// gate's "1×" reference still needs the fresh bbox's fit zoom.
@@ -825,7 +844,7 @@ export class GraphCanvasRenderer {
 		this.simActive = false;
 		this.dragId = null;
 		this.simMoved = false;
-		this.simCenter = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+		this.simCenter = bounds ? { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 } : { x: 0, y: 0 };
 		this.buildSim();
 		this.geoVersion++; // new data → rebuild world geometry
 		this.markDirty();
@@ -865,7 +884,7 @@ export class GraphCanvasRenderer {
 	 *  emptied while typing. Forces a region bitmap rebuild. */
 	setRegionTuning(input: Partial<RegionTuning>): void {
 		this.regionTuning = sanitizeRegionTuning(input);
-		this.regionBuiltVersion = -2; // never equals geoVersion → rebuild
+		this.regionBuiltVersion = null;
 		// Off switch turning off: drop the bitmap immediately so the
 		// blit stops on the next frame — the rebuild itself skips all
 		// compute (buildRegions).
@@ -881,14 +900,14 @@ export class GraphCanvasRenderer {
 	 *  survive; velocities restart clean, which reads as "re-relax with
 	 *  the new feel"). A mid-settle change re-anneals, which is the
 	 *  honest response to new physics. */
-	setPhysicsTuning(input: Partial<PhysicsTuning>): void {
+	setPhysicsTuning(input: Partial<PhysicsTuning>, reheat = true): void {
 		this.physicsTuning = sanitizePhysicsTuning(input);
 		this.buildSim();
 		// Reheat: a tuning change re-anneals the layout from its current
 		// state, so mode toggles (off/vertical/radial) visibly RE-FORM the
 		// graph instead of waiting for the next drag. Mid-drag is safe —
 		// buildSim preserved the pinned node's fx/fy.
-		if (this.sim) {
+		if (this.sim && reheat) {
 			this.sim.alpha(1);
 			this.simActive = true;
 		}
@@ -933,24 +952,28 @@ export class GraphCanvasRenderer {
 
 	setVisible(visible: ReadonlySet<string> | null): void {
 		this.visible = visible;
+		// Visibility changes apply to the region bitmap and labels on the
+		// next frame, even when live physics normally defers that rebuild.
+		this.regionBuiltVersion = null;
+		if (this.pendingNodeClick && visible && !visible.has(this.pendingNodeClick.nodeId)) this.clearPendingNodeClick();
 		this.geoVersion++; // member visibility changes hulls + paths
 		this.markDirty();
 	}
 
-	/** Frame the whole graph (padding included). Keeps the camera on later
-	 *  setData calls — call fit() only for an explicit re-frame (the
-	 *  first-ever open; afterwards the caller-persisted camera wins). */
-	fit(): void {
-		if (!this.data || this.data.nodes.length === 0 || !this.worldBBox) return;
-		// Drag/physics may have moved nodes since setData. Fit the live map.
-		const xs = this.data.nodes.map((node) => node.x);
-		const ys = this.data.nodes.map((node) => node.y);
-		this.worldBBox = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+	/** Frame live coordinates. Fitting the visible subset moves the
+	 * camera while keeping the overview's label zoom reference. */
+	fit({ visibleOnly = false }: { visibleOnly?: boolean } = {}): void {
+		if (!this.data) return;
+		const bounds = canvasNodeBounds(this.data.nodes, visibleOnly ? this.visible : null);
+		if (!bounds) return;
 		const w = this.canvas.clientWidth;
 		const h = this.canvas.clientHeight;
 		if (w < 10 || h < 10) return; // layout not ready yet; the ResizeObserver retries
-		const t = fitTransform(this.worldBBox, w, h, 40);
-		this.kFit = t.k;
+		const t = this.frameBounds(bounds, w, h, visibleOnly);
+		if (!visibleOnly) {
+			this.worldBBox = bounds;
+			this.kFit = t.k;
+		}
 		this.hasFit = true;
 		select(this.canvas).call(
 			this.zoomBehavior.transform,
@@ -965,12 +988,18 @@ export class GraphCanvasRenderer {
 		if (!this.worldBBox) return;
 		const w = this.canvas.clientWidth;
 		const h = this.canvas.clientHeight;
-		if (w >= 10 && h >= 10) this.kFit = fitTransform(this.worldBBox, w, h, 40).k;
+		if (w >= 10 && h >= 10) this.kFit = this.frameBounds(this.worldBBox, w, h).k;
+	}
+
+	private frameBounds(bounds: CanvasBounds, w: number, h: number, visibleOnly = false) {
+		if (visibleOnly || this.data?.focused) return fitTransform(bounds, w, h, Math.min(90, w / 4, h / 4), 5);
+		return fitTransform(bounds, w, h, 40);
 	}
 
 	destroy(): void {
 		if (this.frameId !== null) cancelAnimationFrame(this.frameId);
 		if (this.commitTimer) clearTimeout(this.commitTimer);
+		this.clearPendingNodeClick();
 		this.sim = null;
 		this.simActive = false;
 		this.dragId = null;
@@ -980,9 +1009,18 @@ export class GraphCanvasRenderer {
 		this.canvas.removeEventListener("pointermove", this.onPointerMove);
 		this.canvas.removeEventListener("pointerdown", this.onPointerDown);
 		this.canvas.removeEventListener("pointerup", this.onPointerUp);
+		this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
+		this.canvas.removeEventListener("lostpointercapture", this.onPointerCancel);
 		this.canvas.removeEventListener("pointerleave", this.onPointerLeave);
 		this.canvas.removeEventListener("contextmenu", this.onContextMenu);
 		this.canvas.style.cursor = "";
+	}
+
+	/** Preserve moved positions when switching away before the debounce fires. */
+	commitMovedPositions(): void {
+		if (!this.data || !this.simMoved) return;
+		this.simMoved = false;
+		this.callbacks.onCommit(Object.fromEntries(this.data.nodes.map((node) => [node.id, { x: node.x, y: node.y }])));
 	}
 
 	// ── Event handlers (state mutation only — never draw) ──
@@ -1005,12 +1043,15 @@ export class GraphCanvasRenderer {
 	private onPointerMove = (e: PointerEvent) => {
 		const pos = this.eventPos(e);
 		if (this.dragId) {
+			if (e.pointerId !== this.pointerId) return;
 			const n = this.simById.get(this.dragId);
 			if (n) {
 				const moved =
 					this.dragOrigin !== null &&
 					Math.hypot(pos.x - this.dragOrigin.x, pos.y - this.dragOrigin.y) > CLICK_SLOP;
 				if (moved) {
+					this.dragMoved = true;
+					this.clearPendingNodeClick();
 					// First real movement: reheat and glue the node to the cursor.
 					if (this.commitTimer) {
 						clearTimeout(this.commitTimer);
@@ -1026,6 +1067,10 @@ export class GraphCanvasRenderer {
 			}
 			return;
 		}
+		if (e.pointerId === this.pointerId && this.downPos && Math.hypot(pos.x - this.downPos.x, pos.y - this.downPos.y) > CLICK_SLOP) {
+			this.downPos = null;
+			this.clearPendingNodeClick();
+		}
 		const node = this.pickAt(pos.x, pos.y);
 		if ((node?.id ?? null) !== this.hoverId) this.setHover(node?.id ?? null);
 		this.canvas.style.cursor = node ? "pointer" : "";
@@ -1036,9 +1081,11 @@ export class GraphCanvasRenderer {
 		// pin the node — right-click belongs to the context menu alone, and
 		// the right-pointerup must never read as a click (the detail card
 		// used to open under the menu).
-		if (e.button !== 0) return;
+		if (e.button !== 0 || e.isPrimary === false || this.pointerId !== null) return;
+		this.pointerId = e.pointerId;
 		const pos = this.eventPos(e);
 		const node = this.pickAt(pos.x, pos.y);
+		if (e.pointerType !== "mouse" || node?.id !== this.pendingNodeClick?.nodeId) this.clearPendingNodeClick();
 		if (node && this.sim) {
 			// Node press: pin the node (at ITS OWN position — the cursor
 			// may be inside the pick pad, off-center). preventDefault kills
@@ -1053,6 +1100,7 @@ export class GraphCanvasRenderer {
 			}
 			this.dragId = node.id;
 			this.dragOrigin = pos;
+			this.dragMoved = false;
 			const n = this.simById.get(node.id);
 			if (n) {
 				n.fx = n.x;
@@ -1067,65 +1115,120 @@ export class GraphCanvasRenderer {
 	};
 
 	private onPointerUp = (e: PointerEvent) => {
-		if (e.button !== 0) return; // right-click is context-menu territory
+		if (e.pointerId !== this.pointerId) return;
+		if (e.button !== 0) {
+			this.onPointerCancel(e);
+			return;
+		}
+		this.pointerId = null;
+		const pos = this.eventPos(e);
 		// Node press ending: click (no slop) → select; drag → release-and-relax.
 		if (this.dragId) {
 			const id = this.dragId;
-			this.dragId = null;
-			this.dragOrigin = null;
-			try {
-				this.canvas.releasePointerCapture(e.pointerId);
-			} catch {
-				/* already released */
-			}
-			this.canvas.style.cursor = "";
-			const n = this.simById.get(id);
-			if (n) {
-				n.fx = null;
-				n.fy = null;
-			}
-			if (this.simActive) {
-				// Real drag: the sim anneals to the new rest state; advanceSim
-				// detects the settle and schedules the commit.
-				this.sim?.alphaTarget(0);
-				this.markDirty();
-			} else {
-				// Never heated: a plain click on the node.
-				this.callbacks.onSelect(id, this.eventPos(e));
-			}
-			if (this.pendingData) {
-				const next = this.pendingData;
-				this.pendingData = null;
-				this.setData(next);
-			}
+			const moved = this.dragMoved || (this.dragOrigin && Math.hypot(pos.x - this.dragOrigin.x, pos.y - this.dragOrigin.y) > CLICK_SLOP);
+			this.releaseNodePress(id, e.pointerId);
+			if (moved) this.clearPendingNodeClick();
+			else this.clickNode(id, pos, e.pointerType);
 			return;
 		}
 		if (!this.downPos) return;
-		const pos = this.eventPos(e);
 		const moved = Math.hypot(pos.x - this.downPos.x, pos.y - this.downPos.y);
 		this.downPos = null;
 		if (moved > CLICK_SLOP) return; // that was a drag (pan), not a click
 		const node = this.pickAt(pos.x, pos.y);
-		if (node) this.callbacks.onSelect(node.id, pos);
-		else this.callbacks.onStageClick();
+		if (node) this.clickNode(node.id, pos, e.pointerType);
+		else {
+			this.clearPendingNodeClick();
+			this.callbacks.onStageClick();
+		}
+	};
+
+	private onPointerCancel = (e: PointerEvent) => {
+		if (e.pointerId !== this.pointerId) return;
+		this.pointerId = null;
+		this.downPos = null;
+		this.clearPendingNodeClick();
+		if (this.dragId) this.releaseNodePress(this.dragId, e.pointerId);
 	};
 
 	/** Right-click: pick the node under the pointer, hand the position to
 	 *  the caller (empty stage = null — the caller closes any open menu). */
 	private onContextMenu = (e: MouseEvent) => {
 		e.preventDefault();
+		this.clearPendingNodeClick();
 		const pos = this.eventPos(e);
 		const node = this.pickAt(pos.x, pos.y);
 		this.callbacks.onContext(node?.id ?? null, pos);
 	};
 
-	private onPointerLeave = () => {
-		if (this.dragId) return; // pointer capture keeps the drag alive
-		this.downPos = null;
+	private onPointerLeave = (e: PointerEvent) => {
+		if (this.dragId) {
+			if (e.pointerId === this.pointerId && !this.canvas.hasPointerCapture(e.pointerId)) this.onPointerCancel(e);
+			return;
+		}
+		if (e.pointerId === this.pointerId) {
+			this.pointerId = null;
+			this.downPos = null;
+		}
 		this.setHover(null);
 	};
 
 	// ── Internals ──
+
+	private releaseNodePress(nodeId: string, pointerId: number): void {
+		this.dragId = null;
+		this.dragOrigin = null;
+		this.dragMoved = false;
+		try {
+			this.canvas.releasePointerCapture(pointerId);
+		} catch {
+			/* already released */
+		}
+		this.canvas.style.cursor = "";
+		const n = this.simById.get(nodeId);
+		if (n) {
+			n.fx = null;
+			n.fy = null;
+		}
+		if (this.simActive) {
+			// The sim anneals to the new rest state and schedules the commit.
+			this.sim?.alphaTarget(0);
+			this.markDirty();
+		}
+		if (this.pendingData) {
+			const next = this.pendingData;
+			this.pendingData = null;
+			this.setData(next);
+		}
+	}
+
+	private clearPendingNodeClick(): void {
+		if (!this.pendingNodeClick) return;
+		clearTimeout(this.pendingNodeClick.timer);
+		this.pendingNodeClick = null;
+	}
+
+	private clickNode(nodeId: string, pos: Pt, pointerType: string): void {
+		const previous = this.pendingNodeClick;
+		this.clearPendingNodeClick();
+		if (!this.nodeById.has(nodeId) || (this.visible && !this.visible.has(nodeId))) return;
+		if (!this.callbacks.onFocusNode || pointerType !== "mouse") {
+			this.callbacks.onSelect(nodeId, pos);
+			return;
+		}
+		if (previous?.nodeId === nodeId) {
+			this.callbacks.onFocusNode(nodeId);
+			return;
+		}
+		// Decide on pointerup so node capture and preventDefault don't rely
+		// on browser mouse events. A first click must not resize the canvas
+		// for the details sidebar while the second is still on its way.
+		const timer = setTimeout(() => {
+			this.pendingNodeClick = null;
+			if (this.nodeById.has(nodeId) && (!this.visible || this.visible.has(nodeId))) this.callbacks.onSelect(nodeId, pos);
+		}, DOUBLE_CLICK_DELAY_MS);
+		this.pendingNodeClick = { nodeId, timer };
+	}
 
 	private eventPos(e: { clientX: number; clientY: number }): Pt {
 		const rect = this.canvas.getBoundingClientRect();
@@ -1232,11 +1335,7 @@ export class GraphCanvasRenderer {
 		if (this.commitTimer) clearTimeout(this.commitTimer);
 		this.commitTimer = setTimeout(() => {
 			this.commitTimer = null;
-			if (!this.data || !this.simMoved) return;
-			this.simMoved = false;
-			const positions: Record<string, Position> = {};
-			for (const n of this.data.nodes) positions[n.id] = { x: n.x, y: n.y };
-			this.callbacks.onCommit(positions);
+			this.commitMovedPositions();
 		}, COMMIT_DEBOUNCE_MS);
 	}
 
@@ -1306,7 +1405,7 @@ export class GraphCanvasRenderer {
 		if (!data || !settings) return;
 
 		const nodeR = settings.nodeSize;
-		this.worldLabelFont = `${LABEL_WEIGHT} ${settings.labelSize}px ${data.fontFamily}`;
+		this.worldLabelFont = `${LABEL_WEIGHT} ${data.focused ? LABEL_SIZE : settings.labelSize}px ${data.fontFamily}`;
 		this.world = {
 			nodeR,
 			glowOuter: nodeR * GLOW_SCALE,
@@ -1373,7 +1472,7 @@ export class GraphCanvasRenderer {
 		const ctx = this.ctx;
 		const prevFont = ctx.font;
 		ctx.font = this.worldLabelFont;
-		const maxW = LABEL_MAX_WIDTH * (settings.labelSize / LABEL_SIZE);
+		const maxW = LABEL_MAX_WIDTH * (data.focused ? 1 : settings.labelSize / LABEL_SIZE);
 		for (const n of data.nodes) {
 			if (isVisible(n.id) && !isImpNodeId(n.id)) this.labelLines.set(n.id, wrapLabel(ctx, n.label, maxW));
 		}
@@ -1699,7 +1798,7 @@ export class GraphCanvasRenderer {
 		// every REGION_EVERY-th frame (others blit the last bitmap).
 		if (
 			this.regionBuiltVersion !== this.geoVersion &&
-			(!this.simActive || this.frameCount % REGION_EVERY === 0)
+			(this.regionBuiltVersion === null || !this.simActive || this.frameCount % REGION_EVERY === 0)
 		) {
 			this.buildRegions();
 			this.regionBuiltVersion = this.geoVersion;
@@ -1712,9 +1811,15 @@ export class GraphCanvasRenderer {
 		ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
 
 		const ratio = zoomRatioOf(this.kFit, k);
-		const nodeAlpha = labelAlpha(ratio, settings.labelZoom);
+		const nodeAlpha = labelAlpha(ratio, data.focused ? Math.max(1, settings.labelZoom) : settings.labelZoom);
 		const regionAlpha = 1 - nodeAlpha;
 		const { nodeR, glowOuter } = this.world;
+		const labelSizes = data.focused ? { nodeR: nodeR * k, labelSize: LABEL_SIZE, labelGap: 5 } : this.world;
+		const drawLabel = (node: CanvasNode, lines: string[], color: string) => {
+			const x = data.focused ? node.x * k + tx : node.x;
+			const y = data.focused ? node.y * k + ty : node.y;
+			drawNameLines(ctx, x, y, lines, labelSizes, color);
+		};
 
 		// 1. Cluster regions: one tiny world-space bitmap blit. The upscale
 		//    blur is the region softness; adjacent cluster tints blend
@@ -1775,10 +1880,11 @@ export class GraphCanvasRenderer {
 			ctx.save();
 			ctx.globalAlpha = nodeAlpha;
 			ctx.font = this.worldLabelFont;
+			if (data.focused) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 			for (const [id, lines] of this.labelLines) {
 				const n = this.nodeById.get(id);
 				if (!n) continue;
-				drawNameLines(ctx, n.x, n.y, lines, this.world, data.colors.label);
+				drawLabel(n, lines, data.colors.label);
 			}
 			ctx.restore();
 		}
@@ -1803,7 +1909,8 @@ export class GraphCanvasRenderer {
 				ctx.save();
 				ctx.globalAlpha = this.hoverFade;
 				ctx.font = this.worldLabelFont;
-				drawNameLines(ctx, n.x, n.y, this.labelLines.get(n.id) ?? [], this.world, data.colors.hoverText);
+				if (data.focused) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+				drawLabel(n, this.labelLines.get(n.id) ?? [], data.colors.hoverText);
 				ctx.restore();
 			}
 		}

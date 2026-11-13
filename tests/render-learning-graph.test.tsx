@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { LearningNodeSidebar, LearningSessionActions, learningMetadataPatch } from "../components/learning-node-sidebar.tsx";
-import { LearningIceberg, useLearningSubjectSelection } from "../components/learning-iceberg.tsx";
+import { ALL_SUBJECTS_SCOPE, LearningIceberg, LearningSubjectSelect, useLearningSubjectSelection } from "../components/learning-iceberg.tsx";
 import { learningSubjectId, learningSubjects, scopeLearningGraphToSubject } from "../src/core/learning-subjects.ts";
 import type { LearningConcept, LearningGraphSnapshot, LearningNodePatch } from "../src/core/contracts/learning-graph.ts";
 
@@ -175,7 +175,7 @@ describe("learning iceberg", () => {
 	});
 });
 
-describe("subject-scoped iceberg", () => {
+describe("subject-scoped learning views", () => {
 	const cpp = node("n_cpp", "Pointer ownership", { subjects: ["C++"] });
 	const cppUngrouped = node("n_cpp_loose", "Move constructor", { subjects: ["C++"] });
 	const mechanics = node("n_mechanics", "Stationary action", { subjects: ["Mechanics"] });
@@ -185,24 +185,32 @@ describe("subject-scoped iceberg", () => {
 	const snapshot: LearningGraphSnapshot = {
 		...learning,
 		nodes: [cpp, cppUngrouped, mechanics, mechanicsUngrouped, shared, unassigned],
-		prerequisites: [],
+		prerequisites: [{ id: "external-blocker", from: mechanics.id, to: cpp.id, explanation: "Review this foundation first.", origin: "automatic", provenance: [] }],
 		groups: [
 			{ ...learning.groups[0]!, id: "g_cpp", name: "C++ fundamentals", members: [cpp.id, shared.id], unlocks: [] },
 			{ ...learning.groups[1]!, id: "g_mechanics", name: "Mechanics foundations", members: [mechanics.id, shared.id], unlocks: [] },
 		],
-		groupEdges: [],
+		groupEdges: [{ from: "g_mechanics", to: "g_cpp", prerequisiteIds: ["external-blocker"] }],
 	};
 	const subjects = learningSubjects(snapshot);
 	const renderSubject = (label: string, visibleIds?: ReadonlySet<string>) => {
 		const id = label === "Unassigned" ? "unassigned" : learningSubjectId(label);
-		return renderToStaticMarkup(<LearningIceberg learning={scopeLearningGraphToSubject(snapshot, id)} selectedId={null} onSelect={() => {}} subjects={subjects} subjectId={id} onSubjectChange={() => {}} visibleIds={visibleIds} />);
+		return renderToStaticMarkup(<LearningIceberg learning={scopeLearningGraphToSubject(snapshot, id)} selectedId={null} onSelect={() => {}} subject={subjects.find((subject) => subject.id === id)} visibleIds={visibleIds} />);
 	};
-	it("uses an accessible explicit subject selector without an All bucket", () => {
-		const html = renderSubject("C++");
-		assert.match(html, /aria-label="Iceberg subject"/);
+	it("offers All subjects with the unique concept count while a named subject remains selected", () => {
+		const html = renderToStaticMarkup(<LearningSubjectSelect subjects={subjects} subjectId={learningSubjectId("C++")} totalConcepts={snapshot.nodes.length} onChange={() => {}} />);
+		assert.match(html, />Subject<select/);
 		assert.match(html, /value="subject:c%2B%2B" selected=""/);
 		assert.match(html, /<option value="unassigned">Unassigned · 1<\/option>/);
-		assert.doesNotMatch(html, /<option[^>]*>All/);
+		assert.match(html, /<option value="all-subjects">All subjects · 6<\/option>/);
+	});
+	it("shows groups across subjects, cross-subject connections, and unassigned concepts in the full Iceberg", () => {
+		const html = renderToStaticMarkup(<LearningIceberg learning={snapshot} selectedId={null} onSelect={() => {}} subject={ALL_SUBJECTS_SCOPE} />);
+		assert.match(html, />All subjects<\/h2>/);
+		assert.match(html, /Pointer ownership/);
+		assert.match(html, /Stationary action/);
+		assert.match(html, /Unsorted concept/);
+		assert.match(html, /Builds on Mechanics foundations/);
 	});
 	it("keeps grouped and ungrouped concept rows within the selected subject", () => {
 		const cppHtml = renderSubject("C++");
@@ -254,6 +262,66 @@ describe("subject-scoped iceberg", () => {
 		} finally {
 			await act(async () => root.unmount());
 			Object.assign(globalThis, { window: originalWindow, document: originalDocument, IS_REACT_ACT_ENVIRONMENT: originalActEnvironment });
+		}
+	});
+	it("restores the last subject after remount while the initial snapshot is empty", async () => {
+		const { window, document } = parseHTML("<html><body></body></html>");
+		const storage = new Map<string, string>();
+		const localStorage = { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) };
+		const globals = { window, document, localStorage, IS_REACT_ACT_ENVIRONMENT: true };
+		const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, (globalThis as Record<string, unknown>)[key]]));
+		Object.assign(globalThis, globals);
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		function Selection({ ready }: { ready: boolean }) {
+			const [selected, setSubject] = useLearningSubjectSelection(ready ? subjects : []);
+			return <button type="button" onClick={() => setSubject(ALL_SUBJECTS_SCOPE.id)}>{selected ?? "empty"}</button>;
+		}
+		try {
+			await act(async () => root.render(<Selection key="first" ready />));
+			assert.equal(host.textContent, "subject:c%2B%2B");
+			await act(async () => { host.querySelector("button")!.click(); });
+			assert.equal(host.textContent, ALL_SUBJECTS_SCOPE.id);
+			await act(async () => root.render(<Selection key="second" ready={false} />));
+			assert.equal(host.textContent, "empty");
+			await act(async () => root.render(<Selection key="second" ready />));
+			assert.equal(host.textContent, ALL_SUBJECTS_SCOPE.id);
+		} finally {
+			await act(async () => root.unmount());
+			Object.assign(globalThis, previous);
+		}
+	});
+	it("shows an external blocker and lets the learner select a destination subject", async () => {
+		const { window, document } = parseHTML("<html><body></body></html>");
+		const globals = { window, document, IS_REACT_ACT_ENVIRONMENT: true };
+		const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, (globalThis as Record<string, unknown>)[key]]));
+		Object.assign(globalThis, globals);
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		const target = { ...cpp, ready: false, unmetPrerequisiteIds: [mechanics.id] };
+		const globalMap = { ...snapshot, nodes: snapshot.nodes.map((concept) => concept.id === target.id ? target : concept), prerequisites: [
+			{ id: "external-blocker", from: mechanics.id, to: cpp.id, explanation: "Review this foundation first.", origin: "automatic" as const, provenance: [] },
+			{ id: "internal-prerequisite", from: shared.id, to: cpp.id, explanation: "A shared prerequisite.", origin: "automatic" as const, provenance: [] },
+		] };
+		const selections: Array<[string, string | undefined]> = [];
+		const onSelect = (id: string, subjectId?: string) => { selections.push([id, subjectId]); };
+		try {
+			await act(async () => root.render(<LearningNodeSidebar node={target} learning={globalMap} {...actions} mapSubjects={subjects} mapSubjectId={learningSubjectId("C++")} onSelect={onSelect} />));
+			assert.match(host.textContent ?? "", /1 prerequisite needs more understanding/);
+			assert.match(host.textContent ?? "", /Review this foundation first/);
+			await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Open Stationary action in Mechanics"]')!.click(); });
+			const sharedLink = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes(shared.name));
+			await act(async () => { sharedLink!.click(); });
+			await act(async () => root.render(<LearningNodeSidebar node={target} learning={globalMap} {...actions} mapSubjects={subjects} onSelect={onSelect} />));
+			assert.equal(host.querySelector('[aria-label="Open Stationary action in Mechanics"]'), null);
+			const globalLink = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes(mechanics.name));
+			await act(async () => { globalLink!.click(); });
+			assert.deepEqual(selections, [[mechanics.id, learningSubjectId("Mechanics")], [shared.id, undefined], [mechanics.id, undefined]]);
+		} finally {
+			await act(async () => root.unmount());
+			Object.assign(globalThis, previous);
 		}
 	});
 });

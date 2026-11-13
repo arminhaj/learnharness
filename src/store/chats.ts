@@ -44,6 +44,7 @@ function createChat(title: string, kind?: "practice", init?: ChatCreateInit): Ch
 		messages: init?.messages ?? [],
 		...(init?.exploration ? { exploration: init.exploration } : {}),
 		...(init?.settings ? { settings: init.settings } : {}),
+		...(init?.learningSubjectId !== undefined ? { learningSubjectId: init.learningSubjectId } : {}),
 		// Practice sessions carry the marker; teach stays ABSENT (absence
 		// reads as teach — pre-practice records never migrate).
 		...(kind === "practice" ? { kind: "practice" as const } : {}),

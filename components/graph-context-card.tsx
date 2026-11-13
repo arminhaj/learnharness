@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { LearningSessionSubject } from "@/src/core";
 
 /**
  * The graph-context card (owner, 2026-10-04): the session's map pick —
@@ -18,11 +19,20 @@ import { cn } from "@/lib/utils";
 export interface GraphContextData {
 	propositions: { id: string; name: string; statement: string }[];
 	chains: string[];
+	subject?: LearningSessionSubject;
 }
 
 export function GraphContextCard({ data }: { data: GraphContextData }) {
 	const [open, setOpen] = useState(false);
-	const { propositions = [], chains = [] } = data ?? {};
+	const { propositions = [], chains = [], subject } = data ?? {};
+	if (subject && propositions.length === 0 && chains.length === 0) {
+		return (
+			<div data-testid="graph-context-card" className="my-1 flex items-center gap-2 rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+				<span className="font-medium">Subject</span>
+				<span className="min-w-0 truncate">{subject.name}</span>
+			</div>
+		);
+	}
 	const noun = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 	return (
 		<div data-testid="graph-context-card" className="my-1">
@@ -35,6 +45,7 @@ export function GraphContextCard({ data }: { data: GraphContextData }) {
 				<ChevronRightIcon aria-hidden="true" className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
 				<span className="font-medium">Graph context</span>
 				<span className="min-w-0 flex-1 truncate">
+					{subject && `${subject.name} · `}
 					{noun(propositions.length, "proposition", "propositions")}
 					{chains.length > 0 ? ` · ${noun(chains.length, "chain", "chains")}` : ""}
 				</span>

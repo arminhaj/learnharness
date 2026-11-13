@@ -56,6 +56,16 @@ describe("startDraftSession — the create-on-send contract", () => {
 		assert.equal(calls.length, 1, "a single create call — the birth stamp is server-side");
 	});
 
+	it("passes the optional subject only on Teaching sends", async () => {
+		const { f, calls } = fakeFetch("c_subject");
+		await startDraftSession("teach me about orbits", f, undefined, undefined, undefined, undefined, "subject:physics");
+		await startDraftSession("give me a problem", f, "practice", undefined, undefined, undefined, "subject:physics");
+		assert.deepEqual(calls.map(({ body }) => body), [
+			{ title: "teach me about orbits", learningSubjectId: "subject:physics" },
+			{ title: "give me a problem", kind: "practice" },
+		]);
+	});
+
 	it("a long opening text stays out of the URL and is stashed for the chat page", async () => {
 		const mem = new Map<string, string>();
 		const fake = {
@@ -148,6 +158,20 @@ describe("DraftShell — the sessionless surface", () => {
 		const cta = html.indexOf('data-testid="setup-cta"');
 		const blob = html.search(/rounded-2xl[^>]*pointer-events-auto|pointer-events-auto[^>]*rounded-2xl/);
 		assert.ok(cta !== -1 && blob !== -1 && cta < blob, "CTA above the blob");
+	});
+
+	it("offers subject selection in Teaching only", () => {
+		const props = {
+			busy: false,
+			text: "",
+			onChange: () => {},
+			onSend: () => {},
+			subjects: [{ id: "subject:physics", name: "Physics" }],
+			learningSubjectId: "subject:physics",
+			onLearningSubjectChange: () => {},
+		};
+		assert.match(renderToStaticMarkup(<DraftShell {...props} />), />Physics<\/option>/);
+		assert.doesNotMatch(renderToStaticMarkup(<DraftShell {...props} mode="practice" />), />Physics<\/option>/);
 	});
 
 	it("no chat id anywhere — nothing in the markup references a session", () => {
